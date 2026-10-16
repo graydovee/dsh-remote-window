@@ -71,8 +71,9 @@ profile patch 挂官方执行 provider、`remote-session-persistence`（官方 J
 - **信任栅栏**：所有插件 HTTP 路由必须过 `trustedRequest`（`src/index.ts`，DNS
   rebinding + 跨站防护）；JSON body 1 MiB 上限；API 方法名允许含斜杠
   （`connect/start`），不要加斜杠守卫。
-- **零 patch**：不改官方 cordis.patch.yml 任何已有行，不替换全局服务，不碰
-  `sidebar.workspaces` 槽；官方「添加工作区」按钮行为不变。
+- **零 patch**：不改官方 cordis.patch.yml 任何已有行，不替换全局服务；官方
+  「添加工作区」按钮行为不变。左栏区域**不占用** `sidebar.workspaces` 槽位——
+  它只在槽位元素之前插入自己的节点（见 P4 一节），官方占位者原样保留。
 - **连接行必须惰性**（`src/connection/index.ts`）：preset 挂载失败是粘滞且永久的，
   不可达主机不得在构造时发起连接。
 - **存储域版本恒为 1**：新字段只能 additive optional，bump 即砖（单文件布局无迁移）。
