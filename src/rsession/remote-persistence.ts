@@ -42,7 +42,6 @@ export class RemotePersistence extends SessionPersistence {
   }
 
   async create(header: SessionHeader, options?: SessionPersistenceCreateOptions): Promise<SessionHandle> {
-    console.error(`[rw] persist.create via remote: ws=${this.workspaceId} session=${header.id}`)
     const payload = await this.rpc.request<RemoteHandlePayload>('persist.create', { workspaceId: this.workspaceId, header }, options?.signal)
     const handle = new RemoteHandle(this.rpc, payload.handleId, 'write', payload.header, payload.events ?? [], () => { this.handles.delete(handle) })
     this.handles.add(handle)
@@ -130,29 +129,4 @@ class RemoteHandle implements SessionHandle {
   private ensureOpen(): void {
     if (this.closed) throw new Error('remote session handle is closed')
   }
-}
-
-/**
- * Preset-row entry (`dsh-remote-workspace/rsession`): provides the realm's
- * `sessionPersistence`. As a loader row inside the preset's isolate realm it
- * reaches the agent loop through exactly the same resolution path as the
- * official `fs`/`subprocess` providers; the base-class `provide` is legal here
- * because the realm isolates the service name.
- */
-export const inject = ['ssh']
-
-/** Row configuration (from the preset definition; no secrets). */
-export interface RemotePersistenceConfig {
-  readonly workspaceId: WorkspaceId
-}
-
-// eslint-disable-next-line @typescript-eslint/naming-convention
-export function apply(ctx: Context, config: RemotePersistenceConfig): void {
-  const connection = ctx.get('ssh') as { remoteSessionRequest<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> }
-  console.error(`[rw] persistence row active: workspaceId=${config.workspaceId}`)
-  new RemotePersistence(
-    ctx,
-    { request: (method, params, signal) => connection.remoteSessionRequest(method, params, signal) },
-    config.workspaceId,
-  )
 }

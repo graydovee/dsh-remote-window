@@ -73,6 +73,9 @@ async function mountClientProviders(
     getPackagePolicy: () => ({ policy: 'auto', mirror: '' }),
     setPackagePolicy: async () => {},
     pathAliases: () => [],
+    routeForCwd: () => undefined,
+    locateRemoteSession: async () => undefined,
+    sessionRequest: async () => { throw new Error('not used in conformance') },
   }
   ctx.provide('remoteWorkspaces', service)
   await ctx.plugin(SessionProjectionRegistry)

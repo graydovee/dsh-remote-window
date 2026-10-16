@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "dsh-remote-workspace 方案 A：路由持久层 + 远端权威会话",
+    "output": ".archify/architecture-plan-a-20261016-145030/plan-a.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "components": [
+    {
+      "id": "shell",
+      "type": "external",
+      "label": "Shell UI",
+      "sublabel": "对话界面 / 会话列表",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        170,
+        56
+      ]
+    },
+    {
+      "id": "loop",
+      "type": "backend",
+      "label": "Agent Loop",
+      "sublabel": "本地运行 · 模型凭据留本地",
+      "pos": [
+        40,
+        150
+      ],
+      "size": [
+        190,
+        68
+      ]
+    },
+    {
+      "id": "routing",
+      "type": "backend",
+      "label": "RoutingPersistence",
+      "sublabel": "patch 覆盖官方 sessions 行",
+      "pos": [
+        40,
+        280
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "tag": "方案 A 核心"
+    },
+    {
+      "id": "localjsonl",
+      "type": "database",
+      "label": "官方 Jsonl 持久层",
+      "sublabel": "~/.dsh/sessions（本地会话，行为不变）",
+      "pos": [
+        40,
+        430
+      ],
+      "size": [
+        220,
+        68
+      ]
+    },
+    {
+      "id": "client",
+      "type": "backend",
+      "label": "dsh-remote-workspace 插件",
+      "sublabel": "SSH 通道 · 部署 · 面板",
+      "pos": [
+        330,
+        150
+      ],
+      "size": [
+        210,
+        76
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "dsh-remote-workspace-server",
+      "sublabel": "精简 dsh + server 插件",
+      "pos": [
+        640,
+        150
+      ],
+      "size": [
+        220,
+        76
+      ]
+    },
+    {
+      "id": "remotestore",
+      "type": "database",
+      "label": "state/sessions/<workspaceId>",
+      "sublabel": "会话唯一权威副本（官方格式）",
+      "pos": [
+        920,
+        40
+      ],
+      "size": [
+        240,
+        76
+      ],
+      "tag": "唯一权威"
+    },
+    {
+      "id": "world",
+      "type": "backend",
+      "label": "执行世界",
+      "sublabel": "fs / subprocess / sandbox / shell",
+      "pos": [
+        920,
+        290
+      ],
+      "size": [
+        220,
+        68
+      ]
+    },
+    {
+      "id": "deviceb",
+      "type": "external",
+      "label": "设备 B · 本地 dsh（同款插件）",
+      "sublabel": "换设备 → 连同一远端，读写同一批会话",
+      "pos": [
+        640,
+        420
+      ],
+      "size": [
+        250,
+        68
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "设备 A · 本地 dsh（agent loop 与凭据留本地）",
+      "wraps": [
+        "shell",
+        "loop",
+        "routing",
+        "localjsonl",
+        "client"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "远端主机（精简 dsh + server 插件）",
+      "wraps": [
+        "server",
+        "remotestore",
+        "world"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "shell-to-loop",
+      "from": "shell",
+      "to": "loop",
+      "label": "驱动对话"
+    },
+    {
+      "id": "loop-to-routing",
+      "from": "loop",
+      "to": "routing",
+      "label": "persist 读写"
+    },
+    {
+      "id": "routing-to-local",
+      "from": "routing",
+      "to": "localjsonl",
+      "label": "本地 cwd 委托（行为不变）"
+    },
+    {
+      "id": "routing-to-server",
+      "from": "routing",
+      "to": "server",
+      "label": "persist.* RPC（SSH 通道）",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "client-to-server",
+      "from": "client",
+      "to": "server",
+      "label": "探测 status.json · 部署 · 心跳",
+      "variant": "dashed"
+    },
+    {
+      "id": "loop-to-world",
+      "from": "loop",
+      "to": "world",
+      "label": "工具调用（preset realm → SSH）",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "server-to-store",
+      "from": "server",
+      "to": "remotestore",
+      "label": "读写（官方 jsonl 格式）",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "deviceb-to-server",
+      "from": "deviceb",
+      "to": "server",
+      "label": "换设备续聊（读写同一会话）",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "路由规则",
+      "items": [
+        "cwd 是本地目录 → 逐字节委托官方 Jsonl，行为不变",
+        "cwd 是远程 stub → 走 persist.* RPC，会话日志只落远端"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "换设备续聊",
+      "items": [
+        "设备 B 连接同一远端，列出同一批工作区/会话",
+        "打开会话即重放远端日志，继续对话"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "并发与安装",
+      "items": [
+        "会话级锁：同会话并发写，第二实例被拒",
+        "两插件均普通安装；卸载即恢复原状"
+      ]
+    }
+  ]
+}

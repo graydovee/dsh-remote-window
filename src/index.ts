@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import Schema from '@deepseek-ai/schemastery'
+import RoutingSessionPersistence from './session-persistence/routing.ts'
 import { listSshAliases, prefillFromResolution, resolveSshAlias } from './ssh-config.ts'
 import { TargetStore } from './targets/store.ts'
 import { scrubSecrets , type PackagePolicySettings } from './targets/types.ts'
@@ -29,7 +30,12 @@ export const ROUTE_PREFIX = '/dsh-remote-workspace'
 export const name = 'dsh-remote-workspace'
 
 /** Host-plane services this row needs before it can register anything. */
-export const inject = ['agentPresets', 'storageDomain', 'credentials', 'agents', 'agentDefaultModel', 'webServer', 'workspaceRegistry']
+// NO `workspaceRegistry` here: dsh-workspace consumes `sessionPersistence`,
+// which this plugin provides (the routing row). Declaring the edge would make
+// our activation wait on a service that waits on ours — a start-up deadlock
+// observed 2026-10-16 (7 entries pending). The registry is resolved lazily in
+// RemoteWorkspaces instead.
+export const inject = ['agentPresets', 'storageDomain', 'credentials', 'agents', 'agentDefaultModel', 'webServer']
 
 /** Tunables; every one of them is also settable from `cordis.yml`. */
 export interface Config {
@@ -404,14 +410,33 @@ export function apply(ctx: Context, config: Config): void {
     getPackagePolicy: () => workspaces.getPackagePolicy(),
     pathAliases: (targetId: string) => workspaces.pathAliases(targetId),
     setPackagePolicy: (settings: PackagePolicySettings) => workspaces.setPackagePolicy(settings),
+    routeForCwd: (cwd: string | undefined) => workspaces.routeForCwd(cwd),
+    locateRemoteSession: (sessionId: string) => workspaces.locateRemoteSession(sessionId),
+    sessionRequest: <T,>(targetId: string, method: string, params: unknown, signal?: AbortSignal) =>
+      workspaces.sessionRequest<T>(targetId, method, params, signal),
   })
+  // The routing persistence (deviation d13): the official JSONL row is
+  // disabled by this bundle's patch, freeing the service name; providing here
+  // — in the root tree every consumer (agent loop, session controller,
+  // workspace registry) resolves against — is guaranteed.
+  new RoutingSessionPersistence(ctx, { root: join(homedir(), 'sessions') })
   ctx.effect(() => () => { void workspaces.dispose() }, 'dsh-remote-workspace: provisioning')
   ctx.effect(() => () => { void store.close() }, 'dsh-remote-workspace: storage')
   ctx.effect(() => registerRoutes(ctx, workspaces), 'dsh-remote-workspace: routes')
 
   // /api/state must never wait on preset restoration: ensureWorlds may open
   // SSH channels for every stored target, which can take tens of seconds.
-  storageReady = store.open().catch((error: unknown) => {
+  storageReady = store.open().then(async () => {
+    // Self-check for the `sessions` row override (cordis.patch.yml, deviation
+    // d13): if a future dsh renames or re-orders the base row, the overlay
+    // silently stops applying and remote sessions would land in the local
+    // store — detectable, so detect it. Chained on the SAME open promise:
+    // calling store.open() twice fails the domain with 'already open'.
+    const persistence = ctx.get('sessionPersistence') as { routingMarker?: symbol } | undefined
+    if (persistence?.routingMarker !== Symbol.for('dsh-remote-workspace.routing-persistence')) {
+      ctx.logger.error('dsh-remote-workspace: the `sessions` persistence override did not apply; remote sessions would be stored locally (see cordis.patch.yml deviation d13)')
+    }
+  }).catch((error: unknown) => {
     storageFailure = scrubSecrets(error instanceof Error ? error.message : String(error))
     ctx.logger.error(`dsh-remote-workspace: startup failed: ${storageFailure}`)
   })

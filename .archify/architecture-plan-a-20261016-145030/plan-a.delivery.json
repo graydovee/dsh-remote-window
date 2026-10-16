@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "aeb92d17-f8de-4d75-81fc-97743a14af8a",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/djh/Downloads/backup/Projects/personal/dsh-remote-worspace/dsh-remote-workspace/.archify/architecture-plan-a-20261016-145030/candidate.json",
+  "output": "/Users/djh/Downloads/backup/Projects/personal/dsh-remote-worspace/dsh-remote-workspace/.archify/architecture-plan-a-20261016-145030/plan-a.html",
+  "specification": {
+    "sha256": "ccca16f5fea6da2b73072e4655d3d8662fddd12baa96c425ac04b03368e94934",
+    "bytes": 5299
+  },
+  "artifact": {
+    "sha256": "b0568d6b17bf7873e8ad2738e4a4fd016a817d7223473c583c1b91f066bb146d",
+    "bytes": 825055
+  }
+}

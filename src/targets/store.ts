@@ -53,6 +53,9 @@ export class TargetStore {
 
   /** Open the domain; call once during plugin startup. */
   async open(): Promise<void> {
+    // Idempotent: the storage domain throws 'already open' on a second open,
+    // and more than one caller (startup self-check included) may race here.
+    if (this.domain !== undefined) return
     this.domain = await this.ctx.storageDomain.open(REMOTE_DOMAIN)
   }
 

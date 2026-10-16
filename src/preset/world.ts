@@ -21,27 +21,15 @@ export function remotePresetId(targetId: string): string {
 }
 
 /**
- * The preset id for one *workspace-scoped* composition: same world, plus the
- * remote-session persistence row bound to one workspace id. A fresh id per
- * workspace keeps `presets.register` replace-per-id semantics intact.
- */
-export function remoteWorkspacePresetId(targetId: string, workspaceId: string): string {
-  return `${REMOTE_PRESET_PREFIX}${targetId}:${workspaceId}`
-}
-
-/**
  * Build the preset definition for one target.
  * @param target - the stored target record.
  * @returns a definition ready for `ctx.agentPresets.register`.
  */
-export function remotePresetDefinition(target: RemoteTargetRecord, workspaceId?: string): PresetDefinition {
-  // The workspace-scoped variant MUST carry its own id: registering the target
-  // id twice is a duplicate, and resolving the workspace id against a roster
-  // that only has the target preset fails with agent-preset/not-found.
-  const id = workspaceId === undefined ? remotePresetId(target.id) : remoteWorkspacePresetId(target.id, workspaceId);
+export function remotePresetDefinition(target: RemoteTargetRecord): PresetDefinition {
+  const id = remotePresetId(target.id);
   return {
     id,
-    name: workspaceId === undefined ? `Remote: ${target.label}` : `Remote: ${target.label} · ${workspaceId.slice(0, 6)}`,
+    name: `Remote: ${target.label}`,
     description: `Execution world on ${target.username}@${target.host}:${target.port}; models and credentials stay local.`,
     // After the shipped presets, so the picker keeps its usual default.
     order: 90,
@@ -56,11 +44,6 @@ export function remotePresetDefinition(target: RemoteTargetRecord, workspaceId?:
           subprocess: true,
           sandbox: true,
           shell: true,
-          // The persistence row provides 'sessionPersistence' inside the realm;
-          // isolation is what makes that provide legal next to the root
-          // context's official JSONL backend (cordis throws on a same-name
-          // provide that resolves to another realm's registration).
-          sessionPersistence: true,
         },
         config: [
           {
@@ -79,17 +62,6 @@ export function remotePresetDefinition(target: RemoteTargetRecord, workspaceId?:
           { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash' },
           { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
           { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
-          // Workspace-scoped only: the session persistence provider whose
-          // authoritative log lives on the remote server. It is a realm row —
-          // the same mechanism the official providers use — because the agent
-          // loop resolves `sessionPersistence` through its preset mount; a
-          // provider installed from `setup` on the agent scope never enters
-          // that resolution path.
-          ...(workspaceId === undefined ? [] : [{
-            id: 'remote-persistence',
-            name: 'dsh-remote-workspace/rsession',
-            config: { workspaceId },
-          }]),
         ],
       },
     ],

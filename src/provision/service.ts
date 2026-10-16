@@ -93,9 +93,9 @@ class RemoteClient {
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
       const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.4.0-dev' }, z.object({
-        protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(),
+        protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
       }), AbortSignal.timeout(20_000)).catch(() => undefined)
-      const client = new RemoteClient(mux, peer, channel, hello.workspace, serverInfo, startHeartbeat())
+      const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat())
       return client
     } catch (error) {
       peer.close()
@@ -306,7 +306,14 @@ export class RemoteWorkspaces {
 
   /** Every public target, newest state first. */
   listTargets(): PublicTarget[] {
-    return this.store.listTargets().map(record => publicTarget(record, this.store))
+    // The status is computed, not stored: a restart drops every channel, and a
+    // stale persisted 'ready' would show 已连接 for a host nothing is connected
+    // to (observed 2026-10-15 on the routing-persistence round).
+    return this.store.listTargets().map(record => {
+      const live = this.channels.get(record.id)
+      const status = live !== undefined && !isClosed(live) ? 'ready' : record.status === 'ready' ? 'stopped' : record.status
+      return publicTarget({ ...record, status }, this.store)
+    })
   }
 
   /** Every stored remote workspace. */
@@ -565,6 +572,60 @@ export class RemoteWorkspaces {
       .map(record => ({ stub: record.stubPath as string, remote: record.path }))
   }
 
+  /** The remote workspace a stub-cwd session belongs to (routing persistence). */
+  routeForCwd(cwd: string | undefined): { targetId: string; workspaceId: string } | undefined {
+    if (cwd === undefined) return undefined
+    const record = this.store
+      .listWorkspaces()
+      .find(candidate => candidate.stubPath === cwd)
+    const workspaceId = record?.remoteWorkspaceId
+    if (record === undefined || workspaceId === undefined) return undefined
+    return { targetId: record.targetId, workspaceId }
+  }
+
+  /**
+   * Which remote workspace owns one stored session. Only targets with a live
+   * channel are probed: an offline server must not be spun up by a read.
+   */
+  async locateRemoteSession(sessionId: string): Promise<{ targetId: string; workspaceId: string } | undefined> {
+    for (const targetId of this.channels.keys()) {
+      try {
+        const result = await this.withBrowser(targetId, client => client.request(
+          'persist.locate',
+          { sessionId },
+          z.object({ workspaceId: z.string().nullable() }),
+          AbortSignal.timeout(20_000),
+        ))
+        if (result.workspaceId !== null && result.workspaceId !== '') {
+          return { targetId, workspaceId: result.workspaceId }
+        }
+      } catch {
+        // A target that cannot answer is simply not the owner.
+      }
+    }
+    return undefined
+  }
+
+  /** One administrative RPC to the target's server (persist.* plane). */
+  async sessionRequest<T>(targetId: string, method: string, params: unknown, signal?: AbortSignal): Promise<T> {
+    const call = async (): Promise<T> => await this.withBrowser(targetId, async client =>
+      await client.request(method, params, z.unknown() as never, signal) as T)
+    try {
+      return await call()
+    } catch (error) {
+      // A server restart can lose its workspace index while the client keeps
+      // the workspace id (its own store still has the remote path). Re-create
+      // the server-side entry once and retry, instead of failing the session.
+      const message = error instanceof Error ? error.message : String(error)
+      const workspaceId = (params as { workspaceId?: unknown }).workspaceId
+      if (!/unknown remote workspace/i.test(message) || typeof workspaceId !== 'string') throw error
+      const record = this.store.listWorkspaces(targetId).find(candidate => candidate.remoteWorkspaceId === workspaceId)
+      if (record === undefined) throw error
+      await this.ensureRemoteWorkspace(targetId, record.path, record.title).catch(() => {})
+      return await call()
+    }
+  }
+
   /**
    * Create or resume the workspace record and its session.
    * @param targetId - stored target.
@@ -590,7 +651,10 @@ export class RemoteWorkspaces {
     // Anchor the remote path in the shell's workspace tree: official
     // workspaces are local-realpath'd, so a *local stub directory* stands in
     // for the remote path and the tree shows the entry like any local one.
-    const registry = (this.ctx as unknown as { workspaceRegistry?: WorkspaceRegistryLike }).workspaceRegistry
+    // `ctx.get`, not `ctx.workspaceRegistry`: property access on a cordis context
+    // requires the service in `inject`, and the plugin deliberately does not
+    // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
+    const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
     const key = createHash('sha1').update(`${target.id}\u0000${listing.path}`).digest('hex').slice(0, 8)
     const stubRoot = join(homedir(), '.dsh', 'remote-workspaces', target.id)
     const stub = join(stubRoot, key)
@@ -613,15 +677,21 @@ export class RemoteWorkspaces {
           createdAt: now,
         }
       : existing
-    console.error(`[rw] openWorkspace: ensureRemoteWorkspace.id=${remoteWorkspace.id}`)
+    // Persist the record (with its stub) before the session exists: the
+    // routing persistence resolves create(header.cwd) through this record, so
+    // the very first seed event must already be routable.
+    await this.store.putWorkspace({
+      ...workspace,
+      ...(official === undefined ? {} : { stubPath: official.path, officialWorkspaceId: official.id }),
+      remoteWorkspaceId: remoteWorkspace.id,
+      ...(remoteWorkspace.serverId === undefined ? {} : { serverId: remoteWorkspace.serverId }),
+    })
     const opened = await openRemoteSession(this.ctx, {
       targetId,
-      target,
       // The session's shell-side cwd is the stub (official attachSession
       // requires realpath(cwd) === workspace.path); the stub→remote rewrite in
       // the realm connection points every tool call at the real directory.
       path: canonicalStub,
-      remoteWorkspaceId: remoteWorkspace.id,
       // No sessionId: opening a workspace always starts a fresh (seeded)
       // session. Adopting the stored one would reuse a pre-fix blank session
       // the shell can never chat in; its history stays in the sidebar.
@@ -644,7 +714,10 @@ export class RemoteWorkspaces {
   /** Forget one stored remote workspace record (and its shell-tree entry). */
   async forgetWorkspace(workspaceId: string): Promise<boolean> {
     const record = this.store.workspace(workspaceId)
-    const registry = (this.ctx as unknown as { workspaceRegistry?: WorkspaceRegistryLike }).workspaceRegistry
+    // `ctx.get`, not `ctx.workspaceRegistry`: property access on a cordis context
+    // requires the service in `inject`, and the plugin deliberately does not
+    // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
+    const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
     if (record?.officialWorkspaceId !== undefined) {
       await registry?.delete(record.officialWorkspaceId).catch(() => {})
     }

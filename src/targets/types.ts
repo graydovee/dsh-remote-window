@@ -112,6 +112,12 @@ export interface RemoteWorkspaceService {
   setPackagePolicy(settings: PackagePolicySettings): Promise<void>
   /** stub → remote path aliases for one target's opened workspaces. */
   pathAliases(targetId: string): { stub: string; remote: string }[]
+  /** The remote workspace a stub-cwd session belongs to, when the stub is registered. */
+  routeForCwd(cwd: string | undefined): { targetId: string; workspaceId: string } | undefined
+  /** The remote workspace that owns one stored remote session, when discoverable. */
+  locateRemoteSession(sessionId: string): Promise<{ targetId: string; workspaceId: string } | undefined>
+  /** One administrative RPC to the target's server (persist.* plane). */
+  sessionRequest<T>(targetId: string, method: string, params: unknown, signal?: AbortSignal): Promise<T>
 }
 
 declare module '@deepseek-ai/cordis' {

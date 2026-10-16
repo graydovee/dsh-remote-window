@@ -48,6 +48,7 @@ const hostConfig = {
     index: 'src/index.ts',
     connection: 'src/connection/index.ts',
     rsession: 'src/rsession/remote-persistence.ts',
+    'session-persistence': 'src/session-persistence/routing.ts',
     protocol: 'src/protocol.ts',
   },
   outDir: 'lib',
