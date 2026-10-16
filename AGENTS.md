@@ -99,6 +99,34 @@ profile patch 挂官方执行 provider、`remote-session-persistence`（官方 J
 （官方 handle 生命周期 → `persist.*` RPC 映射）；`profile.smoke`（真实 profile
 经 dsh CLI 于 stdio 上说协议）。
 
+## 会话持久层的路由接线（实测，2026-10-16）
+
+远程工作区的会话是**远端权威**：本插件在 `apply()` 里构造 `RoutingSessionPersistence`
+（`src/session-persistence/routing.ts`）并 provide 为 `sessionPersistence`，按会话 cwd
+路由——本地 cwd 委托内嵌的官方 JSONL 后端（root 仍是 `~/.dsh/sessions`，本地会话行为
+逐字节不变），远程 stub cwd 走远端 `persist.*` 平面。
+
+四条**实测约束**（踩过的坑，改这里之前先读）：
+
+1. **官方行 id 是 `session-persistence-jsonl`（dsh-base 层），不是 `sessions`**
+   （后者属于 dsh-sdk-minimal 层，web profile 里不存在）。覆盖 `sessions`
+   会打印 `entry "sessions" not found` 并静默无效。
+2. **patch 覆盖不能换 `name`**：loader 对 override 有 `name mismatch` 守卫，只允许改
+   config；因此"替换类"必须写成 `disabled: true`（禁用官方行）+ 在我们自己的
+   `apply()` 里 provide（不能靠 patch `insert` 一行——实测该行从不被构造）。
+3. **`inject` 里不能写 `workspaceRegistry`**：`dsh-workspace` 消费
+   `sessionPersistence`，而本插件提供它——声明这条边会让两边互相等待，启动时
+   7 个 entry 永久 pending。注册表一律用 `ctx.get('workspaceRegistry')` 懒解析
+   （注意：无 inject 时属性访问 `ctx.workspaceRegistry` 会抛
+   `cannot get property "workspaceRegistry" without inject`）。
+4. **任何 `extends SessionPersistence` 的内部实例都必须用 stub context 构造**
+   （`Reflect.construct(Klass, [registrationAbsorbingContext(), ...])`）：基类构造函数
+   会 `provide('sessionPersistence')`，在根上下文二次注册直接抛
+   `service "sessionPersistence" has been registered at <...>`。
+
+验证口径：远端 `~/.dsh/remote-server-sessions/<projectKey(远端路径)>/<sessionId>/`，
+本地 `~/.dsh/sessions/` 不应出现该会话。
+
 ## 重构中间态（2026-10-15）
 
 v6 重构尚未完成：协议 v2、server 侧 `RemoteSessionStore`、client 侧
