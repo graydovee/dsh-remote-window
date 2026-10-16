@@ -1,0 +1,11 @@
+# dsh-remote-workspace bundle layer.
+#
+# The host row: owns the target store, the per-target agent presets and the
+# wizard routes served from /dsh-remote-workspace. It injects the services it
+# needs, so its activation order is resolved by the loader rather than by the
+# row position. Nothing in the official profile is patched: every remote
+# capability is registered as a new row (this layer), a new agent-preset row
+# (src/preset/world.ts) or a new plugin-owned web route.
+- insert:
+    - id: dsh-remote-workspace
+      name: dsh-remote-workspace
