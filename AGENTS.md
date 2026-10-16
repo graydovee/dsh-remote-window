@@ -140,12 +140,47 @@ header 重新锚定到**本地 stub**（构造参数 `localCwd`，由 routing �
 resume 两条路一致），远端路径只在 realm 的 stub→remote 别名处出现。少了这一步，
 `agents.resume` 出来的会话 attach 不上、点开会话会被判 cwd 冲突。
 
-## P4：树形面板与「换设备续聊」（2026-10-16）
+## P4：左侧栏「远程工作区」区域与「换设备续聊」（2026-10-16）
 
-形态：`远程工作区 → 连接[三态] → 工作区 → 会话`。三态图标属于**连接**节点
-（`StateDot`: 绿 已连接 / 红 连接失败 / 灰 未连接），因为状态是连接的属性而不是
-目录的属性；`status` 由宿主按 **live channel** 计算（`listTargets()`），所以重启后
-不会出现假的"已连接"。
+形态：**左侧栏**里、shell 自己的「工作区」区域**正上方**并列一个「远程工作区」区域：
+
+```
+远程工作区                      [刷新] [+ 新建连接]
+└─ 连接1 ●(三态)               [连接|重新连接] [添加工作区] [断开] [忘记]
+   └─ 工作区1                  [打开] [新会话] [移除]
+      └─ 会话1  会话2 …        [继续]
+工作区                          ← shell 自己的区域，行为不变
+└─ …（远程工作区已从这里隐藏，避免同一工作区出现两次）
+```
+
+### 为什么是 portal 而不是 slot（实测，2026-10-16）
+
+shell 在左栏只声明**一个**浏览区域槽位：`sidebar.workspaces`（`kind: 'single'`），
+其占位者 ui-workspace 就是整个「工作区」区域（表头 + 列表 + 全部对话框）；
+**没有任何槽位可以再放一个同级区域**（已对发布的 rc.2 bundle 逐个 `data-slot`
+值核对），而 ui-workspace 的 client 也不导出可复用的区域组件
+（`WorkspaceBrowser` 只在包内 import）。所以：
+
+- 增补一个同级区域只有两条路：**改 shell**（加一个 section 列表槽位），或
+  **在浏览区域里挂自己的节点**。本插件走后者，且不替换任何官方占位者。
+- 挂载点：`[data-slot="sidebar.workspaces"]` 的父元素（物理区域盒
+  `_3WPZCG_regionArea`，`flex-direction: column`、`overflow: hidden`）——把我们的
+  节点 `insertBefore(..., firstElementChild)` 即可排在「工作区」之上。该槽位元素
+  是 `display: contents`（0×0，没有自己的盒），**跨折叠周期保持 DOM 身份**。
+- 折叠时 shell 只把区域 `opacity: 0`（它自己的面板会卸载子树），所以本区域额外
+  用 `[data-sidebar-collapsed="true"] .dsh-rw-side-host { visibility: hidden }`
+  把自己移出 a11y 树与命中测试。
+- 挂载对自己的**时序**负责：`src/client/sidebar.tsx` 用一个 MutationObserver 等在
+  锚点出现（boot order 可能晚于插件激活），并在 shell 重排/丢弃我们的节点时重新
+  插入到第一位。锚点缺失时整段不挂载、不抛错，插件面板仍是完整回退面。
+- **高度链必须逐级收住**（`.dsh-rw-side-host` → `.dsh-rw-side` →
+  `.dsh-rw-side-body`）：少一级 `min-height: 0`，树就会溢出宿主盒并被下面的
+  「工作区」盖住（实测 host 底 770px、树内容到 1141px，被盖住的行点击命中到
+  shell 的行）。紧凑行还必须 `flex-wrap: wrap`，否则动作按钮会顶出 280px 栏宽
+  之外而点不到。
+
+面板（`main` 槽位的 `dsh-remote-workspace` 页）保留为：向导的宿主、添加工作区
+选择器的宿主，以及侧栏锚点不可用时的回退树。
 
 - **先连接才能建会话**：连接节点的 `连接/重新连接` 走 `/api/connect`
   （`connectChannel`）就地接通，不进入向导；未连接时工作区动作全部 disable。

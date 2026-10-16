@@ -28,6 +28,19 @@
  * react
  * ---------------------------------------------------------------------- */
 
+declare module 'react-dom/client' {
+  /** One mounted React root (the sidebar-section host owns one of these). */
+  export interface Root {
+    render(children: unknown): void
+    unmount(): void
+  }
+  export function createRoot(container: Element | DocumentFragment): Root
+}
+
+declare module 'react-dom' {
+  export function createPortal(children: unknown, container: Element | DocumentFragment, key?: string | null): any
+}
+
 declare module 'react' {
   export type Key = string | number
 

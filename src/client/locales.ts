@@ -73,6 +73,8 @@ export const zh = {
   'list.loadFailed': '读取已保存的远程项失败',
 
   'tree.title': '远程工作区',
+  'tree.sidebar.title': '远程工作区',
+  'tree.sidebar.empty': '还没有连接。点击右上角 + 新建连接。',
   'tree.empty': '还没有连接。点击「新建连接」开始。',
   'tree.hint': '连接 → 工作区 → 会话；会话日志保存在远端，换设备也能继续。',
   'tree.expand': '展开',
@@ -298,6 +300,8 @@ export const en: Record<LocaleKey, string> = {
   'list.loadFailed': 'Reading saved remote items failed',
 
   'tree.title': 'Remote workspaces',
+  'tree.sidebar.title': 'Remote workspaces',
+  'tree.sidebar.empty': 'No connection yet — use + above to add one.',
   'tree.empty': 'No connection yet. Start with "New connection".',
   'tree.hint': 'Connection → workspace → session; session logs live on the remote host, so another device can continue them.',
   'tree.expand': 'Expand',

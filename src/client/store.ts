@@ -513,6 +513,22 @@ function closeOverlay(): void {
   commit({ open: false, view: 'list', error: undefined, notice: undefined, prefilling: false, pending: false, addWorkspace: undefined })
 }
 
+/**
+ * Open the connection wizard: switch the main column to this plugin's panel
+ * (the wizard's home) and enter the wizard view. Called from the sidebar
+ * section's 新建连接 button, which lives outside the main panel.
+ * @param panelId - this plugin's main-panel key.
+ */
+function openConnectionWizard(panelId: string): void {
+  try {
+    const layout = clientContext?.get('layout') as { selectPanel?(id: string): void } | undefined
+    layout?.selectPanel?.(panelId)
+  } catch (error) {
+    console.error('[dsh-remote-workspace] selectPanel failed', error)
+  }
+  newConnection()
+}
+
 /** Leave the list and start a fresh wizard run. */
 function newConnection(): void {
   generation += 1
@@ -1351,6 +1367,7 @@ async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
 export const store = {
   closeOverlay,
   newConnection,
+  openConnectionWizard,
   showList,
   setStep,
   setMethod,

@@ -22,6 +22,7 @@ import type { ClientContext } from './context.ts'
 import { t } from './locales.ts'
 import { ListBody, ListFooter } from './list.tsx'
 import { PANEL_ID, RemotePanelIcon, RemoteWorkspacePanel } from './panel.tsx'
+import { mountSidebarSection } from './sidebar.tsx'
 import { bindClientContext, dispose, store, watchWorkspaces } from './store.ts'
 import { ensureStyles, syncWorkspaceIcons } from './styles.ts'
 
@@ -42,8 +43,14 @@ export function apply(ctx: ClientContext): void {
   // Globe icon on the plugin's rows in the shell 工作区 tree (plugin lifetime,
   // not panel lifetime — the rows live in the sidebar).
   ctx.effect(() => watchWorkspaces(syncWorkspaceIcons), 'dsh-remote-workspace: workspace icons')
+  // The 远程工作区 section in the LEFT SIDEBAR, directly above the shell's own
+  // 工作区 section. The shell declares no seat for a second section, so this
+  // mounts into the browsing region itself; see sidebar.tsx for the anchors it
+  // relies on and for the fallback when they are missing.
+  ctx.effect(() => mountSidebarSection(), 'dsh-remote-workspace: sidebar section')
   // Load the saved state at activation, not only on first panel open: the
-  // sidebar workspace icons depend on it and the panel may never be opened.
+  // sidebar section and the workspace icons depend on it, and neither waits for
+  // a panel the user may never open.
   void store.refreshState()
   ctx.effect(() => () => { dispose() }, 'dsh-remote-workspace: store lifetime')
 

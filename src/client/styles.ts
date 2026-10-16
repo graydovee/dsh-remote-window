@@ -834,6 +834,126 @@ export const STYLE_TEXT = `
   font-size: 13px;
   color: var(--dsw-alias-label-primary);
 }
+
+/* ------------------------------------------- sidebar section (远程工作区) */
+
+/* Mounted as the first child of the sidebar's browsing region, directly above
+   the shell's own 工作区 section. flex:none keeps this section at its natural
+   height while the official list takes the rest of the column. */
+.dsh-rw-side-host {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 46vh;
+}
+
+.dsh-rw-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 6px;
+  /* The whole chain must be height-bounded, or the tree simply overflows the
+     host box and the rows below get covered by the shell's 工作区 section
+     (measured: host bottom 770px, tree content down to 1141px, the covered
+     rows hit-tested onto the shell's rows). */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Mirrors the shell's own section header metrics so the two sections read as
+   peers: same row height, same label weight, same secondary tone. */
+.dsh-rw-side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 2px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-rw-side-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-rw-side-title {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rw-side-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.6;
+  transition: opacity 120ms ease;
+}
+.dsh-rw-side:hover .dsh-rw-side-actions,
+.dsh-rw-side:focus-within .dsh-rw-side-actions {
+  opacity: 1;
+}
+
+/* While the column is collapsed the shell leaves our node in the DOM (its own
+   panel unmounts instead) and only fades the region to opacity 0 — which keeps
+   every control in the accessibility tree and hit-testable, so the section
+   hides itself explicitly. The attribute is on the frame element, an ancestor
+   of the region. */
+[data-sidebar-collapsed="true"] .dsh-rw-side-host {
+  visibility: hidden;
+}
+
+/* The section scrolls on its own: the official session list keeps its own
+   scroller and must not be pushed out of the column by a long remote list. */
+.dsh-rw-side-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dsh-rw-side-error {
+  margin: 2px 2px 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+  word-break: break-word;
+}
+
+/* Compact rows for the narrow column. The sidebar is ~270px wide and the
+   region clips overflow, so a row that cannot fit its actions must WRAP them
+   onto a second line rather than push them out of the column (measured: the
+   connection row's actions ran 104px past the right edge and became
+   unclickable). */
+.dsh-rw-tree--compact .dsh-rw-tree-row {
+  min-height: 28px;
+  gap: 4px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.dsh-rw-tree--compact .dsh-rw-tree-label {
+  min-width: 0;
+  max-width: 100%;
+}
+.dsh-rw-tree--compact .dsh-rw-tree-actions {
+  gap: 2px;
+  margin-left: auto;
+}
+/* Wrapped actions start on their own line, aligned under the label. */
+.dsh-rw-tree--compact .dsh-rw-tree-row > .dsh-rw-tree-actions:not(:first-child) {
+  padding-left: 22px;
+}
+.dsh-rw-tree-empty {
+  margin: 4px 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
 `
 
 /**
@@ -860,11 +980,6 @@ export function ensureStyles(): () => void {
  */
 const ICONS_STYLE_ID = 'dsh-remote-workspace-icons'
 
-/** A minimal single-color globe (stroke width irrelevant — mask uses alpha). */
-const GLOBE_MASK = `url("data:image/svg+xml;utf8,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>',
-)}")`
-
 /**
  * Swap the folder icon for a globe on every shell-tree row that belongs to a
  * remote workspace. Safe against unknown ids: rules simply never match.
@@ -882,22 +997,12 @@ export function syncWorkspaceIcons(ids: readonly string[]): () => void {
     document.head.appendChild(tag)
   }
   tag.textContent = ids.map((id) => `
-div[data-row-key="workspace:${id}"] > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-div[data-row-key="workspace:${id}"] > span:first-child svg {
+/* The row the shell renders for a remote workspace (its stub directory).
+   It keeps full behaviour — the session tree under it, clicks, menus — but is
+   no longer listed under 工作区: the remote tree has its own section now, and
+   the same workspace must not appear twice. */
+div[data-row-key="workspace:${id}"] {
   display: none;
-}
-div[data-row-key="workspace:${id}"] > span:first-child::before {
-  content: '';
-  width: 16px;
-  height: 16px;
-  background-color: currentColor;
-  -webkit-mask: ${GLOBE_MASK} center / contain no-repeat;
-  mask: ${GLOBE_MASK} center / contain no-repeat;
-  flex: none;
 }`).join('\n')
   return () => { tag.remove() }
 }
