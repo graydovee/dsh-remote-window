@@ -28,10 +28,15 @@ export interface RowVerbProps {
   readonly archived: boolean
 }
 
-/** The `⋮` menu entries of one session row, in the shell's order. */
-export function SessionMenu(props: RowVerbProps): ReactElement | null {
+/**
+ * The `⋮` menu entries of one session row, in the shell's order.
+ * @param props.close - the row's menu setter; every entry dismisses the menu
+ *   before acting, exactly like the shell's own entries do.
+ */
+export function SessionMenu(props: RowVerbProps & { close: () => void }): ReactElement | null {
   const { session, title, pinned, archived } = props
   const t = rowsTranslate
+  const act = (run: () => void): void => { props.close(); run() }
   return (
     <>
       {/* Pin is meaningless on an archived row (the two are mutually exclusive
@@ -39,20 +44,20 @@ export function SessionMenu(props: RowVerbProps): ReactElement | null {
       {!archived && (
         <MenuItemButton
           icon={pinned ? <IconPinFillRegular /> : <IconPinOutlineRegular />}
-          onSelect={() => { void sessionVerbs.setPin(props.workspace, session.id, !pinned, t(pinned ? 'menu.unpinSession' : 'menu.pinSession')) }}
+          onSelect={() => { act(() => { void sessionVerbs.setPin(props.workspace, session.id, !pinned, t(pinned ? 'menu.unpinSession' : 'menu.pinSession')) }) }}
         >
           {t(pinned ? 'menu.unpinSession' : 'menu.pinSession')}
         </MenuItemButton>
       )}
       <MenuItemButton
         icon={<IconEditOutlineRegular />}
-        onSelect={() => { store.requestRename(props.workspace, { ...session, title }) }}
+        onSelect={() => { act(() => { store.requestRename(props.workspace, { ...session, title }) }) }}
       >
         {t('rename')}
       </MenuItemButton>
       <MenuItemButton
         icon={<IconBranchOutlineRegular />}
-        onSelect={() => { void sessionVerbs.forkSession(props.workspace, session.id, t('menu.fork')) }}
+        onSelect={() => { act(() => { void sessionVerbs.forkSession(props.workspace, session.id, t('menu.fork')) }) }}
       >
         {t('menu.fork')}
       </MenuItemButton>
@@ -60,7 +65,9 @@ export function SessionMenu(props: RowVerbProps): ReactElement | null {
         danger={!archived}
         icon={archived ? <IconUnarchiveOutlineRegular /> : <IconArchiveOutlineRegular />}
         onSelect={() => {
-          void sessionVerbs.setArchived(props.workspace, session.id, !archived, t(archived ? 'menu.unarchiveSession' : 'menu.archiveSession'))
+          act(() => {
+            void sessionVerbs.setArchived(props.workspace, session.id, !archived, t(archived ? 'menu.unarchiveSession' : 'menu.archiveSession'))
+          })
         }}
       >
         {t(archived ? 'menu.unarchiveSession' : 'menu.archiveSession')}

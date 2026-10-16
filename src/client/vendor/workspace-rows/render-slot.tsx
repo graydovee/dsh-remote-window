@@ -26,8 +26,13 @@ type RowSlotKey =
 export interface RowSlotContent {
   /** Leading slot content (our live dot), or null. */
   readonly leading: ReactElement | null
-  /** `⋮` menu entries, or null for a blank row. */
-  readonly menu: ReactElement | null
+  /**
+   * Builds the `⋮` menu entries. The row passes its own open-state setter, which
+   * every entry must call when it acts — the official entries do exactly that
+   * through this hook, and an entry that acts without dismissing leaves a
+   * dangling menu on screen (the defect this signature exists to prevent).
+   */
+  readonly menu: ((close: () => void) => ReactElement | null) | null
   /** Hover buttons, or null. */
   readonly actions: ReactElement | null
 }
@@ -41,10 +46,13 @@ export const LIVE_DOT = <StateDot state="ongoing" size={8} />
  * @returns the seat the vendored row expects.
  */
 export function rowRenderSlots(content: RowSlotContent): PropsRenderSlots<RowSlotKey>['renderSlot'] {
-  return ((key: string) => {
+  return ((key: string, _owner?: unknown, options?: { readonly hookContext?: unknown }) => {
     if (key === 'sidebar.session.row.leading') return content.leading
     if (key === 'sidebar.workspaces.session.row.action') return content.actions
-    if (key === 'sidebar.workspaces.session.menu.item') return content.menu
+    if (key === 'sidebar.workspaces.session.menu.item') {
+      const hook = options?.hookContext as readonly [boolean, (open: boolean) => void] | undefined
+      return content.menu?.(() => { hook?.[1](false) }) ?? null
+    }
     return null
   }) as PropsRenderSlots<RowSlotKey>['renderSlot']
 }

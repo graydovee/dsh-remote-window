@@ -166,7 +166,7 @@ function sessionSeat(
   }
   return {
     leading: null,
-    menu: <SessionMenu key="menu" {...verbs} />,
+    menu: (close: () => void) => <SessionMenu key="menu" close={close} {...verbs} />,
     actions: <SessionRowActions key="actions" {...verbs} />,
   }
 }
@@ -256,7 +256,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         // renders, with the plain dictionary labels.
         t={connected ? translate : ((verb: string, params?: Record<string, unknown>) => rowsTranslate(verb, params))}
       />
-      {expanded && <Level depth={2}><SessionRows workspace={workspace} now={props.now} flags={flags} /></Level>}
+      {expanded && <Level depth={1}><SessionRows workspace={workspace} now={props.now} flags={flags} /></Level>}
     </>
   )
 }
@@ -295,6 +295,10 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
     <>
       <Level depth={0} state={target.status} className="dsh-rw-conn">
         <ProjectRowItem
+          // Keyed by state: switching between connected/disconnected remounts the
+          // row, which resets its (vendored, internal) menu to closed. A menu that
+          // outlives the action it performed is the defect this prevents.
+          key={`conn:${target.status}`}
           group={group}
           // Clicking a disconnected connection connects it; a live one folds,
           // exactly like the shell's workspace rows fold.
@@ -311,7 +315,7 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
         />
       </Level>
       {expanded && (
-        <Level depth={1}>
+        <Level depth={0}>
           {props.workspaces.length === 0
             ? <p className="dsh-rw-tree-empty">{t('tree.conn.noWorkspace')}</p>
             : props.workspaces.map(workspace => (
