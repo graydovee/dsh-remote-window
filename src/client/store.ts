@@ -635,6 +635,11 @@ async function refreshState(): Promise<void> {
       stateLoading: false,
     })
     if (firstLoad && state.open && state.view === 'list' && !hasSaved) commit({ view: 'wizard', step: 'method' })
+    // The status is computed from live channels, so this also folds a subtree
+    // whose channel died in the background — not only an explicit 断开.
+    for (const target of value.targets) {
+      if (target.status !== 'ready') collapseTarget(target.id)
+    }
   } catch (error) {
     if (gen !== generation) return
     // A first frame can arrive while the plugin host is still opening its
@@ -1254,7 +1259,9 @@ async function stopTarget(target: PublicTarget): Promise<void> {
         : { kind: 'error', text: t('list.stopUnsupported', { label: target.label }) },
     })
     // A stopped host has no channel to read from: leave its directory view so
-    // no operation dangles in the connecting state against a dead channel.
+    // no operation dangles in the connecting state against a dead channel, and
+    // fold its subtree away (工作区/会话收起).
+    if (stopped) collapseTarget(target.id)
     if (stopped && state.directory.targetId === target.id) {
       commit({ directory: emptyDirectory(), view: 'list', step: 'method' })
     }
@@ -1555,6 +1562,34 @@ async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
       })
       await reopenWorkspace(workspace)
     }
+  })
+}
+
+/**
+ * Fold a connection's whole subtree away.
+ *
+ * A connection that is down has nothing to show: its workspace rows and their
+ * session rows were reachable only through the channel that just went away, so
+ * they collapse with it. The flags are cleared rather than merely hidden, so the
+ * tree's own state agrees with what is rendered.
+ *
+ * Connecting again is a separate event and does expand the node again
+ * ({@link connectTarget}): a fresh channel is exactly when its workspaces are
+ * worth showing. Only the *disconnect* folds the subtree away.
+ * @param targetId - the connection whose subtree collapses.
+ */
+function collapseTarget(targetId: string): void {
+  const collapsed: string[] = []
+  if (state.expanded[targetNodeKey(targetId)] === true) collapsed.push(targetNodeKey(targetId))
+  for (const workspace of state.workspaces.filter(candidate => candidate.targetId === targetId)) {
+    const key = workspaceNodeKey(workspace.id)
+    if (state.expanded[key] === true) collapsed.push(key)
+  }
+  if (collapsed.length === 0) return
+  commit(previous => {
+    const expanded = { ...previous.expanded }
+    for (const key of collapsed) delete expanded[key]
+    return { expanded }
   })
 }
 

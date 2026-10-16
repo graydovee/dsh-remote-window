@@ -318,7 +318,10 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
           t={translate}
         />
       </Level>
-      {expanded && (
+      {/* Children exist only through the channel: a connection that is down shows
+          nothing under it, whatever the expanded flag says (the store clears the
+          flag too, this is the render-side guarantee). */}
+      {connected && expanded && (
         <>
           {props.workspaces.length === 0
             ? <p className="dsh-rw-tree-empty">{t('tree.conn.noWorkspace')}</p>
