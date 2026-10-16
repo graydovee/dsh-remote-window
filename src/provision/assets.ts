@@ -264,7 +264,7 @@ export async function buildDshRuntimePackage(options: {
 /** The GitHub release asset base for one version. */
 function releaseAssetBase(mirror: string, version: string): string {
   const base = mirror.replace(/\/+$/, '') || 'https://github.com'
-  return `${base}/graydove/dsh-remote-worspace/releases/download/server-v${version}`
+  return `${base}/graydovee/dsh-remote-workspace/releases/download/server-v${version}`
 }
 
 /** Download the release-built server package and verify it against its .sha256. */
