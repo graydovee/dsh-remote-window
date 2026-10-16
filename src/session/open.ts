@@ -39,6 +39,16 @@ export interface OpenedRemoteSession {
   readonly agentPreset: string
 }
 
+/** Options for resuming a stored remote session. */
+export interface ResumeRemoteSessionOptions {
+  /** Target record id; its preset must already be registered and its channel live. */
+  readonly targetId: string
+  /** Stored session id; it may have been written by another dsh instance. */
+  readonly sessionId: string
+  /** Cancellation of the load and composition. */
+  readonly signal?: AbortSignal
+}
+
 /** The subset of `ctx.agents` this module needs. */
 interface AgentCreator {
   get(id: SessionId): unknown
@@ -46,6 +56,17 @@ interface AgentCreator {
     sessionId: SessionId
     agentOptions?: { provider?: string; model?: string }
     meta: { cwd: string; agentPreset?: string }
+    signal?: AbortSignal
+    setup?: (agentCtx: Context) => Promise<void> | void
+  }): Promise<unknown>
+  /**
+   * Load a persisted session and publish a live agent on it. The remote log is
+   * read through the routing persistence, so `resumeSessionId` may name a
+   * session that only exists on the remote host (cross-device continuation).
+   */
+  resume(options: {
+    resumeSessionId: SessionId
+    agentOptions?: { provider?: string; model?: string }
     signal?: AbortSignal
     setup?: (agentCtx: Context) => Promise<void> | void
   }): Promise<unknown>
@@ -142,4 +163,47 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
     await agents.create(buildCreate(fresh))
     return { sessionId: fresh, agentPreset: resolved.id }
   }
+}
+
+/**
+ * Resume one *stored* remote session, possibly created on another device.
+ *
+ * The write path is the official resume flow: `ctx.agents.resume` opens the
+ * session for write through the routing persistence, which finds its workspace
+ * by `persist.locate` and reads the authoritative log from the remote server.
+ * No seed is supplied — the stored log *is* the history — and the live session
+ * inherits the stub cwd from the re-anchored header (see `RemotePersistence`),
+ * so the official workspace can attach it like any local session.
+ *
+ * @param ctx - the plugin's host context.
+ * @param options - target, session id to adopt, optional cancellation.
+ * @returns the session identity and the preset it was composed with.
+ */
+export async function resumeRemoteSession(ctx: Context, options: ResumeRemoteSessionOptions): Promise<OpenedRemoteSession> {
+  const presets = ctx.agentPresets
+  const presetId = remotePresetId(options.targetId)
+  const resolved = await presets.resolve(presetId)
+  if (resolved.broken !== undefined) {
+    throw new Error(`remote preset "${presetId}" is unusable: ${resolved.broken}`)
+  }
+  const sessionId = options.sessionId as SessionId
+  const agents = ctx.agents as unknown as AgentCreator
+  // A session that is already live (opened earlier in this process) only needs
+  // the caller to reveal it; resuming again would collide on write ownership.
+  if (agents.get(sessionId) !== undefined) {
+    return { sessionId, agentPreset: resolved.id }
+  }
+  const defaultModel = ctx.get('agentDefaultModel') as { currentSelection(): { provider?: string; model?: string } } | undefined
+  const selection = defaultModel?.currentSelection() ?? {}
+  await agents.resume({
+    resumeSessionId: sessionId,
+    agentOptions: { ...(selection.provider === undefined ? {} : { provider: selection.provider }), ...(selection.model === undefined ? {} : { model: selection.model }) },
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    // Same pre-publication composition as `create`: the realm must exist
+    // before any observer can drive the resumed session.
+    setup: async (agentCtx: Context): Promise<void> => {
+      await presets.mount(agentCtx, resolved.id)
+    },
+  })
+  return { sessionId, agentPreset: resolved.id }
 }

@@ -17,7 +17,8 @@ import {
 } from './api.ts'
 import type {
   AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, DirEntry, ListDirResult,
-  PublicTarget, RemoteRuntimeInput, RemoteWorkspace, SshAlias, WireError,
+  PublicTarget, RemoteRegistryWorkspace, RemoteRuntimeInput, RemoteSession, RemoteWorkspace,
+  SshAlias, WireError,
 } from './api.ts'
 import type { ClientContext } from './context.ts'
 import { t } from './locales.ts'
@@ -112,6 +113,23 @@ export interface Notice {
   text: string
 }
 
+/** Remote sessions of one workspace, as the tree shows them. */
+export interface SessionListState {
+  loading: boolean
+  loaded: boolean
+  items: RemoteSession[]
+  error?: WireError
+}
+
+/** The 添加工作区 picker: workspaces the remote dsh itself has registered. */
+export interface AddWorkspaceState {
+  targetId: string
+  targetLabel: string
+  loading: boolean
+  items: RemoteRegistryWorkspace[]
+  error?: WireError
+}
+
 /** The complete rendered snapshot. */
 export interface AppState {
   open: boolean
@@ -134,6 +152,12 @@ export interface AppState {
   pending: boolean
   /** Whether a submitted secret is still held for a retry (never the secret itself). */
   secretPending: boolean
+  /** Tree nodes the user expanded, keyed `target:<id>` / `workspace:<id>`. */
+  expanded: Record<string, boolean>
+  /** Lazily loaded remote session lists, keyed by the plugin's workspace id. */
+  sessions: Record<string, SessionListState>
+  /** The 添加工作区 picker, when it is open. */
+  addWorkspace?: AddWorkspaceState
   error?: WireError
   notice?: Notice
   connect: ConnectState
@@ -243,6 +267,8 @@ function initialState(): AppState {
     stateLoading: false,
     pending: false,
     secretPending: false,
+    expanded: {},
+    sessions: {},
     connect: idleConnect(),
     directory: emptyDirectory(),
   }
@@ -484,7 +510,7 @@ function closeOverlay(): void {
   generation += 1
   stopStream()
   setPendingSecret(undefined)
-  commit({ open: false, view: 'list', error: undefined, notice: undefined, prefilling: false, pending: false })
+  commit({ open: false, view: 'list', error: undefined, notice: undefined, prefilling: false, pending: false, addWorkspace: undefined })
 }
 
 /** Leave the list and start a fresh wizard run. */
@@ -501,6 +527,7 @@ function newConnection(): void {
     prefilling: false,
     pending: false,
     stateLoading: false,
+    addWorkspace: undefined,
     connect: idleConnect(),
     directory: emptyDirectory(),
   })
@@ -1050,10 +1077,273 @@ async function reopenWorkspace(workspace: RemoteWorkspace): Promise<void> {
     })
     revealSession(result.sessionId)
     await refreshState()
+    refreshSessionsFor(result.workspace)
   } catch (error) {
     if (gen !== generation) return
     commit({ pending: false, error: toWireError(error) })
   }
+  })
+}
+
+/* ------------------------------------------------------- the remote tree */
+
+/** Tree-node key for one connection node. */
+export function targetNodeKey(targetId: string): string {
+  return `target:${targetId}`
+}
+
+/** Tree-node key for one workspace node. */
+export function workspaceNodeKey(workspaceId: string): string {
+  return `workspace:${workspaceId}`
+}
+
+/** Drop one workspace's cached session list so the next expand reloads it. */
+function invalidateSessions(workspaceId: string): void {
+  commit(previous => {
+    const sessions = { ...previous.sessions }
+    delete sessions[workspaceId]
+    return { sessions }
+  })
+}
+
+/**
+ * Reload one workspace's session list, but only while its node is open.
+ *
+ * Starting or continuing a session changes that list, so an open node must not
+ * keep showing the pre-action contents; a collapsed node simply drops its cache
+ * and loads again on the next expand.
+ */
+function refreshSessionsFor(workspace: RemoteWorkspace): void {
+  invalidateSessions(workspace.id)
+  if (state.expanded[workspaceNodeKey(workspace.id)] === true) void loadSessions(workspace, true)
+}
+
+/** Expand or collapse one tree node; expanding a workspace loads its sessions. */
+function toggleNode(key: string): void {
+  const expanded = { ...state.expanded, [key]: !(state.expanded[key] ?? false) }
+  commit({ expanded })
+  if (!expanded[key]) return
+  const workspaceId = key.startsWith('workspace:') ? key.slice('workspace:'.length) : undefined
+  if (workspaceId === undefined) return
+  const workspace = state.workspaces.find(candidate => candidate.id === workspaceId)
+  if (workspace !== undefined) void loadSessions(workspace)
+}
+
+/** Load (or reload) the remote session list of one saved workspace. */
+async function loadSessions(workspace: RemoteWorkspace, force = false): Promise<void> {
+  const cached = state.sessions[workspace.id]
+  if (cached !== undefined && (cached.loading || (cached.loaded && !force))) return
+  const gen = generation
+  commit(previous => ({
+    sessions: {
+      ...previous.sessions,
+      [workspace.id]: { loading: true, loaded: cached?.loaded ?? false, items: cached?.items ?? [] },
+    },
+  }))
+  try {
+    const value = await api.sessions(workspace.targetId, workspace.id)
+    if (gen !== generation) return
+    commit(previous => ({
+      sessions: {
+        ...previous.sessions,
+        [workspace.id]: { loading: false, loaded: true, items: value.sessions },
+      },
+    }))
+  } catch (error) {
+    if (gen !== generation) return
+    commit(previous => ({
+      sessions: {
+        ...previous.sessions,
+        [workspace.id]: {
+          loading: false,
+          loaded: true,
+          items: cached?.items ?? [],
+          error: toWireError(error),
+        },
+      },
+    }))
+  }
+}
+
+/**
+ * Continue one stored remote session (换设备续聊).
+ *
+ * The host resumes it through the official agent-resume path, so the history
+ * comes back from the remote log; the shell then adopts the live session like
+ * any local one.
+ */
+async function continueSession(workspace: RemoteWorkspace, session: RemoteSession): Promise<void> {
+  return await withConnecting(async () => {
+  if (state.pending) return
+  const gen = generation
+  commit({ pending: true, error: undefined })
+  try {
+    const result = await api.openSession(workspace.targetId, workspace.path, session.id, workspace.title)
+    if (gen !== generation) return
+    commit({
+      pending: false,
+      notice: { kind: 'success', text: t('tree.session.opened', { id: shortSessionId(session.id) }) },
+    })
+    revealSession(result.sessionId)
+    await refreshState()
+    refreshSessionsFor(workspace)
+  } catch (error) {
+    if (gen !== generation) return
+    commit({ pending: false, error: toWireError(error) })
+  }
+  })
+}
+
+/** Short, human-scannable form of a session id. */
+export function shortSessionId(id: string): string {
+  const trimmed = id.startsWith('session-') ? id.slice('session-'.length) : id
+  return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8)
+}
+
+/** Open the 添加工作区 picker for one connected host. */
+async function openAddWorkspace(target: PublicTarget): Promise<void> {
+  commit({
+    addWorkspace: { targetId: target.id, targetLabel: target.label, loading: true, items: [] },
+    error: undefined,
+  })
+  await refreshAddWorkspace()
+}
+
+function closeAddWorkspace(): void {
+  commit({ addWorkspace: undefined })
+}
+
+/** (Re)read the remote dsh's own workspace registry for the open picker. */
+async function refreshAddWorkspace(): Promise<void> {
+  const dialog = state.addWorkspace
+  if (dialog === undefined) return
+  const gen = generation
+  commit(previous => ({
+    addWorkspace: previous.addWorkspace === undefined
+      ? undefined
+      : { ...previous.addWorkspace, loading: true, error: undefined },
+  }))
+  try {
+    const value = await api.remoteWorkspaces(dialog.targetId)
+    if (gen !== generation) return
+    commit(previous => ({
+      addWorkspace: previous.addWorkspace === undefined
+        ? undefined
+        : { ...previous.addWorkspace, loading: false, items: value.workspaces },
+    }))
+  } catch (error) {
+    if (gen !== generation) return
+    commit(previous => ({
+      addWorkspace: previous.addWorkspace === undefined
+        ? undefined
+        : { ...previous.addWorkspace, loading: false, error: toWireError(error) },
+    }))
+  }
+}
+
+/** Adopt one workspace the remote dsh has registered (reg.list → open). */
+async function adoptRemoteWorkspace(entry: RemoteRegistryWorkspace): Promise<void> {
+  const dialog = state.addWorkspace
+  if (dialog === undefined || state.pending) return
+  return await withConnecting(async () => {
+    const gen = generation
+    commit({ pending: true, error: undefined })
+    try {
+      const result = await api.openWorkspace(dialog.targetId, entry.path, entry.title)
+      if (gen !== generation) return
+      commit({
+        pending: false,
+        addWorkspace: undefined,
+        notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
+      })
+      revealSession(result.sessionId)
+      await refreshState()
+      commit(previous => ({ expanded: { ...previous.expanded, [targetNodeKey(dialog.targetId)]: true } }))
+    } catch (error) {
+      if (gen !== generation) return
+      commit({ pending: false, error: toWireError(error) })
+    }
+  })
+}
+
+/** Open one connected host's node, keeping its children visible. */
+function expandTarget(targetId: string): void {
+  commit(previous => ({ expanded: { ...previous.expanded, [targetNodeKey(targetId)]: true } }))
+}
+
+/**
+ * Bring one connection up (or back up) without leaving the tree.
+ *
+ * This is the gate the product requires — a connection has a state, and only a
+ * *connected* connection can have workspaces or sessions. It is deliberately
+ * narrower than 打开目录, which walks the whole provisioning wizard.
+ */
+async function connectTarget(target: PublicTarget): Promise<void> {
+  return await withConnecting(async () => {
+    if (state.pending) return
+    const gen = generation
+    commit({ pending: true, error: undefined })
+    try {
+      const { target: connected } = await api.connect(target.id)
+      if (gen !== generation) return
+      commit({
+        pending: false,
+        notice: { kind: 'success', text: t('tree.conn.connectedNotice', { label: connected.label }) },
+        // The channel is up: its node is worth showing.
+        expanded: { ...state.expanded, [targetNodeKey(target.id)]: true },
+      })
+      await refreshState()
+    } catch (error) {
+      if (gen !== generation) return
+      commit({ pending: false, error: toWireError(error) })
+      // A failed attempt is a state worth reporting, and the host records it.
+      await refreshState()
+    }
+  })
+}
+
+/**
+ * Open a saved remote workspace: continue its last session when it has one,
+ * otherwise start a fresh one.
+ *
+ * A recorded session can be unreadable (a log written by a pre-0.1.0 build, or
+ * a session another device is writing right now). That is a recoverable state,
+ * not a dead end: the workspace falls back to a new session and the reason is
+ * reported instead of leaving the user with a stuck row.
+ */
+async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
+  const sessionId = workspace.sessionId
+  if (sessionId === undefined || sessionId === '') {
+    await reopenWorkspace(workspace)
+    return
+  }
+  return await withConnecting(async () => {
+    if (state.pending) return
+    const gen = generation
+    commit({ pending: true, error: undefined })
+    try {
+      const result = await api.openSession(workspace.targetId, workspace.path, sessionId, workspace.title)
+      if (gen !== generation) return
+      commit({
+        pending: false,
+        notice: { kind: 'success', text: t('tree.session.opened', { id: shortSessionId(result.sessionId) }) },
+      })
+      revealSession(result.sessionId)
+      await refreshState()
+      refreshSessionsFor(workspace)
+    } catch (error) {
+      if (gen !== generation) return
+      commit({
+        pending: false,
+        notice: {
+          kind: 'error',
+          text: t('tree.session.fallback', {
+            message: toWireError(error).message,
+          }),
+        },
+      })
+      await reopenWorkspace(workspace)
+    }
   })
 }
 
@@ -1084,8 +1374,19 @@ export const store = {
   forgetWorkspace,
   stopTarget,
   reopenWorkspace,
+  openWorkspaceRecord,
   refreshState,
   isConnectBlocking: (): boolean => isConnectBlocking(state),
+  // The remote tree (P4): connections → workspaces → stored sessions.
+  toggleNode,
+  loadSessions,
+  continueSession,
+  openAddWorkspace,
+  closeAddWorkspace,
+  refreshAddWorkspace,
+  adoptRemoteWorkspace,
+  expandTarget,
+  connectTarget,
 } as const
 
 /** The store's actions (the object above), for prop-free components. */

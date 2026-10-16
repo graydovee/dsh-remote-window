@@ -638,6 +638,202 @@ export const STYLE_TEXT = `
   align-items: center;
   gap: 8px;
 }
+
+/* ------------------------------------------------------------ remote tree */
+
+.dsh-rw-tree,
+.dsh-rw-tree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One indent step per depth level: connection → workspace → session. */
+.dsh-rw-tree-children {
+  margin-left: 14px;
+  padding-left: 6px;
+  border-left: 1px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-rw-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 8px 3px 4px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+}
+.dsh-rw-tree-row:hover {
+  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-secondary));
+}
+
+/* The twisty is deliberately chrome-free: the row is the click target. */
+.dsh-rw-twisty {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.dsh-rw-twisty:hover {
+  background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-secondary));
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-rw-tree-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-secondary, inherit);
+}
+
+/* Connection globe colour follows the same tri-state as the StateDot next to
+   it: green connected / red failed / neutral otherwise. */
+.dsh-rw-conn-icon[data-state="ready"] {
+  color: var(--dsw-alias-state-success-primary);
+}
+.dsh-rw-conn-icon[data-state="failed"] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-rw-tree-label {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-tree-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-tree-meta {
+  flex: none;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+.dsh-rw-tree-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* De-emphasised, never hidden: an action that only exists on hover is
+     invisible to assistive tech and impossible to discover. */
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+.dsh-rw-tree-row:hover .dsh-rw-tree-actions,
+.dsh-rw-tree-row:focus-within .dsh-rw-tree-actions,
+.dsh-rw-tree-session:hover .dsh-rw-tree-actions,
+.dsh-rw-tree-session:focus-within .dsh-rw-tree-actions {
+  opacity: 1;
+}
+
+.dsh-rw-tree-session {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 8px 2px 4px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-rw-tree-session:hover {
+  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-secondary));
+}
+.dsh-rw-tree-session[data-current="true"] .dsh-rw-tree-label {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+/* Sessions have no twisty, so a gutter keeps their icons aligned with rows. */
+.dsh-rw-tree-gutter {
+  flex: none;
+  width: 18px;
+}
+
+.dsh-rw-tree-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 28px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-rw-tree-note-error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-rw-tree-error {
+  padding: 0 8px 4px 42px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+  word-break: break-word;
+}
+
+/* ----------------------------------------------------- add-workspace list */
+
+.dsh-rw-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.dsh-rw-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dsh-rw-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-picker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dsh-rw-picker-title {
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+}
 `
 
 /**

@@ -19,12 +19,12 @@ import { FrameMux, streamTransport } from '../frame/mux.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from '../ssh/hostkey.ts'
 import { connectSsh, execRemote } from '../ssh/connect.ts'
 import { remotePresetDefinition, remotePresetId } from '../preset/world.ts'
-import { openRemoteSession } from '../session/open.ts'
+import { openRemoteSession, resumeRemoteSession } from '../session/open.ts'
 import { shellQuote } from './profile.ts'
 import { authFor, provisionTarget, readPrivateKey, type ProvisionEvent, type ProvisionStep } from './channel.ts'
 import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemoteRuntimeRecord, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
-import type { WorkspaceId, RemoteWorkspaceSummary } from '../protocol.ts'
+import type { WorkspaceId, RemoteSessionSummary, RemoteWorkspaceSummary } from '../protocol.ts'
 
 /** One browser-facing connection attempt, driven by an SSE stream. */
 export interface ConnectTicket {
@@ -68,6 +68,23 @@ export interface DirListing {
   readonly entries: DirEntry[]
 }
 
+/** One stored remote session as the panel lists it. */
+export interface RemoteSessionEntry {
+  readonly id: string
+  /** Creation time as stored in the session header (epoch milliseconds). */
+  readonly createdAt?: number
+  readonly sizeBytes?: number
+}
+
+/** A remote directory fully anchored on this machine, ready for a session. */
+interface MaterializedWorkspace {
+  readonly record: RemoteWorkspaceRecord
+  readonly official: OfficialWorkspace | undefined
+  /** Canonical local stub directory standing in for the remote path. */
+  readonly stub: string
+  readonly now: string
+}
+
 /** A one-shot RPC client over a provisioned channel, used for browsing. */
 class RemoteClient {
   private constructor(
@@ -92,7 +109,7 @@ class RemoteClient {
         workspace,
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
-      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.4.0-dev' }, z.object({
+      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha6' }, z.object({
         protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
       }), AbortSignal.timeout(20_000)).catch(() => undefined)
       const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat())
@@ -160,6 +177,10 @@ export class RemoteWorkspaces {
   private readonly channels = new Map<string, RemoteChannel>()
   private readonly connecting = new Map<string, Promise<RemoteChannel>>()
   private readonly browsers = new Map<string, { client: RemoteClient }>()
+  /** Serializes browsing operations per target; see {@link withBrowser}. */
+  private readonly browserQueue = new Map<string, Promise<void>>()
+  /** Serializes resumes per session id; see {@link resumeSession}. */
+  private readonly resumeQueue = new Map<string, Promise<void>>()
   private readonly presetDisposers = new Map<string, () => Promise<void>>()
   private readonly options: Required<RemoteWorkspacesOptions>
   private bootstrap: Promise<void> | undefined
@@ -536,15 +557,29 @@ export class RemoteWorkspaces {
    * operation instead of an error toast.
    */
   private async withBrowser<T>(targetId: string, operation: (client: RemoteClient) => Promise<T>): Promise<T> {
-    try {
-      return await operation(await this.browserFor(targetId))
-    } catch (first) {
-      const entry = this.browsers.get(targetId)
-      if (entry === undefined) throw first
-      this.browsers.delete(targetId)
-      await entry.client.close().catch(() => {})
-      return await operation(await this.browserFor(targetId))
-    }
+    // One operation at a time per target. The retry below retires the shared
+    // client — closing it while a *second* call is mid-flight on the same
+    // channel fails that call with "SSH connection lost" (observed when the
+    // panel fires two actions at once, and when two resumes race). Serializing
+    // also removes the double `persist.open` that surfaces as
+    // `session "…" is already owned by an active write handle`: the first
+    // resume publishes before the second starts, so the second finds the live
+    // agent instead of claiming the session again.
+    const previous = this.browserQueue.get(targetId) ?? Promise.resolve()
+    const attempt = previous.then(async (): Promise<T> => {
+      try {
+        return await operation(await this.browserFor(targetId))
+      } catch (first) {
+        const entry = this.browsers.get(targetId)
+        if (entry === undefined) throw first
+        this.browsers.delete(targetId)
+        await entry.client.close().catch(() => {})
+        return await operation(await this.browserFor(targetId))
+      }
+    })
+    // The queue tail never rejects: a failed call must not poison the next one.
+    this.browserQueue.set(targetId, attempt.then(() => undefined, () => undefined))
+    return await attempt
   }
 
   /**
@@ -570,6 +605,66 @@ export class RemoteWorkspaces {
       .listWorkspaces(targetId)
       .filter(record => record.stubPath !== undefined)
       .map(record => ({ stub: record.stubPath as string, remote: record.path }))
+  }
+
+  /**
+   * The local stub a remote workspace is represented by.
+   *
+   * The routing persistence re-anchors every header it hands out on this path
+   * (see `RemotePersistence`): consumers realpath/`stat` a session's cwd, so a
+   * remote path would make the session unattachable and unreopenable locally.
+   */
+  stubForWorkspace(workspaceId: string): string | undefined {
+    return this.store
+      .listWorkspaces()
+      .find(candidate => candidate.remoteWorkspaceId === workspaceId)
+      ?.stubPath
+  }
+
+  /**
+   * Workspaces the *remote* dsh already has registered (`reg.list`).
+   *
+   * This is the 添加工作区 source for a host whose dsh installation carries the
+   * server plugin: every workspace that dsh knows about can be adopted here
+   * without browsing the filesystem.
+   */
+  async listRemoteWorkspaces(targetId: string): Promise<RemoteWorkspaceSummary[]> {
+    return await this.withBrowser(targetId, async client =>
+      await client.request(
+        'reg.list',
+        {},
+        z.array(z.object({
+          id: z.string().length(16),
+          path: z.string(),
+          title: z.string(),
+          sessionCount: z.number(),
+          createdAt: z.string(),
+        })),
+        AbortSignal.timeout(20_000),
+      ) as RemoteWorkspaceSummary[])
+  }
+
+  /**
+   * Sessions stored on the remote server for one workspace (`persist.list`).
+   * @param targetId - stored target.
+   * @param workspaceRecordId - the plugin's own workspace record id.
+   */
+  async listRemoteSessions(targetId: string, workspaceRecordId: string): Promise<RemoteSessionEntry[]> {
+    const record = this.store.workspace(workspaceRecordId)
+    if (record === undefined) throw new Error(`unknown remote workspace "${workspaceRecordId}"`)
+    const workspaceId = record.remoteWorkspaceId
+    // Never opened on this machine: the remote has no workspace id to list yet.
+    if (workspaceId === undefined) return []
+    const summaries = await this.sessionRequest<readonly RemoteSessionSummary[]>(
+      targetId,
+      'persist.list',
+      { workspaceId },
+    )
+    return summaries.map(summary => ({
+      id: String(summary.id),
+      ...(summary.createdAt === undefined ? {} : { createdAt: summary.createdAt }),
+      ...(summary.sizeBytes === undefined ? {} : { sizeBytes: summary.sizeBytes }),
+    }))
   }
 
   /** The remote workspace a stub-cwd session belongs to (routing persistence). */
@@ -627,26 +722,97 @@ export class RemoteWorkspaces {
   }
 
   /**
-   * Create or resume the workspace record and its session.
+   * Create a fresh session in a remote directory.
    * @param targetId - stored target.
    * @param path - absolute remote directory.
    * @param title - display title; defaults to the last path segment.
    * @returns the workspace record and the session that now runs in it.
    */
   async openWorkspace(targetId: string, path: string, title?: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    const target = this.requireConnectedTarget(targetId, 'creating a session')
+    // Validate the directory on the remote host before any session exists.
+    const listing = await this.listDirectory(targetId, path)
+    const materialized = await this.materializeWorkspace(target, listing.path, title)
+    const opened = await openRemoteSession(this.ctx, {
+      targetId,
+      // The session's shell-side cwd is the stub (official attachSession
+      // requires realpath(cwd) === workspace.path); the stub→remote rewrite in
+      // the realm connection points every tool call at the real directory.
+      path: materialized.stub,
+      // No sessionId: opening a workspace always starts a fresh (seeded)
+      // session. Continuing an existing one goes through `resumeSession`.
+    })
+    return await this.finishOpen(materialized, opened.sessionId)
+  }
+
+  /**
+   * Adopt one *stored* remote session — the 换设备续聊 path.
+   *
+   * Nothing is seeded: the authoritative log lives on the remote server and the
+   * official resume flow reads it back through the routing persistence. The
+   * workspace record (and its stub) must exist first, because the resumed
+   * header is re-anchored on that stub and the official workspace validates it
+   * against its own path.
+   *
+   * @param targetId - stored target.
+   * @param path - absolute remote workspace directory.
+   * @param sessionId - stored remote session id.
+   * @param title - display title; defaults to the last path segment.
+   */
+  async resumeSession(targetId: string, path: string, sessionId: string, title?: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    // One resume per session at a time. Two concurrent resumes both pass the
+    // "is it already live?" check and then race the same write claim; the
+    // second one loses (`already owned by an active write handle`) and the
+    // failure lands on a *turn* in a conversation that was actually working.
+    // Queued, the second call finds the session live and returns immediately.
+    const previous = this.resumeQueue.get(sessionId) ?? Promise.resolve()
+    const attempt = previous.then(
+      async () => await this.resumeSessionOnce(targetId, path, sessionId, title),
+      async () => await this.resumeSessionOnce(targetId, path, sessionId, title),
+    )
+    // The queue tail never rejects: a failed resume must not poison the next.
+    const tail = attempt.then(() => undefined, () => undefined)
+    this.resumeQueue.set(sessionId, tail)
+    try {
+      return await attempt
+    } finally {
+      if (this.resumeQueue.get(sessionId) === tail) this.resumeQueue.delete(sessionId)
+    }
+  }
+
+  private async resumeSessionOnce(targetId: string, path: string, sessionId: string, title?: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    const target = this.requireConnectedTarget(targetId, 'continuing a session')
+    const listing = await this.listDirectory(targetId, path)
+    const materialized = await this.materializeWorkspace(target, listing.path, title)
+    const opened = await resumeRemoteSession(this.ctx, { targetId, sessionId })
+    return await this.finishOpen(materialized, opened.sessionId)
+  }
+
+  /** A target that must already have a live channel before a session can exist. */
+  private requireConnectedTarget(targetId: string, action: string): RemoteTargetRecord {
     const target = this.store.target(targetId)
     if (target === undefined) throw new Error(`unknown remote target "${targetId}"`)
     if (!this.channels.has(targetId)) {
-      const error = new Error(`remote target "${targetId}" is not connected; connect before creating a session`)
+      const error = new Error(`remote target "${targetId}" is not connected; connect before ${action}`)
       ;(error as { code?: string }).code = 'not-connected'
       throw error
     }
-    // Validate the directory on the remote host before any session exists.
-    const listing = await this.listDirectory(targetId, path)
-    const existing = this.store.listWorkspaces(targetId).find(record => record.path === listing.path)
+    return target
+  }
+
+  /**
+   * Everything a session needs to exist for a remote directory: the server-side
+   * workspace entry, the local stub directory, the shell-tree workspace and the
+   * plugin's own record — in that order, and **persisted before any session is
+   * created** (the routing persistence resolves `create(header.cwd)` and
+   * re-anchors `open()` headers through this record, so an unmaterialized stub
+   * would leave the session unroutable).
+   */
+  private async materializeWorkspace(target: RemoteTargetRecord, path: string, title?: string): Promise<MaterializedWorkspace> {
+    const existing = this.store.listWorkspaces(target.id).find(record => record.path === path)
     const now = new Date().toISOString()
-    const displayTitle = title ?? (listing.path === '/' ? target.label : listing.path.split('/').filter(Boolean).at(-1) ?? target.label)
-    const remoteWorkspace = await this.ensureRemoteWorkspace(targetId, listing.path, displayTitle)
+    const displayTitle = title ?? (path === '/' ? target.label : path.split('/').filter(Boolean).at(-1) ?? target.label)
+    const remoteWorkspace = await this.ensureRemoteWorkspace(target.id, path, displayTitle)
 
     // Anchor the remote path in the shell's workspace tree: official
     // workspaces are local-realpath'd, so a *local stub directory* stands in
@@ -655,7 +821,7 @@ export class RemoteWorkspaces {
     // requires the service in `inject`, and the plugin deliberately does not
     // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
     const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
-    const key = createHash('sha1').update(`${target.id}\u0000${listing.path}`).digest('hex').slice(0, 8)
+    const key = createHash('sha1').update(`${target.id}\u0000${path}`).digest('hex').slice(0, 8)
     const stubRoot = join(homedir(), '.dsh', 'remote-workspaces', target.id)
     const stub = join(stubRoot, key)
     await mkdir(stub, { recursive: true })
@@ -668,47 +834,37 @@ export class RemoteWorkspaces {
           return undefined
         })
 
-    const workspace: RemoteWorkspaceRecord = existing === undefined
+    const base: RemoteWorkspaceRecord = existing === undefined
       ? {
           id: `rw-${randomUUID().slice(0, 8)}`,
-          targetId,
-          path: listing.path,
+          targetId: target.id,
+          path,
           title: displayTitle,
           createdAt: now,
         }
       : existing
-    // Persist the record (with its stub) before the session exists: the
-    // routing persistence resolves create(header.cwd) through this record, so
-    // the very first seed event must already be routable.
-    await this.store.putWorkspace({
-      ...workspace,
+    const record: RemoteWorkspaceRecord = {
+      ...base,
       ...(official === undefined ? {} : { stubPath: official.path, officialWorkspaceId: official.id }),
       remoteWorkspaceId: remoteWorkspace.id,
       ...(remoteWorkspace.serverId === undefined ? {} : { serverId: remoteWorkspace.serverId }),
-    })
-    const opened = await openRemoteSession(this.ctx, {
-      targetId,
-      // The session's shell-side cwd is the stub (official attachSession
-      // requires realpath(cwd) === workspace.path); the stub→remote rewrite in
-      // the realm connection points every tool call at the real directory.
-      path: canonicalStub,
-      // No sessionId: opening a workspace always starts a fresh (seeded)
-      // session. Adopting the stored one would reuse a pre-fix blank session
-      // the shell can never chat in; its history stays in the sidebar.
-    })
-    await official?.attachSession(opened.sessionId).catch((error: unknown) => {
+    }
+    await this.store.putWorkspace(record)
+    return { record, official, stub: canonicalStub, now }
+  }
+
+  /** Attach the session to the shell workspace, remember it, and report it back. */
+  private async finishOpen(materialized: MaterializedWorkspace, sessionId: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    await materialized.official?.attachSession(sessionId).catch((error: unknown) => {
       console.error('[dsh-remote-workspace] attaching the session to the shell workspace failed', error)
     })
     const stored: RemoteWorkspaceRecord = {
-      ...workspace,
-      ...(official === undefined ? {} : { stubPath: official.path, officialWorkspaceId: official.id }),
-      remoteWorkspaceId: remoteWorkspace.id,
-      ...(remoteWorkspace.serverId === undefined ? {} : { serverId: remoteWorkspace.serverId }),
-      lastOpenedAt: now,
-      sessionId: opened.sessionId,
+      ...materialized.record,
+      lastOpenedAt: materialized.now,
+      sessionId,
     }
     await this.store.putWorkspace(stored)
-    return { workspace: stored, sessionId: opened.sessionId }
+    return { workspace: stored, sessionId }
   }
 
   /** Forget one stored remote workspace record (and its shell-tree entry). */

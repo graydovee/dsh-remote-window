@@ -127,11 +127,86 @@ profile patch 挂官方执行 provider、`remote-session-persistence`（官方 J
 验证口径：远端 `~/.dsh/remote-server-sessions/<projectKey(远端路径)>/<sessionId>/`，
 本地 `~/.dsh/sessions/` 不应出现该会话。
 
-## 重构中间态（2026-10-15）
+### header cwd 重锚（实测，2026-10-16 补）
 
-v6 重构尚未完成：协议 v2、server 侧 `RemoteSessionStore`、client 侧
-`RemotePersistence` 与 profile patch（`remote-session-persistence` 行）已落地；
-**P2 的 realm 接线**（preset 内 provide `sessionPersistence` 使 agent loop 直写
-远端——含 cordis 子上下文 shadow 语义实测）、**P4/P5 的树形面板/自绘对话 UI** 还
-没做，`src/index.ts` 的 API 面仍是向导时代的方法集。动手前对照 REFACTOR-BRIEF §6
-与 §9 的验收标准。两个项目均已 `git init` 但尚无基线提交（P0 要求先提交再动刀）。
+服务端把会话 header 的 cwd 改写成**远端路径**（`RemoteSessionStore.createSession`
+用 `workspace.path` 覆盖）。这在本地无法使用：官方 workspace 注册表只把
+`realpath(header.cwd) === workspace.path` 的会话算作成员，session-controller 也会
+抛 `cwd conflict`。因此 `RemotePersistence` 在 `create`/`open`/`list` 三个出口把
+header 重新锚定到**本地 stub**（构造参数 `localCwd`，由 routing 从
+`stubForWorkspace(workspaceId)` 取）。
+
+不变量由此统一为：**远程工作区的会话，其 cwd 永远是本地 stub**（create 与
+resume 两条路一致），远端路径只在 realm 的 stub→remote 别名处出现。少了这一步，
+`agents.resume` 出来的会话 attach 不上、点开会话会被判 cwd 冲突。
+
+## P4：树形面板与「换设备续聊」（2026-10-16）
+
+形态：`远程工作区 → 连接[三态] → 工作区 → 会话`。三态图标属于**连接**节点
+（`StateDot`: 绿 已连接 / 红 连接失败 / 灰 未连接），因为状态是连接的属性而不是
+目录的属性；`status` 由宿主按 **live channel** 计算（`listTargets()`），所以重启后
+不会出现假的"已连接"。
+
+- **先连接才能建会话**：连接节点的 `连接/重新连接` 走 `/api/connect`
+  （`connectChannel`）就地接通，不进入向导；未连接时工作区动作全部 disable。
+- **添加工作区** = 读**远端 dsh 自己的** `reg.list`（`/api/remote-workspaces`），
+  对话框里还有「浏览远端目录…」逃生口，落到向导的目录浏览器。这正是"装了 server
+  插件的 dsh 的每个工作区都能被添加"。
+- **会话列表**（`/api/sessions` → `persist.list`）按工作区懒加载；`继续` 走
+  `/api/open-session` → `resumeRemoteSession()`（`ctx.agents.resume`），官方
+  resume 流程会 `persistence.open(id,'write')` → routing → 远端日志读回，因此
+  **换设备续聊不需要任何镜像同步**：设备 B 添加同一远端工作区（`reg.list` 里已有）
+  后就能看到并继续设备 A 的会话。
+- `openWorkspaceRecord`（`打开`）= 有 `sessionId` 就续聊，失败（旧版坏日志 /
+  另一设备持写租约）则回退新建并在 toast 里说明原因。
+
+已知缺口（alpha）：远程会话不出现在 shell 的全局会话列表（routing `list()` 仍然
+local-only），会话在树里只显示短 id + 创建时间（标题投影在官方 UI 侧）。
+
+## 会话事件的三条写路径（实测，2026-10-16 补）
+
+**trap：官方 JSONL 后端的 live 路由是在它自己的构造函数里 `install(ctx)` 的**，
+而 routing 用**吸收注册的 stub context** 构造它 —— `on`/`effect` 在 stub 上是空操作，
+所以那次 install 什么都没装上。后果不是"远程会话事件没落盘"这么局部：
+**连本地会话也只剩 seed**（整个进程只有 `appendUnstoredSuffix` 的显式 append 生效）。
+因此 routing 构造函数里必须补一次
+`(this.local as unknown as { tracker: { install(c: Context): void } }).tracker.install(ctx)`。
+
+远程会话不在那个 backend 的 writer 注册表里（它从没见过远程 handle），所以 routing
+自己对 `session/event` / `session/flush` / `session/disposed` 装同样的三个钩子：
+`create`/`open` 时按 session id 注册 `RemoteLiveWriter`（缓冲 + 在官方持久化屏障上批量
+`persist.append`），handle 用 `DrainedHandle` 包一层，保证 **close 前先 drain**（官方
+契约：loop 同步把收尾事件写进 session 后立刻 close，靠 close 把它落盘）。
+
+### 三个并发坑（都已在代码里修掉，别再退化）
+
+1. **同一 session 的并发 write open**：官方后端只允许一个 writer，第二个
+   `persist.open` 会让**两个调用者一起失败**（`session "…" is already owned by an
+   active write handle`），并且这个错误会挂到一轮**本来跑通的对话**上。routing 现在把
+   已有的活跃 writer 以 `borrow()` 交出去：借出方可以 flush，但 `close()` 不释放所有权。
+2. **`RemoteWorkspaces.withBrowser` 的 retry 会关掉共享 client**：另一个在飞的调用随即
+   `SSH connection lost`（面板同时发两个请求就能复现）。现在按 target 串行化
+   （`browserQueue`），retry 语义不变且不再波及并发调用。
+3. **同一 session 的并发 resume**：两个 resume 都通过 "是否已 live" 检查后才竞争写所有权。
+   `RemoteWorkspaces.resumeSession` 现在按 session id 串行（`resumeQueue`），第二个调用在
+   第一个发布后立刻命中 live agent 直接返回。
+
+### 服务端重启的恢复
+
+服务端 handle 表在进程内存里，重启（空闲租约到期、显式停止、**以及每次服务端 bundle
+更新的自动重部署**）会清空它。`RemoteHandle` 因此对 `unknown remote session handle`
+自愈一次：重新 `persist.open`（服务端因此从磁盘重读日志，`events` 以权威 artifact 为准，
+重复批次会因为 seq 不连续被拒而不是写坏），再用新 handleId 重试。其它持久化错误不重试。
+
+## 版本策略
+
+未正式发版前一律 `0.1.0-alphaN`（不要 `0.x.y`）。**每次部署必须 bump**
+（插件批量 URL 带 `&rev=<hash>`，不 bump 浏览器吃旧缓存）；版本同时出现在
+`package.json`、`/api/state` 的 `pluginVersion` 与远端 `server.hello.version`。
+
+## 已完成的重构状态（2026-10-16）
+
+P0–P5 均已落地：协议 v2、server 侧 `RemoteSessionStore`、`RemotePersistence`、
+**P2 的 root-plane 路由接线**（方案 A：`RoutingSessionPersistence` 在 `apply()` 里
+provide，官方 `session-persistence-jsonl` 行被本 bundle 的 patch `disabled`）、
+P4 树形面板与续聊。历史中间态记录见 git 提交 `9d592f6` 之前。

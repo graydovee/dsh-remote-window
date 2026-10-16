@@ -317,6 +317,26 @@ async function dispatchApi(
       )
       return { workspace: opened.workspace, sessionId: opened.sessionId }
     }
+    case 'open-session': {
+      // 换设备续聊: adopt a session that already exists on the remote server.
+      const opened = await workspaces.resumeSession(
+        requireString(body, 'targetId'),
+        requireString(body, 'path'),
+        requireString(body, 'sessionId'),
+        optionalString(body, 'title'),
+      )
+      return { workspace: opened.workspace, sessionId: opened.sessionId }
+    }
+    case 'remote-workspaces':
+      // The remote dsh's own workspace registry — the 添加工作区 source.
+      return { workspaces: await workspaces.listRemoteWorkspaces(requireString(body, 'targetId')) }
+    case 'sessions':
+      return {
+        sessions: await workspaces.listRemoteSessions(
+          requireString(body, 'targetId'),
+          requireString(body, 'workspaceId'),
+        ),
+      }
     case 'forget-target': {
       await workspaces.forgetTarget(requireString(body, 'targetId'))
       return { forgotten: true }
@@ -324,6 +344,16 @@ async function dispatchApi(
     case 'forget-workspace': {
       const id = requireString(body, 'workspaceId')
       return { forgotten: await workspaces.forgetWorkspace(id) }
+    }
+    case 'connect': {
+      // The connection node's own action: bring the channel up and report the
+      // recomputed status. No session, no directory browsing — the tree stays
+      // where it is, which is what "先连接才能建会话" looks like in the UI.
+      const targetId = requireString(body, 'targetId')
+      await workspaces.connectChannel(targetId)
+      const target = workspaces.listTargets().find(candidate => candidate.id === targetId)
+      if (target === undefined) throw new RouteError('not-found', `unknown remote target "${targetId}"`, 404)
+      return { target }
     }
     case 'stop-target':
       return { stopped: await workspaces.stopTarget(requireString(body, 'targetId')) }
@@ -351,7 +381,6 @@ function handleConnectStream(workspaces: RemoteWorkspaces, req: IncomingMessage,
     res.end(JSON.stringify({ ok: false, error: { code: 'not-found', message: 'the connection attempt expired' } }))
     return
   }
-  console.error(`[rw] SSE open ticket=${ticketId}`)
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
@@ -372,9 +401,7 @@ function handleConnectStream(workspaces: RemoteWorkspaces, req: IncomingMessage,
     if (!res.writableEnded) res.end()
   }
   res.on('close', () => { finish() })
-  console.error('[rw] runConnect start ticket=' + ticketId)
   void workspaces.runConnect(ticketId, (event: ProvisionEvent) => {
-    console.error(`[rw] emit ${JSON.stringify(event)}`)
     send(event)
   }).then(
     (target) => { send({ type: 'done', target }); finish() },
@@ -411,6 +438,7 @@ export function apply(ctx: Context, config: Config): void {
     pathAliases: (targetId: string) => workspaces.pathAliases(targetId),
     setPackagePolicy: (settings: PackagePolicySettings) => workspaces.setPackagePolicy(settings),
     routeForCwd: (cwd: string | undefined) => workspaces.routeForCwd(cwd),
+    stubForWorkspace: (workspaceId: string) => workspaces.stubForWorkspace(workspaceId),
     locateRemoteSession: (sessionId: string) => workspaces.locateRemoteSession(sessionId),
     sessionRequest: <T,>(targetId: string, method: string, params: unknown, signal?: AbortSignal) =>
       workspaces.sessionRequest<T>(targetId, method, params, signal),
@@ -427,14 +455,14 @@ export function apply(ctx: Context, config: Config): void {
   // /api/state must never wait on preset restoration: ensureWorlds may open
   // SSH channels for every stored target, which can take tens of seconds.
   storageReady = store.open().then(async () => {
-    // Self-check for the `sessions` row override (cordis.patch.yml, deviation
-    // d13): if a future dsh renames or re-orders the base row, the overlay
-    // silently stops applying and remote sessions would land in the local
-    // store — detectable, so detect it. Chained on the SAME open promise:
-    // calling store.open() twice fails the domain with 'already open'.
+    // Self-check for the JSONL row override (cordis.patch.yml, deviation d13):
+    // if a future dsh renames or re-orders the base row, the overlay silently
+    // stops applying and remote sessions would land in the local store —
+    // detectable, so detect it. Chained on the SAME open promise: calling
+    // store.open() twice fails the domain with 'already open'.
     const persistence = ctx.get('sessionPersistence') as { routingMarker?: symbol } | undefined
     if (persistence?.routingMarker !== Symbol.for('dsh-remote-workspace.routing-persistence')) {
-      ctx.logger.error('dsh-remote-workspace: the `sessions` persistence override did not apply; remote sessions would be stored locally (see cordis.patch.yml deviation d13)')
+      ctx.logger.error('dsh-remote-workspace: the `session-persistence-jsonl` row override did not apply; remote sessions would be stored locally (see cordis.patch.yml deviation d13)')
     }
   }).catch((error: unknown) => {
     storageFailure = scrubSecrets(error instanceof Error ? error.message : String(error))

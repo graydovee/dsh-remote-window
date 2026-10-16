@@ -74,6 +74,7 @@ async function mountClientProviders(
     setPackagePolicy: async () => {},
     pathAliases: () => [],
     routeForCwd: () => undefined,
+    stubForWorkspace: () => undefined,
     locateRemoteSession: async () => undefined,
     sessionRequest: async () => { throw new Error('not used in conformance') },
   }

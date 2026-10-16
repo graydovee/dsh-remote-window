@@ -75,6 +75,23 @@ export interface SshAlias {
   source: string
 }
 
+/** One workspace the *remote* dsh itself has registered (`reg.list`). */
+export interface RemoteRegistryWorkspace {
+  id: string
+  path: string
+  title: string
+  sessionCount: number
+  createdAt: string
+}
+
+/** One session stored on the remote server for a workspace (`persist.list`). */
+export interface RemoteSession {
+  id: string
+  /** Creation time from the stored header (epoch milliseconds). */
+  createdAt?: number
+  sizeBytes?: number
+}
+
 /** Response of `/api/ssh-aliases`. */
 export interface SshAliasesResult {
   aliases: SshAlias[]
@@ -277,6 +294,31 @@ export const api = {
     return call<OpenWorkspaceResult>('open-workspace', title === undefined ? { targetId, path } : { targetId, path, title })
   },
 
+  /**
+   * Adopt a session that already exists on the remote server (换设备续聊).
+   * @param targetId - the host owning the session.
+   * @param path - the remote workspace directory.
+   * @param sessionId - stored remote session id.
+   */
+  openSession(targetId: string, path: string, sessionId: string, title?: string): Promise<OpenWorkspaceResult> {
+    return call<OpenWorkspaceResult>('open-session', {
+      targetId,
+      path,
+      sessionId,
+      ...(title === undefined ? {} : { title }),
+    })
+  },
+
+  /** The workspaces the remote dsh has registered (添加工作区 source). */
+  remoteWorkspaces(targetId: string): Promise<{ workspaces: RemoteRegistryWorkspace[] }> {
+    return call<{ workspaces: RemoteRegistryWorkspace[] }>('remote-workspaces', { targetId })
+  },
+
+  /** Sessions stored on the remote server for one local workspace record. */
+  sessions(targetId: string, workspaceId: string): Promise<{ sessions: RemoteSession[] }> {
+    return call<{ sessions: RemoteSession[] }>('sessions', { targetId, workspaceId })
+  },
+
   /** Drop one saved target (and everything derived from it). */
   forgetTarget(targetId: string): Promise<{ forgotten: true }> {
     return call<{ forgotten: true }>('forget-target', { targetId })
@@ -285,6 +327,11 @@ export const api = {
   /** Drop one saved remote workspace. */
   forgetWorkspace(workspaceId: string): Promise<{ forgotten: true }> {
     return call<{ forgotten: true }>('forget-workspace', { workspaceId })
+  },
+
+  /** Open (or reuse) the execution channel of a saved host, without a session. */
+  connect(targetId: string): Promise<{ target: PublicTarget }> {
+    return call<{ target: PublicTarget }>('connect', { targetId })
   },
 
   /** Stop the target's remote execution-world session. */

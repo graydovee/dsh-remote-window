@@ -28,11 +28,15 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import {
   SessionPersistence,
   type SessionAccess,
   type SessionHandle,
+  type SessionHandleAppendOptions,
+  type SessionHandleFlushOptions,
+  type SessionHandleReadOptions,
+  type SessionHandleReadResult,
   type SessionPersistenceCreateOptions,
   type SessionPersistenceListOptions,
   type SessionPersistenceOpenOptions,
@@ -62,6 +66,8 @@ interface RoutingRemoteService {
   routeForCwd(cwd: string | undefined): SessionRoute | undefined
   locateRemoteSession(sessionId: string): Promise<SessionRoute | undefined>
   sessionRequest<T>(targetId: string, method: string, params: unknown, signal?: AbortSignal): Promise<T>
+  /** The local stub directory a remote workspace stands for, when it is registered. */
+  stubForWorkspace(workspaceId: string): string | undefined
 }
 
 /** A context stub that absorbs the base class' self-registration. */
@@ -72,6 +78,137 @@ function registrationAbsorbingContext(): Context {
     effect: () => () => {},
     on: () => ({ dispose() {} }),
   } as unknown as Context
+}
+
+/**
+ * One remote session's live-event writer.
+ *
+ * Live events are **not** appended one RPC at a time: like the official JSONL
+ * backend, the routing buffers them per session and sends one batch at the
+ * official durability barriers (`session/flush`, and the handle's own
+ * `flush`/`close`). A failed batch is retained verbatim so the next barrier
+ * retries it instead of silently dropping a turn.
+ */
+class RemoteLiveWriter {
+  private buffer: SessionEvent[] = []
+  private chain: Promise<void> = Promise.resolve()
+  private closedFlag = false
+
+  constructor(
+    private readonly handle: SessionHandle,
+    private readonly warn: (message: string) => void,
+    private readonly onClosed: () => void = () => {},
+  ) {}
+
+  /** Whether the underlying remote handle is still open. */
+  get closed(): boolean {
+    return this.closedFlag
+  }
+
+  /** The handle the session's owner receives: `close` drains before releasing. */
+  wrap(): SessionHandle {
+    return new DrainedHandle(this.handle, this, false)
+  }
+
+  /**
+   * A second view of the same live handle.
+   *
+   * Handed to a *concurrent* write open of the same session (two resumes
+   * racing, or the shell opening a session the plugin is already resuming).
+   * Asking the server for a second handle would make the official backend
+   * refuse the whole session with `already owned by an active write handle`,
+   * so the borrower shares; it may flush but must not release the ownership
+   * the first owner still holds.
+   */
+  borrow(): SessionHandle {
+    return new DrainedHandle(this.handle, this, true)
+  }
+
+  enqueue(event: SessionEvent): void {
+    if (!this.closedFlag) this.buffer.push(event)
+  }
+
+  /** Append everything buffered so far, in order. */
+  private step(): Promise<void> {
+    this.chain = this.chain.then(async () => {
+      if (this.buffer.length === 0) return
+      const batch = this.buffer
+      this.buffer = []
+      try {
+        await this.handle.append(batch)
+      } catch (error) {
+        this.buffer = [...batch, ...this.buffer]
+        this.warn(
+          `dsh-remote-workspace: background write for session "${String(this.handle.id)}" failed `
+          + `(buffered events retained): ${String(error)}`,
+        )
+      }
+    })
+    return this.chain
+  }
+
+  drain(): Promise<void> {
+    return this.step()
+  }
+
+  flush(): Promise<void> {
+    return this.step().then(() => this.handle.flush())
+  }
+
+  /** Drain, then release the remote write ownership. Idempotent. */
+  close(): Promise<void> {
+    if (this.closedFlag) return this.chain
+    this.closedFlag = true
+    this.chain = this.step().then(
+      () => this.handle.close(),
+      () => this.handle.close().catch(() => {}),
+    ).finally(() => { this.onClosed() })
+    return this.chain
+  }
+}
+
+/**
+ * The handle a routed session's owner gets. It exists for one reason: the
+ * agent loop commits its closing events into the session *synchronously* and
+ * then closes the handle, relying on close to drain them durably (the official
+ * backend behaves that way). Buffered live events must therefore be sent
+ * before the close RPC, including for explicit appends, which must not
+ * overtake buffered live ones.
+ */
+class DrainedHandle implements SessionHandle {
+  constructor(
+    private readonly inner: SessionHandle,
+    private readonly writer: RemoteLiveWriter,
+    /** A borrower shares the writer's ownership: closing must not release it. */
+    private readonly borrowed: boolean,
+  ) {}
+
+  get id(): SessionId { return this.inner.id }
+  get header(): SessionHeader { return this.inner.header }
+  get access(): SessionAccess { return this.inner.access }
+  get inheritedEventCount(): SessionLogOffset { return this.inner.inheritedEventCount }
+
+  read(offset?: number, length?: number, options?: SessionHandleReadOptions): Promise<SessionHandleReadResult> {
+    return this.inner.read(offset, length, options)
+  }
+
+  async append(events: readonly SessionEvent[], options?: SessionHandleAppendOptions): Promise<void> {
+    await this.writer.drain()
+    await this.inner.append(events, options)
+  }
+
+  flush(_options?: SessionHandleFlushOptions): Promise<void> {
+    return this.writer.flush()
+  }
+
+  async close(): Promise<void> {
+    // A borrower only flushes: the owning handle stays open for the session
+    // that is actually running on it.
+    if (this.borrowed) { await this.writer.drain(); return }
+    await this.writer.close()
+  }
+
+  readonly [Symbol.asyncDispose] = async (): Promise<void> => { await this.close() }
 }
 
 const ROUTING_MARKER = Symbol.for('dsh-remote-workspace.routing-persistence')
@@ -96,6 +233,8 @@ export default class RoutingSessionPersistence extends SessionPersistence {
 
   private readonly local: JsonlSessionPersistence
   private readonly remotes = new Map<WorkspaceId, RemotePersistence>()
+  /** Open remote write handles by session id — the live-event routing key. */
+  private readonly writers = new Map<string, RemoteLiveWriter>()
 
   constructor(ctx: Context, config: RoutingPersistenceConfig) {
     super(ctx)
@@ -108,6 +247,30 @@ export default class RoutingSessionPersistence extends SessionPersistence {
       { root: config.root, ...(config.compression === undefined ? {} : { compression: config.compression }) },
     ])
     ;(this.local as unknown as { ctx: Context }).ctx = ctx
+    // The embedded backend installs its live-session routing (`session/event` →
+    // its write handle, drain on `session/flush`, final drain on
+    // `session/disposed`) **in its constructor** — which ran against the stub
+    // context above, where `on`/`effect` are no-ops. Without this re-install no
+    // backend at all would route live events, so even ordinary LOCAL sessions
+    // would keep only their seed on disk.
+    ;(this.local as unknown as { tracker: { install(ctx: Context): void } }).tracker.install(ctx)
+    // Remote sessions are not in that backend's writer registry (it never saw a
+    // handle for them), so the routing mirrors the same three hooks for the
+    // remote plane. Exactly one of the two paths owns any given session id.
+    const writers = this.writers
+    ctx.on('session/event', (session: { readonly id: SessionId }, event: SessionEvent) => {
+      writers.get(String(session.id))?.enqueue(event)
+    })
+    ctx.on('session/flush', (session: { readonly id: SessionId }) => {
+      return writers.get(String(session.id))?.flush()
+    })
+    ctx.on('session/disposed', (session: { readonly id: SessionId }) => {
+      const key = String(session.id)
+      const writer = writers.get(key)
+      if (writer === undefined) return undefined
+      writers.delete(key)
+      return writer.close()
+    })
   }
 
   private remotesService(): RoutingRemoteService | undefined {
@@ -130,6 +293,10 @@ export default class RoutingSessionPersistence extends SessionPersistence {
             service.sessionRequest<T>(route.targetId, method, params, signal),
         },
         route.workspaceId,
+        // The stub keeps a resumed session's header anchored on this machine.
+        // Resolved per call: the workspace may only be materialized *after*
+        // this instance was created by an earlier observe/stat.
+        () => service.stubForWorkspace(route.workspaceId),
       ]) as RemotePersistence
       ;(created as unknown as { ctx: Context }).ctx = this.ctx
       remote = created
@@ -138,13 +305,25 @@ export default class RoutingSessionPersistence extends SessionPersistence {
     return remote
   }
 
+  /** Wrap one freshly opened remote write handle so its live events reach it. */
+  private routeLive(handle: SessionHandle): SessionHandle {
+    const key = String(handle.id)
+    const writer = new RemoteLiveWriter(
+      handle,
+      (message) => { this.ctx.logger.warn(message) },
+      () => { if (this.writers.get(key) === writer) this.writers.delete(key) },
+    )
+    this.writers.set(key, writer)
+    return writer.wrap()
+  }
+
   override async create(header: SessionHeader, options?: SessionPersistenceCreateOptions): Promise<SessionHandle> {
     const route = this.remotesService()?.routeForCwd(header.cwd)
     if (route !== undefined) {
       const remote = this.remoteFor(route)
       // The server rewrites the header cwd to the workspace path anyway; a
       // missing cwd only satisfies the wire type.
-      if (remote !== undefined) return await remote.create({ ...header, cwd: header.cwd ?? '' }, options)
+      if (remote !== undefined) return this.routeLive(await remote.create({ ...header, cwd: header.cwd ?? '' }, options))
     }
     return await this.local.create(header, options)
   }
@@ -153,7 +332,20 @@ export default class RoutingSessionPersistence extends SessionPersistence {
     const route = await this.remotesService()?.locateRemoteSession(id)
     if (route !== undefined) {
       const remote = this.remoteFor(route)
-      if (remote !== undefined) return await remote.open(id, access, options)
+      // Only a write open is a mutation target; a read handle never receives
+      // live events, so wrapping it would only add a layer.
+      if (remote !== undefined) {
+        if (access === 'write') {
+          const live = this.writers.get(String(id))
+          // A concurrent write open of the same session shares the live
+          // handle: the server's official backend allows exactly one writer,
+          // and a second `persist.open` would fail the session for both
+          // callers with `already owned by an active write handle`.
+          if (live !== undefined && !live.closed) return live.borrow()
+        }
+        const handle = await remote.open(id, access, options)
+        return access === 'write' ? this.routeLive(handle) : handle
+      }
     }
     return await this.local.open(id, access, options)
   }
