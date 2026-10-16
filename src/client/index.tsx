@@ -24,8 +24,8 @@ import { ListBody, ListFooter } from './list.tsx'
 import { PANEL_ID, RemotePanelIcon, RemoteWorkspacePanel } from './panel.tsx'
 import { mountSidebarSection } from './sidebar.tsx'
 import { bindVerbContext } from './session-verbs.ts'
-import { bindClientContext, dispose, store, watchWorkspaces } from './store.ts'
-import { ensureStyles, syncWorkspaceIcons } from './styles.ts'
+import { bindClientContext, dispose, store, watchShellRows } from './store.ts'
+import { ensureStyles, syncShellHiding } from './styles.ts'
 
 /**
  * Client services this plugin needs: `slots` only. Localization is the
@@ -42,9 +42,10 @@ export function apply(ctx: ClientContext): void {
   bindClientContext(ctx)
   bindVerbContext(ctx)
   ctx.effect(() => ensureStyles(), 'dsh-remote-workspace: stylesheet')
-  // Globe icon on the plugin's rows in the shell 工作区 tree (plugin lifetime,
-  // not panel lifetime — the rows live in the sidebar).
-  ctx.effect(() => watchWorkspaces(syncWorkspaceIcons), 'dsh-remote-workspace: workspace icons')
+  // Keep the plugin's rows out of the shell's own 工作区 section (plugin
+  // lifetime, not panel lifetime — those rows live in the sidebar). Remote
+  // work-workspaces and their sessions belong to this plugin's section only.
+  ctx.effect(() => watchShellRows(syncShellHiding), 'dsh-remote-workspace: shell row hiding')
   // The 远程工作区 section in the LEFT SIDEBAR, directly above the shell's own
   // 工作区 section. The shell declares no seat for a second section, so this
   // mounts into the browsing region itself; see sidebar.tsx for the anchors it

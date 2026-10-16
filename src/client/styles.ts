@@ -878,12 +878,34 @@ export function ensureStyles(): () => void {
 const ICONS_STYLE_ID = 'dsh-remote-workspace-icons'
 
 /**
- * Swap the folder icon for a globe on every shell-tree row that belongs to a
- * remote workspace. Safe against unknown ids: rules simply never match.
- * @param ids official shell-workspace ids currently registered.
+ * Keep the shell's own 工作区 section free of this plugin's rows.
+ *
+ * The shell renders an official workspace row for a remote workspace's *stub*
+ * directory, and — once a remote session is open — a session row for it as a
+ * **sibling inside the same group section**, not as a child of that row:
+ *
+ *   div._7514NG_groupSection
+ *     ├ span > div[data-row-key="workspace:61151f20-…"]   ← the stub workspace
+ *     └ span > div[data-row-key="session:session-568dcb0f-…"]  ← the open session
+ *
+ * So hiding the workspace row alone (the earlier rule) left the session row
+ * visible, and the remote session appeared as a top-level entry of 工作区 — the
+ * regression this replaces. Two rules now cover both shapes:
+ *
+ *  - the whole group section that holds a remote stub workspace hides every
+ *    session row inside it, so sessions we have not listed yet are covered too;
+ *  - plus one rule per known remote session id, for a session the shell renders
+ *    outside any group (its 未分组 bucket).
+ *
+ * Everything else about those rows stays official: they keep their ids, their
+ * wiring and their behaviour; only their box is hidden, because this plugin's
+ * own section is where a remote workspace and its sessions belong.
+ *
+ * @param workspaceIds - official shell-workspace ids of this plugin's stubs.
+ * @param sessionIds - stored remote session ids this plugin knows about.
  * @returns a disposer removing the injected tag.
  */
-export function syncWorkspaceIcons(ids: readonly string[]): () => void {
+export function syncShellHiding(workspaceIds: readonly string[], sessionIds: readonly string[]): () => void {
   if (typeof document === 'undefined') return () => {}
   let tag = document.querySelector<HTMLStyleElement>(`style[data-plugin="${ICONS_STYLE_ID}"]`)
   if (tag === null) {
@@ -893,13 +915,20 @@ export function syncWorkspaceIcons(ids: readonly string[]): () => void {
     tag.dataset.plugin = ICONS_STYLE_ID
     document.head.appendChild(tag)
   }
-  tag.textContent = ids.map((id) => `
-/* The row the shell renders for a remote workspace (its stub directory).
-   It keeps full behaviour — the session tree under it, clicks, menus — but is
-   no longer listed under 工作区: the remote tree has its own section now, and
-   the same workspace must not appear twice. */
-div[data-row-key="workspace:${id}"] {
+  // Every rule is scoped to the shell's own browsing slot. The vendored rows this
+  // plugin renders carry the *same* `data-row-key` attributes, so an unscoped
+  // rule would hide the plugin's own tree as well (measured: 43 of 44 rows gone).
+  const groups = workspaceIds.map(id => `
+[data-slot="sidebar.workspaces"] div[data-row-key="workspace:${id}"] {
+  display: none;
+}
+[data-slot="sidebar.workspaces"] div:has(> span > div[data-row-key="workspace:${id}"]) [data-row-key^="session:"] {
   display: none;
 }`).join('\n')
+  const sessions = sessionIds.map(id => `
+[data-slot="sidebar.workspaces"] div[data-row-key="session:${id}"] {
+  display: none;
+}`).join('\n')
+  tag.textContent = groups + sessions
   return () => { tag.remove() }
 }

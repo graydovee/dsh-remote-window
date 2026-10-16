@@ -699,13 +699,25 @@ function dismissNotice(): void {
 }
 
 /**
- * Observe the saved remote workspaces for the lifetime of the plugin fiber
- * (not the panel — the icon rules target sidebar rows that must survive
- * panel switches). Fires immediately and on every workspaces change.
+ * Observe the rows this plugin must keep out of the shell's own 工作区 section:
+ * the official workspace ids of its stubs, plus every remote session id it knows
+ * about. Fires immediately and on every change.
+ * @param apply - sink for the two id lists.
+ * @returns a disposer removing the subscription.
  */
-export function watchWorkspaces(apply: (ids: readonly string[]) => void): () => void {
-  const run = () => {
-    apply(state.workspaces.map((workspace) => workspace.officialWorkspaceId ?? '').filter((id) => id !== ''))
+export function watchShellRows(apply: (workspaceIds: readonly string[], sessionIds: readonly string[]) => void): () => void {
+  const run = (): void => {
+    const workspaceIds = state.workspaces
+      .map(workspace => workspace.officialWorkspaceId ?? '')
+      .filter(id => id !== '')
+    const sessionIds = new Set<string>()
+    for (const workspace of state.workspaces) {
+      if (workspace.sessionId !== undefined && workspace.sessionId !== '') sessionIds.add(workspace.sessionId)
+    }
+    for (const list of Object.values(state.sessions)) {
+      for (const session of list.items) sessionIds.add(session.id)
+    }
+    apply(workspaceIds, [...sessionIds])
   }
   run()
   return subscribe(run)
