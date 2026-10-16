@@ -63,6 +63,10 @@ export interface RemoteWorkspace {
   serverId?: string
   /** Official shell-workspace entry id (present once the workspace was opened). */
   officialWorkspaceId?: string
+  /** Session ids this plugin's user pinned in this workspace, most recent first. */
+  pinnedSessions?: string[]
+  /** Session ids this plugin's user archived (grayed, not openable). */
+  archivedSessions?: string[]
 }
 
 /** One alias read from the local `~/.ssh/config`. */
@@ -326,6 +330,16 @@ export const api = {
   /** Drop one saved target (and everything derived from it). */
   forgetTarget(targetId: string): Promise<{ forgotten: true }> {
     return call<{ forgotten: true }>('forget-target', { targetId })
+  },
+
+  /** Rename one stored remote session (the plugin's own host hop). */
+  sessionRename(targetId: string, path: string, sessionId: string, title: string): Promise<{ renamed: true }> {
+    return call<{ renamed: true }>('session-rename', { targetId, path, sessionId, title })
+  },
+
+  /** Pin/unpin or archive/unarchive one stored remote session. */
+  sessionFlag(workspaceId: string, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<{ workspace: RemoteWorkspace }> {
+    return call<{ workspace: RemoteWorkspace }>('session-flag', { workspaceId, sessionId, flag, on })
   },
 
   /** Drop one saved remote workspace. */

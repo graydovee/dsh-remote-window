@@ -29,6 +29,10 @@ import type { PublicTarget, RemoteSession, RemoteWorkspace } from './api.ts'
 import { t } from './locales.ts'
 import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
 import type { AppState } from './store.ts'
+import { RenameSessionDialog } from './rename-dialog.tsx'
+import { SessionMenu, SessionRowActions } from './session-row-parts.tsx'
+import { workspaceFlags } from './session-verbs.ts'
+import type { SessionFlags } from './session-verbs.ts'
 import {
   LIVE_DOT, ProjectRowItem, SessionNodeItem, rowRenderSlots, rowsTranslate,
 } from './vendor/workspace-rows/index.ts'
@@ -94,7 +98,7 @@ function sessionTranslate(title: string): VerbTranslate {
 }
 
 /** One stored remote session as the official session row consumes it. */
-function sessionNode(session: RemoteSession): SessionNode {
+function sessionNode(session: RemoteSession, flags: SessionFlags): SessionNode {
   return {
     id: session.id,
     title: session.title ?? '',
@@ -102,8 +106,11 @@ function sessionNode(session: RemoteSession): SessionNode {
     running: false,
     runningSubagentCount: 0,
     completed: false,
-    pinned: false,
-    archived: false,
+    // Pin/archive come from the shell's own sets (see `session-verbs.ts`), so
+    // the row's indicator, grayed archived look and ordering are the official
+    // presentation rather than a copy of it.
+    pinned: flags.pinned.has(session.id),
+    archived: flags.archived.has(session.id),
     // The row's time column: last activity, falling back to creation.
     updatedAt: session.updatedAt ?? session.createdAt ?? Date.now(),
   }
@@ -125,27 +132,32 @@ function blankSessionNode(): SessionNode {
 }
 
 /**
- * The entries of a session row's `⋮` menu.
- *
- * The official session row builds this menu from the
- * `sidebar.workspaces.session.menu.item` slot, so the host has to supply the
- * entries; copying the session id is the one row verb that has no visible
- * affordance on the row itself.
+ * The row's full seat: leading dot, hover buttons and `⋮` menu entries.
+ * @param workspace - the workspace the session belongs to.
+ * @param session - the stored session.
+ * @param flags - the official pin/archive sets.
+ * @param leading - the live dot, when this device has the session open.
+ * @returns the seat for `SessionNodeItem`.
  */
-function sessionMenu(sessionId: string): ReactElement {
-  return (
-    <MenuItemButton
-      key="copy"
-      onSelect={() => {
-        void navigator.clipboard.writeText(sessionId).then(
-          () => { store.notifySuccess(t('tree.session.copied')) },
-          () => { store.notifyError(t('tree.session.copyFailed')) },
-        )
-      }}
-    >
-      {t('tree.session.copyId')}
-    </MenuItemButton>
-  )
+function sessionSeat(
+  workspace: RemoteWorkspace,
+  session: RemoteSession,
+  flags: SessionFlags,
+  leading: ReactElement | null,
+): Parameters<typeof rowRenderSlots>[0] {
+  const title = session.title ?? workspace.title
+  const verbs = {
+    workspace,
+    session,
+    title,
+    pinned: flags.pinned.has(session.id),
+    archived: flags.archived.has(session.id),
+  }
+  return {
+    leading,
+    menu: <SessionMenu key="menu" {...verbs} />,
+    actions: <SessionRowActions key="actions" {...verbs} />,
+  }
 }
 
 /** The leading dot of a session row: only the session this device has open is live. */
@@ -154,24 +166,31 @@ function sessionLeading(workspace: RemoteWorkspace, state: AppState): ReactEleme
 }
 
 /** One session row plus the trailing New Session row of an expanded workspace. */
-function SessionRows(props: { workspace: RemoteWorkspace; now: number }): ReactElement | null {
+function SessionRows(props: { workspace: RemoteWorkspace; now: number; flags: SessionFlags }): ReactElement | null {
   const state = useAppState()
   const list = state.sessions[props.workspace.id]
-  const items = list?.items ?? []
+  const items = orderSessions(list?.items ?? [], props.flags)
   return (
     <>
       {items.map(session => (
         <SessionNodeItem
           key={session.id}
-          node={sessionNode(session)}
+          node={sessionNode(session, props.flags)}
           currentId={state.currentSessionId}
           now={props.now}
           onOpen={(id) => {
             const found = items.find(candidate => candidate.id === id)
-            if (found !== undefined) void store.openSession(props.workspace, found)
+            // An archived session is not openable (the official row marks that
+            // with `aria-description`); the click is a no-op with a notice.
+            if (found === undefined) return
+            if (props.flags.archived.has(found.id)) {
+              store.notifyError(t('tree.session.archivedNotOpenable'))
+              return
+            }
+            void store.openSession(props.workspace, found)
           }}
           onRenameRequest={() => {}}
-          renderSlot={rowRenderSlots(sessionLeading(props.workspace, state), sessionMenu(session.id))}
+          renderSlot={rowRenderSlots(sessionSeat(props.workspace, session, props.flags, sessionLeading(props.workspace, state)))}
           t={sessionTranslate(session.title ?? props.workspace.title)}
         />
       ))}
@@ -189,7 +208,7 @@ function SessionRows(props: { workspace: RemoteWorkspace; now: number }): ReactE
         now={props.now}
         onOpen={() => { void store.reopenWorkspace(props.workspace) }}
         onRenameRequest={() => {}}
-        renderSlot={rowRenderSlots(null, null)}
+        renderSlot={rowRenderSlots({ leading: null, menu: null, actions: null })}
         t={sessionTranslate(props.workspace.title)}
       />
     </>
@@ -204,6 +223,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
   const expanded = state.expanded[key] ?? false
   const list = state.sessions[workspace.id]
   const connected = props.target.status === 'ready'
+  const flags = workspaceFlags(workspace)
   const translate = useMemo(() => workspaceTranslate(workspace), [workspace.title])
   const group: GroupNode = {
     key: workspace.id,
@@ -230,7 +250,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         // renders, with the plain dictionary labels.
         t={connected ? translate : ((verb: string, params?: Record<string, unknown>) => rowsTranslate(verb, params))}
       />
-      {expanded && <Level depth={2}><SessionRows workspace={workspace} now={props.now} /></Level>}
+      {expanded && <Level depth={2}><SessionRows workspace={workspace} now={props.now} flags={flags} /></Level>}
     </>
   )
 }
@@ -309,6 +329,8 @@ export function RemoteTree(props: { compact: boolean; empty?: string }): ReactEl
     return <p className="dsh-rw-tree-empty">{props.empty ?? t('tree.empty')}</p>
   }
   return (
+    <>
+    <RenameSessionDialog />
     <div
       className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}
       role="tree"
@@ -323,5 +345,26 @@ export function RemoteTree(props: { compact: boolean; empty?: string }): ReactEl
         />
       ))}
     </div>
+    </>
   )
+}
+
+/**
+ * Order one workspace's sessions the way the shell orders its own: pinned rows
+ * lead (in the shell's pin order), then most recent activity, with archived
+ * rows last — and pinned/archived membership comes from the official sets.
+ * @param items - the stored sessions.
+ * @param flags - the official pin/archive sets.
+ * @returns the row order.
+ */
+function orderSessions(items: readonly RemoteSession[], flags: SessionFlags): RemoteSession[] {
+  const rank = (session: RemoteSession): number => {
+    if (flags.pinned.has(session.id)) return 0
+    return flags.archived.has(session.id) ? 2 : 1
+  }
+  return [...items].sort((left, right) => {
+    const byRank = rank(left) - rank(right)
+    if (byRank !== 0) return byRank
+    return (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
+  })
 }

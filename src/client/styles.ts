@@ -11,6 +11,11 @@
  * follows the active theme.
  */
 
+/** A minimal single-colour globe (the mask only uses its alpha). */
+const GLOBE_MASK = `url("data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>',
+)}")`
+
 /** Marker attribute value for the injected `<style>` element. */
 export const STYLE_PLUGIN_ID = 'dsh-remote-workspace'
 
@@ -663,9 +668,25 @@ ${ROW_STYLES}
   min-width: 0;
 }
 
-/* Connection state on the official folder icon: green connected / red failed /
-   neutral otherwise. Only the icon's colour is ours — the row keeps its size,
-   hover swap and menus. */
+/* A connection is not a folder: the official row's leading slot paints a globe
+   instead, through the same mask technique this plugin already uses on the
+   shell's own rows. Everything else about the row stays official — including
+   the hover swap, which hides this slot and shows the chevron. */
+.dsh-rw-conn .dsh-rwv-rows-folder svg {
+  display: none;
+}
+.dsh-rw-conn .dsh-rwv-rows-folder::before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask: ${GLOBE_MASK} center / contain no-repeat;
+  mask: ${GLOBE_MASK} center / contain no-repeat;
+}
+
+/* Connection state colours that globe: green connected / red failed /
+   neutral otherwise. Only the glyph's colour is ours. */
 .dsh-rw-conn[data-state="ready"] .dsh-rwv-rows-folder {
   color: var(--dsw-alias-state-success-primary);
 }
@@ -675,6 +696,24 @@ ${ROW_STYLES}
 .dsh-rw-conn[data-state="unknown"] .dsh-rwv-rows-folder,
 .dsh-rw-conn[data-state="stopped"] .dsh-rwv-rows-folder {
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* The rename dialog's input, matching the shell's dialog input metrics. */
+.dsh-rw-rename-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.dsh-rw-rename-input:focus {
+  outline: none;
+  border-color: var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
 }
 
 .dsh-rw-tree-empty {
@@ -763,11 +802,6 @@ ${ROW_STYLES}
   min-height: 36px;
   padding: 0 2px;
   color: var(--dsw-alias-label-secondary);
-}
-.dsh-rw-side-icon {
-  display: inline-flex;
-  align-items: center;
-  color: var(--dsw-alias-label-tertiary);
 }
 .dsh-rw-side-title {
   flex: 1 1 auto;

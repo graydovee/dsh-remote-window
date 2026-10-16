@@ -17,6 +17,8 @@ interface RemoteHandlePayload {
   handleId: RemoteHandleId
   header: SessionHeader
   events?: readonly SessionEvent[]
+  /** Fork-inherited prefix length, as the server stored it. */
+  inheritedEventCount?: number
 }
 
 interface RemoteSnapshot extends RemoteSessionSummary {
@@ -69,9 +71,17 @@ export class RemotePersistence extends SessionPersistence {
   }
 
   async create(header: SessionHeader, options?: SessionPersistenceCreateOptions): Promise<SessionHandle> {
-    const payload = await this.rpc.request<RemoteHandlePayload>('persist.create', { workspaceId: this.workspaceId, header }, options?.signal)
+    // A forked session's header is seeded, and the official backend refuses to
+    // store one without the inherited prefix length — so it has to cross the
+    // wire with the header, not be reconstructed on the server.
+    const inheritedEventCount = options?.inheritedEventCount
+    const payload = await this.rpc.request<RemoteHandlePayload>('persist.create', {
+      workspaceId: this.workspaceId,
+      header,
+      ...(inheritedEventCount === undefined ? {} : { inheritedEventCount: Number(inheritedEventCount) }),
+    }, options?.signal)
     const anchored = this.reanchor(payload)
-    const handle = new RemoteHandle(this.rpc, anchored.handleId, 'write', anchored.header, anchored.events ?? [], () => { this.handles.delete(handle) }, this.workspaceId)
+    const handle = new RemoteHandle(this.rpc, anchored.handleId, 'write', anchored.header, anchored.events ?? [], () => { this.handles.delete(handle) }, this.workspaceId, anchored.inheritedEventCount)
     this.handles.add(handle)
     return handle
   }
@@ -83,7 +93,7 @@ export class RemotePersistence extends SessionPersistence {
       mode: access,
     }, options?.signal)
     const anchored = this.reanchor(payload)
-    const handle = new RemoteHandle(this.rpc, anchored.handleId, access, anchored.header, anchored.events ?? [], () => { this.handles.delete(handle) }, this.workspaceId)
+    const handle = new RemoteHandle(this.rpc, anchored.handleId, access, anchored.header, anchored.events ?? [], () => { this.handles.delete(handle) }, this.workspaceId, anchored.inheritedEventCount)
     this.handles.add(handle)
     return handle
   }
@@ -128,13 +138,14 @@ class RemoteHandle implements SessionHandle {
     events: readonly SessionEvent[],
     private readonly onClose: () => void,
     private readonly workspaceId: WorkspaceId,
+    private inheritedCount?: number,
   ) {
     this.handleId = handleId
     this.events = [...events]
   }
 
   get id(): SessionId { return this.header.id }
-  get inheritedEventCount(): SessionLogOffset { return 0 as SessionLogOffset }
+  get inheritedEventCount(): SessionLogOffset { return (this.inheritedCount ?? 0) as SessionLogOffset }
 
   async read(offset = 0, length?: number): Promise<{ eventState: SessionSeedEventState; events: readonly SessionEvent[] }> {
     this.ensureOpen()
@@ -197,6 +208,8 @@ class RemoteHandle implements SessionHandle {
       })
       this.handleId = payload.handleId
       this.events = [...(payload.events ?? [])]
+      // A re-attach may also restore a seeded child's prefix length.
+      if (payload.inheritedEventCount !== undefined) this.inheritedCount = payload.inheritedEventCount
     })().finally(() => { this.reattaching = undefined })
     return this.reattaching
   }

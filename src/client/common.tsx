@@ -4,7 +4,7 @@
  * `code`/`message` always render inline, never in a toast-only path).
  */
 import type { ReactElement, ReactNode } from 'react'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Button, IconCheckCircleFillRegular, IconCloseOutlineRegular, IconWarningOutlineRegular,
   IconWarningTriangleOutlineRegular, Toast,
@@ -115,3 +115,24 @@ export function LoadingLine(props: { text?: string }): ReactElement | null {
 export function EmptyState(props: { text: string }): ReactElement | null {
   return <p className="dsh-rw-empty">{props.text}</p>
 }
+
+/**
+ * The single toast host for this plugin.
+ *
+ * The sidebar section and the plugin panel are separate surface trees, and a
+ * verb can be raised from either; rendering one `NoticeToast` per surface would
+ * show every notice twice when both are mounted. The first host to mount owns
+ * the toast, and ownership passes to the next one when it unmounts.
+ */
+export function NoticeToastHost(props: {
+  notice: { kind: 'success' | 'error'; text: string } | undefined
+  onDismiss: () => void
+}): ReactElement | null {
+  const [owned] = useState(() => { hosts += 1; return hosts === 1 })
+  useEffect(() => () => { if (owned) hosts -= 1 }, [owned])
+  if (!owned || props.notice === undefined) return null
+  return <NoticeToast kind={props.notice.kind} text={props.notice.text} onDismiss={props.onDismiss} />
+}
+
+/** Mounted toast hosts, in mount order. */
+let hosts = 0

@@ -160,6 +160,8 @@ export interface AppState {
   addWorkspace?: AddWorkspaceState
   /** The session this device most recently opened (row selection state). */
   currentSessionId?: string
+  /** The rename dialog's target, when it is open. */
+  renameTarget?: { workspace: RemoteWorkspace; session: RemoteSession; title: string }
   error?: WireError
   notice?: Notice
   connect: ConnectState
@@ -452,6 +454,98 @@ function revealSession(sessionId: string): void {
   } catch (error) {
     console.error('[dsh-remote-workspace] revealSession failed', error)
   }
+}
+
+/** Open one session in the shell's main column (the official navigation hop). */
+function revealSessionId(sessionId: string): void {
+  revealSession(sessionId)
+}
+
+/**
+ * Pin/unpin or archive/unarchive one remote session.
+ *
+ * The sets live on the plugin's own workspace record (the host owns them), so
+ * the action is a host call followed by a state refresh; the row's pinned /
+ * archived look, its ordering and its openability all read from that record.
+ * @param workspace - the workspace the session belongs to.
+ * @param sessionId - the stored remote session id.
+ * @param flag - which set to change.
+ * @param on - add or drop the id.
+ */
+async function setSessionFlag(workspace: RemoteWorkspace, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<void> {
+  if (state.pending) return
+  const gen = generation
+  commit({ pending: true, error: undefined })
+  try {
+    await api.sessionFlag(workspace.id, sessionId, flag, on)
+    if (gen !== generation) return
+    commit({
+      pending: false,
+      notice: {
+        kind: 'success',
+        text: flag === 'pinned'
+          ? t(on ? 'tree.session.pinned' : 'tree.session.unpinned')
+          : t(on ? 'tree.session.archived' : 'tree.session.unarchived'),
+      },
+    })
+    await refreshState()
+  } catch (error) {
+    if (gen !== generation) return
+    commit({ pending: false, error: toWireError(error) })
+  }
+}
+
+/**
+ * Reload one workspace's session list now, whatever its cache says.
+ *
+ * Used by verbs that change the list from *outside* the panel (a fork creates a
+ * session that only appears on the next read).
+ * @param workspace - the workspace whose list changed.
+ */
+async function refreshSessions(workspace: RemoteWorkspace): Promise<void> {
+  invalidateSessions(workspace.id)
+  await loadSessions(workspace, true)
+}
+
+/**
+ * Rename one remote session through the plugin's own host hop.
+ * @param workspace - the workspace the session belongs to.
+ * @param sessionId - the stored remote session id.
+ * @param title - the new title.
+ */
+async function renameSession(workspace: RemoteWorkspace, sessionId: string, title: string): Promise<void> {
+  const gen = generation
+  commit({ pending: true, error: undefined })
+  try {
+    await api.sessionRename(workspace.targetId, workspace.path, sessionId, title)
+    if (gen !== generation) return
+    commit({ pending: false, notice: { kind: 'success', text: t('tree.session.renamed') } })
+    await refreshState()
+    // The rename is an append on the live session; its durability barrier runs
+    // on the host, so the very next list read can still observe the previous
+    // title (measured). Re-read until the new title is visible, bounded.
+    for (const delay of [0, 400, 900, 1800]) {
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+      if (gen !== generation) return
+      await refreshSessions(workspace)
+      const listed = state.sessions[workspace.id]?.items.find(item => item.id === sessionId)
+      if (listed?.title === title) return
+    }
+  } catch (error) {
+    if (gen !== generation) return
+    commit({ pending: false })
+    throw error
+  }
+}
+
+/** Open the rename dialog for one remote session. */
+function requestRename(workspace: RemoteWorkspace, session: RemoteSession): void {
+  commit({ renameTarget: { workspace, session, title: session.title ?? '' } })
+}
+
+/** Close the rename dialog. */
+function settleRename(): void {
+  commit({ renameTarget: undefined })
 }
 
 /** Read saved targets/workspaces (and auto-enter the wizard on a first run). */
@@ -1420,6 +1514,12 @@ export const store = {
   toggleNode,
   loadSessions,
   openSession,
+  setSessionFlag,
+  renameSession,
+  refreshSessions,
+  revealSessionId,
+  requestRename,
+  settleRename,
   openAddWorkspace,
   closeAddWorkspace,
   refreshAddWorkspace,

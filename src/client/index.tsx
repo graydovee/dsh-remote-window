@@ -23,6 +23,7 @@ import { t } from './locales.ts'
 import { ListBody, ListFooter } from './list.tsx'
 import { PANEL_ID, RemotePanelIcon, RemoteWorkspacePanel } from './panel.tsx'
 import { mountSidebarSection } from './sidebar.tsx'
+import { bindVerbContext } from './session-verbs.ts'
 import { bindClientContext, dispose, store, watchWorkspaces } from './store.ts'
 import { ensureStyles, syncWorkspaceIcons } from './styles.ts'
 
@@ -39,6 +40,7 @@ export const inject = ['slots']
  */
 export function apply(ctx: ClientContext): void {
   bindClientContext(ctx)
+  bindVerbContext(ctx)
   ctx.effect(() => ensureStyles(), 'dsh-remote-workspace: stylesheet')
   // Globe icon on the plugin's rows in the shell 工作区 tree (plugin lifetime,
   // not panel lifetime — the rows live in the sidebar).

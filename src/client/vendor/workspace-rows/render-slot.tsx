@@ -2,14 +2,14 @@
  * The slot seat the vendored session rows render through.
  *
  * The shell passes its own `renderSlot` to its rows, which is how plugins
- * decorate a session row (leading dot, hover card, row actions). This plugin is
- * the host here, so the seat renders what our rows need and nothing else:
+ * decorate a session row (leading dot, hover buttons, `⋮` menu entries). This
+ * plugin is the host here, so the seat renders what our rows need:
  *
  *  - `sidebar.session.row.leading` → the live dot for the session this device
- *    has open (the row is selected);
- *  - `sidebar.workspaces.session.menu.item` → the entries of the row's `⋮`
- *    menu. The official row builds the menu from this list, so ours has to
- *    supply at least one entry or the menu opens empty.
+ *    has open;
+ *  - `sidebar.session.row.action` → the hover buttons at the row's right edge;
+ *  - `sidebar.workspaces.session.menu.item` → the entries of the row's `⋮` menu
+ *    (the official row builds that menu from this list).
  */
 import type { ReactElement } from 'react'
 import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -22,19 +22,29 @@ type RowSlotKey =
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'
 
+/** What one row's seat renders. */
+export interface RowSlotContent {
+  /** Leading slot content (our live dot), or null. */
+  readonly leading: ReactElement | null
+  /** `⋮` menu entries, or null for a blank row. */
+  readonly menu: ReactElement | null
+  /** Hover buttons, or null. */
+  readonly actions: ReactElement | null
+}
+
 /** The dot our rows show for the session this device has open. */
 export const LIVE_DOT = <StateDot state="ongoing" size={8} />
 
 /**
  * Build the render seat for one row.
- * @param leading - content for the row's leading slot (our live dot), or null.
- * @param menu - the `⋮` menu entries for this row, or null for the blank row.
+ * @param content - the leading/menu/actions share for this row.
  * @returns the seat the vendored row expects.
  */
-export function rowRenderSlots(leading: ReactElement | null, menu: ReactElement | null): PropsRenderSlots<RowSlotKey>['renderSlot'] {
+export function rowRenderSlots(content: RowSlotContent): PropsRenderSlots<RowSlotKey>['renderSlot'] {
   return ((key: string) => {
-    if (key === 'sidebar.session.row.leading') return leading ?? null
-    if (key === 'sidebar.workspaces.session.menu.item') return menu ?? null
+    if (key === 'sidebar.session.row.leading') return content.leading
+    if (key === 'sidebar.workspaces.session.row.action') return content.actions
+    if (key === 'sidebar.workspaces.session.menu.item') return content.menu
     return null
   }) as PropsRenderSlots<RowSlotKey>['renderSlot']
 }

@@ -76,6 +76,15 @@ export interface RemoteWorkspaceRecord {
   readonly stubPath?: string
   /** The official workspace id the stub is registered under, when known. */
   readonly officialWorkspaceId?: string
+  /**
+   * Session ids this workspace's user pinned, most recently pinned first.
+   *
+   * Plugin-owned: the shell's own pin set is resolved against the *local*
+   * session index, where a remote session never appears (see the schema's note).
+   */
+  readonly pinnedSessions?: string[]
+  /** Session ids this workspace's user archived (grayed, not openable). */
+  readonly archivedSessions?: string[]
   readonly title: string
   readonly createdAt: string
   readonly lastOpenedAt?: string
@@ -167,6 +176,15 @@ export const targetRecordSchema = z.object({
 }).strict()
 
 /** Stored remote workspace record. */
+/** Session ids the user pinned / archived in one remote workspace.
+ *
+ * Plugin-owned rather than the shell's registry-global sets: the shell resolves
+ * a pin against its *local* session index (`sessionPersistence.list()`), which
+ * by design holds no remote session, so `workspace/pinSession` answers
+ * `session/not-found` for a remote id. Additive optional fields keep the storage
+ * domain version at 1. */
+const sessionFlagSchema = z.array(z.string()).optional()
+
 export const workspaceRecordSchema = z.object({
   id: z.string().min(1),
   targetId: z.string().min(1),
@@ -179,6 +197,10 @@ export const workspaceRecordSchema = z.object({
   sessionId: z.string().min(1).optional(),
   remoteWorkspaceId: z.string().length(16).optional(),
   serverId: z.string().min(1).optional(),
+  /** Session ids the user pinned in this remote workspace, most recent first. */
+  pinnedSessions: sessionFlagSchema,
+  /** Session ids the user archived in this remote workspace. */
+  archivedSessions: sessionFlagSchema,
 }).strict()
 
 /** Create-time payload for a target; the id and fingerprint are assigned by the caller. */

@@ -26,8 +26,9 @@
 import type { ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
-  Button, IconGlobeOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular,
+  Button, IconPlusOutlineRegular, IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { NoticeToastHost } from './common.tsx'
 import { t } from './locales.ts'
 import { PANEL_ID } from './panel.tsx'
 import { store, useAppState } from './store.ts'
@@ -46,7 +47,9 @@ export function SidebarSection(): ReactElement | null {
   return (
     <section className="dsh-rw-side" aria-label={t('tree.sidebar.title')} data-plugin="dsh-remote-workspace">
       <header className="dsh-rw-side-head">
-        <span className="dsh-rw-side-icon" aria-hidden="true"><IconGlobeOutlineRegular size={14} /></span>
+        {/* No glyph of our own: the section header is text plus its actions,
+            like the shell's own section header. The globe belongs to a
+            *connection* row, which is a connection and not a folder. */}
         <span className="dsh-rw-side-title">{t('tree.sidebar.title')}</span>
         <span className="dsh-rw-side-actions">
           <Button
@@ -71,6 +74,8 @@ export function SidebarSection(): ReactElement | null {
         <RemoteTree compact empty={t('tree.sidebar.empty')} />
       </div>
       {state.error !== undefined && <p className="dsh-rw-side-error">{state.error.message}</p>}
+      {/* Verbs raised from the tree report here (see NoticeToastHost). */}
+      <NoticeToastHost notice={state.notice} onDismiss={store.dismissNotice} />
     </section>
   )
 }

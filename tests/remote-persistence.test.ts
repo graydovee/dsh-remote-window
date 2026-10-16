@@ -73,6 +73,36 @@ describe('RemotePersistence', () => {
     expect(read.events).toHaveLength(2)
   })
 
+  it('sends the fork-inherited prefix length with a seeded create', async () => {
+    // A forked session's header is `isSeeded`, and the official backend refuses
+    // to store one without its inherited event count — so the count has to
+    // travel with the create, and come back on the handle.
+    const calls: Array<{ method: string; params: unknown }> = []
+    const rpc = {
+      async request<T>(method: string, params: unknown): Promise<T> {
+        calls.push({ method, params })
+        if (method === 'persist.create') {
+          return { handleId: 'handle-1', header: { ...sessionHeader('child'), isSeeded: true }, events: [], inheritedEventCount: 3 } as T
+        }
+        if (method === 'persist.open') {
+          return { handleId: 'handle-2', header: { ...sessionHeader('child'), isSeeded: true }, events: [], inheritedEventCount: 3 } as T
+        }
+        return null as T
+      },
+    }
+    const persistence = new RemotePersistence(new Context(), rpc, 'workspace-1' as never)
+    const handle = await persistence.create(
+      { ...sessionHeader('child'), isSeeded: true } as never,
+      { inheritedEventCount: 3 } as never,
+    )
+    const create = calls.find(call => call.method === 'persist.create')
+    expect(create?.params).toMatchObject({ inheritedEventCount: 3 })
+    expect(handle.inheritedEventCount).toBe(3)
+    // Opening a seeded log reports the same prefix length back.
+    const opened = await persistence.open('child' as never, 'write')
+    expect(opened.inheritedEventCount).toBe(3)
+  })
+
   it('does not retry an unrelated persistence failure', async () => {
     const rpc = {
       async request<T>(method: string): Promise<T> {

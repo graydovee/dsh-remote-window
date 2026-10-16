@@ -119,7 +119,7 @@ class RemoteClient {
         workspace,
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
-      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha12' }, z.object({
+      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha18' }, z.object({
         protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
       }), AbortSignal.timeout(20_000)).catch(() => undefined)
       const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat())
@@ -897,6 +897,77 @@ export class RemoteWorkspaces {
     }
     await this.store.putWorkspace(stored)
     return { workspace: stored, sessionId }
+  }
+
+  /**
+   * Rename one stored remote session.
+   *
+   * The shell's client-side rename hop (`sessions.using(...).rename`) cannot
+   * reach a remote session: the client session service keeps its own index from
+   * the host's session list, and answers `sessions.retain: unknown session`
+   * before any request leaves the page (measured). So the plugin performs the
+   * same *host* steps itself: make the session live (which reads its log back
+   * from the remote host through the routing persistence) and then rename it
+   * through the official title service, whose user-rename event is appended to
+   * the live session — and therefore, through the live writer, into the remote
+   * log that `persist.titles` reads.
+   *
+   * @param targetId - stored target.
+   * @param path - absolute remote workspace directory.
+   * @param sessionId - stored remote session id.
+   * @param title - the new title (already trimmed by the caller).
+   */
+  async renameSession(targetId: string, path: string, sessionId: string, title: string): Promise<void> {
+    await this.resumeSession(targetId, path, sessionId)
+    const liveSessions = this.ctx.get('sessions') as { get(id: string): unknown; flush?(session: never): Promise<boolean> } | undefined
+    const live = liveSessions?.get(sessionId)
+    if (live === undefined) throw new Error(`session "${sessionId}" did not become live, so it cannot be renamed`)
+    const titles = this.ctx.get('sessionTitle') as { rename(session: never, title: string): unknown } | undefined
+    if (titles === undefined) throw new Error('the session title service is unavailable')
+    titles.rename(live as never, title)
+    // The rename is an append on the live session; the durability barrier is
+    // what pushes it through this plugin's live writer into the remote log.
+    // Without it the next `persist.titles` reads the previous title back (it
+    // memoizes by artifact size, which has not changed yet) and the row keeps
+    // showing the old name until something else flushes.
+    await liveSessions?.flush?.(live as never).catch(() => {})
+  }
+
+  /**
+   * Pin/unpin or archive/unarchive one stored session of a remote workspace.
+   *
+   * Both sets live on the plugin's own workspace record (see
+   * `RemoteWorkspaceRecord.pinnedSessions`): the shell's registry-global sets
+   * cannot hold a remote session, because its pin/archive APIs resolve the id
+   * against the local session index and answer `session/not-found`.
+   *
+   * @param workspaceId - the plugin's workspace record id.
+   * @param sessionId - the stored remote session id.
+   * @param flag - which set to change.
+   * @param on - add (`true`) or drop (`false`) the id.
+   * @returns the updated record.
+   */
+  async setSessionFlag(workspaceId: string, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<RemoteWorkspaceRecord> {
+    const record = this.store.workspace(workspaceId)
+    if (record === undefined) throw new Error(`unknown remote workspace "${workspaceId}"`)
+    const key = flag === 'pinned' ? 'pinnedSessions' : 'archivedSessions'
+    const current = record[key] ?? []
+    const next = on
+      // A fresh pin leads; a fresh archive trails (the shell shows archived
+      // rows last, and its pin set is "most recently pinned first").
+      ? (flag === 'pinned' ? [sessionId, ...current.filter(id => id !== sessionId)] : [...current.filter(id => id !== sessionId), sessionId])
+      : current.filter(id => id !== sessionId)
+    // The two sets are mutually exclusive, exactly like the shell's: pinning an
+    // archived session unarchives it and vice versa.
+    const otherKey = flag === 'pinned' ? 'archivedSessions' : 'pinnedSessions'
+    const other = (record[otherKey] ?? []).filter(id => id !== sessionId)
+    const updated: RemoteWorkspaceRecord = {
+      ...record,
+      [key]: next.length === 0 ? undefined : next,
+      [otherKey]: other.length === 0 ? undefined : other,
+    }
+    await this.store.putWorkspace(updated)
+    return updated
   }
 
   /** Forget one stored remote workspace record (and its shell-tree entry). */

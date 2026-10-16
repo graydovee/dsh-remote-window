@@ -341,6 +341,28 @@ async function dispatchApi(
       await workspaces.forgetTarget(requireString(body, 'targetId'))
       return { forgotten: true }
     }
+    case 'session-rename': {
+      await workspaces.renameSession(
+        requireString(body, 'targetId'),
+        requireString(body, 'path'),
+        requireString(body, 'sessionId'),
+        requireString(body, 'title'),
+      )
+      return { renamed: true }
+    }
+    case 'session-flag': {
+      const flag = requireString(body, 'flag')
+      if (flag !== 'pinned' && flag !== 'archived') throw new RouteError('bad-request', '"flag" must be pinned|archived', 400)
+      const on = body.on
+      if (typeof on !== 'boolean') throw new RouteError('bad-request', '"on" must be a boolean', 400)
+      const workspace = await workspaces.setSessionFlag(
+        requireString(body, 'workspaceId'),
+        requireString(body, 'sessionId'),
+        flag,
+        on,
+      )
+      return { workspace }
+    }
     case 'forget-workspace': {
       const id = requireString(body, 'workspaceId')
       return { forgotten: await workspaces.forgetWorkspace(id) }

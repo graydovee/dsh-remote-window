@@ -13,7 +13,7 @@ import type { ReactElement } from 'react'
 import {
   Button, IconGlobeOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { NoticeToast } from './common.tsx'
+import { NoticeToastHost } from './common.tsx'
 import { t } from './locales.ts'
 import { ListBody } from './list.tsx'
 import { store, useAppState } from './store.ts'
@@ -60,9 +60,7 @@ export function RemoteWorkspacePanel(): ReactElement | null {
       <div className="dsh-rw-page-body">
         {wizard ? <WizardBody /> : <ListBody />}
       </div>
-      {state.notice !== undefined && (
-        <NoticeToast kind={state.notice.kind} text={state.notice.text} onDismiss={store.dismissNotice} />
-      )}
+      <NoticeToastHost notice={state.notice} onDismiss={store.dismissNotice} />
       {wizard && (
         <div className="dsh-rw-page-foot"><WizardFooter /></div>
       )}
