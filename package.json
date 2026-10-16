@@ -44,7 +44,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/graydove/dsh-remote-worspace"
+    "url": "https://github.com/graydovee/dsh-remote-workspace"
   },
   "publishConfig": {
     "access": "public"
