@@ -50,7 +50,7 @@ const requests: Array<{ method: string; params: unknown }> = []
 /** Every live batch the routing sent to the remote plane, in order. */
 const appended: SessionEvent[][] = []
 /** What the remote server believes the workspace path is (it rewrites cwd). */
-const REMOTE_PATH = '/Users/dujiahui/project'
+const REMOTE_PATH = '/Users/remote-user/project'
 const WORKSPACE_ID = '0123456789abcdef'
 const fakeService = {
   routeForCwd: (cwd: string | undefined) =>
