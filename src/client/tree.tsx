@@ -29,12 +29,13 @@ import type { PublicTarget, RemoteSession, RemoteWorkspace } from './api.ts'
 import { t } from './locales.ts'
 import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
 import type { AppState } from './store.ts'
+import { ConfirmDialog } from './confirm-dialog.tsx'
 import { RenameSessionDialog } from './rename-dialog.tsx'
 import { SessionMenu, SessionRowActions } from './session-row-parts.tsx'
 import { workspaceFlags } from './session-verbs.ts'
 import type { SessionFlags } from './session-verbs.ts'
 import {
-  LIVE_DOT, ProjectRowItem, SessionNodeItem, rowRenderSlots, rowsTranslate,
+  ProjectRowItem, SessionNodeItem, rowRenderSlots, rowsTranslate,
 } from './vendor/workspace-rows/index.ts'
 import type { GroupNode, SessionNode } from './vendor/workspace-rows/index.ts'
 
@@ -73,7 +74,12 @@ function connectionTranslate(target: PublicTarget): VerbTranslate {
   return (key, params) => {
     if (key === 'rename') return connected ? t('tree.conn.disconnect') : t('tree.conn.connect')
     if (key === 'delete.workspace') return t('tree.forgetConnection')
-    if (key === 'actions.newSession' || key === 'actions.newSession.aria') return t('tree.conn.addWorkspace')
+    // The `+` slot is the only row action a connection has besides its menu: when
+    // the connection is down it is the 连接 button (a disconnected host cannot add
+    // a workspace anyway), and when it is up it adds one.
+    if (key === 'actions.newSession' || key === 'actions.newSession.aria') {
+      return connected ? t('tree.conn.addWorkspace') : t('tree.conn.connect')
+    }
     return rowsTranslate(key, params)
   }
 }
@@ -132,18 +138,23 @@ function blankSessionNode(): SessionNode {
 }
 
 /**
- * The row's full seat: leading dot, hover buttons and `⋮` menu entries.
+ * The row's seat: hover buttons and `⋮` menu entries.
+ *
+ * The leading slot stays empty on purpose. The official row uses it for *status*
+ * dots (a running turn, a pending approval); this plugin does not observe a
+ * remote session's status, and a dot meaning "this is the open one" is already
+ * the row's selected background. An always-animating dot on every row read as a
+ * stuck spinner (user report), so nothing is rendered there.
+ *
  * @param workspace - the workspace the session belongs to.
  * @param session - the stored session.
- * @param flags - the official pin/archive sets.
- * @param leading - the live dot, when this device has the session open.
+ * @param flags - this workspace's pin/archive sets.
  * @returns the seat for `SessionNodeItem`.
  */
 function sessionSeat(
   workspace: RemoteWorkspace,
   session: RemoteSession,
   flags: SessionFlags,
-  leading: ReactElement | null,
 ): Parameters<typeof rowRenderSlots>[0] {
   const title = session.title ?? workspace.title
   const verbs = {
@@ -154,15 +165,10 @@ function sessionSeat(
     archived: flags.archived.has(session.id),
   }
   return {
-    leading,
+    leading: null,
     menu: <SessionMenu key="menu" {...verbs} />,
     actions: <SessionRowActions key="actions" {...verbs} />,
   }
-}
-
-/** The leading dot of a session row: only the session this device has open is live. */
-function sessionLeading(workspace: RemoteWorkspace, state: AppState): ReactElement | null {
-  return state.currentSessionId !== undefined && workspace.sessionId === state.currentSessionId ? LIVE_DOT : null
 }
 
 /** One session row plus the trailing New Session row of an expanded workspace. */
@@ -190,7 +196,7 @@ function SessionRows(props: { workspace: RemoteWorkspace; now: number; flags: Se
             void store.openSession(props.workspace, found)
           }}
           onRenameRequest={() => {}}
-          renderSlot={rowRenderSlots(sessionSeat(props.workspace, session, props.flags, sessionLeading(props.workspace, state)))}
+          renderSlot={rowRenderSlots(sessionSeat(props.workspace, session, props.flags))}
           t={sessionTranslate(session.title ?? props.workspace.title)}
         />
       ))}
@@ -244,7 +250,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         onCreate={() => { void store.reopenWorkspace(workspace) }}
         actions={{
           rename: () => { void store.loadSessions(workspace, true) },
-          delete: () => { void store.forgetWorkspace(workspace) },
+          delete: () => { store.requestForgetWorkspace(workspace) },
         }}
         // A disconnected connection cannot start sessions; the row still
         // renders, with the plain dictionary labels.
@@ -296,10 +302,10 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
             if (connected) store.toggleNode(key)
             else void store.connectTarget(target)
           }}
-          onCreate={() => { void store.openAddWorkspace(target) }}
+          onCreate={() => { void (connected ? store.openAddWorkspace(target) : store.connectTarget(target)) }}
           actions={{
             rename: () => { void (connected ? store.stopTarget(target) : store.connectTarget(target)) },
-            delete: () => { void store.forgetTarget(target) },
+            delete: () => { store.requestForgetTarget(target) },
           }}
           t={translate}
         />
@@ -330,6 +336,7 @@ export function RemoteTree(props: { compact: boolean; empty?: string }): ReactEl
   }
   return (
     <>
+    <ConfirmDialog />
     <RenameSessionDialog />
     <div
       className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}

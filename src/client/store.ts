@@ -122,6 +122,16 @@ export interface SessionListState {
 }
 
 /** The 添加工作区 picker: workspaces the remote dsh itself has registered. */
+/** A destructive row verb waiting for the user's confirmation. */
+export interface ConfirmState {
+  readonly kind: 'forget-connection' | 'forget-workspace'
+  readonly title: string
+  readonly message: string
+  readonly confirmLabel: string
+  readonly targetId: string
+  readonly workspaceId?: string
+}
+
 export interface AddWorkspaceState {
   targetId: string
   targetLabel: string
@@ -162,6 +172,8 @@ export interface AppState {
   currentSessionId?: string
   /** The rename dialog's target, when it is open. */
   renameTarget?: { workspace: RemoteWorkspace; session: RemoteSession; title: string }
+  /** A destructive row verb waiting for confirmation, when one is open. */
+  confirm?: ConfirmState
   error?: WireError
   notice?: Notice
   connect: ConnectState
@@ -536,6 +548,63 @@ async function renameSession(workspace: RemoteWorkspace, sessionId: string, titl
     commit({ pending: false })
     throw error
   }
+}
+
+/**
+ * Ask before forgetting a connection.
+ *
+ * Forgetting is not undoable: the target record, its stored secret, its
+ * workspaces, their shell-tree entries and the stub directories all go with it.
+ * `断开` is the non-destructive verb and sits in the same row menu, so a
+ * misclick that silently deleted a connection is exactly what this prevents.
+ * @param target - the connection row's target.
+ */
+function requestForgetTarget(target: PublicTarget): void {
+  commit({
+    confirm: {
+      kind: 'forget-connection',
+      title: t('tree.forget.confirm.title'),
+      message: t('tree.forget.confirm.message', { label: target.label, count: state.workspaces.filter(w => w.targetId === target.id).length }),
+      confirmLabel: t('list.forget'),
+      targetId: target.id,
+    },
+  })
+}
+
+/**
+ * Ask before removing a remote workspace (its record, tree entry and stub).
+ * @param workspace - the workspace row's record.
+ */
+function requestForgetWorkspace(workspace: RemoteWorkspace): void {
+  commit({
+    confirm: {
+      kind: 'forget-workspace',
+      title: t('tree.forget.workspace.title'),
+      message: t('tree.forget.workspace.message', { title: workspace.title, path: workspace.path }),
+      confirmLabel: t('tree.workspace.forget'),
+      targetId: workspace.targetId,
+      workspaceId: workspace.id,
+    },
+  })
+}
+
+/** Close the confirmation without acting. */
+function settleConfirm(): void {
+  commit({ confirm: undefined })
+}
+
+/** Run the confirmed destructive verb, then close the dialog. */
+async function acceptConfirm(): Promise<void> {
+  const pending = state.confirm
+  if (pending === undefined) return
+  commit({ confirm: undefined })
+  if (pending.kind === 'forget-connection') {
+    const target = state.targets.find(candidate => candidate.id === pending.targetId)
+    if (target !== undefined) await forgetTarget(target)
+    return
+  }
+  const workspace = state.workspaces.find(candidate => candidate.id === pending.workspaceId)
+  if (workspace !== undefined) await forgetWorkspace(workspace)
 }
 
 /** Open the rename dialog for one remote session. */
@@ -1532,6 +1601,10 @@ export const store = {
   revealSessionId,
   requestRename,
   settleRename,
+  requestForgetTarget,
+  requestForgetWorkspace,
+  settleConfirm,
+  acceptConfirm,
   openAddWorkspace,
   closeAddWorkspace,
   refreshAddWorkspace,

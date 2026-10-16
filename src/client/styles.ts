@@ -685,6 +685,13 @@ ${ROW_STYLES}
   mask: ${GLOBE_MASK} center / contain no-repeat;
 }
 
+/* A connection that is down keeps its action strip visible: the `+` slot is its
+   连接 button there, and a hover-only connect button is invisible exactly when it
+   is needed. */
+.dsh-rw-conn:not([data-state="ready"]) .dsh-rwv-rows-rowActions {
+  display: inline-flex;
+}
+
 /* Connection state colours that globe: green connected / red failed /
    neutral otherwise. Only the glyph's colour is ours. */
 .dsh-rw-conn[data-state="ready"] .dsh-rwv-rows-folder {
@@ -783,7 +790,10 @@ ${ROW_STYLES}
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px 8px 6px;
+  /* No horizontal padding: each row owns its own inset (the official row CSS is
+     padding-inline-start: calc(8px + var(--dsh-workspace-indent))), so the
+     connection level lands flush with the section title instead of one step in. */
+  padding: 4px 0 6px;
   /* The whole chain must be height-bounded, or the tree simply overflows the
      host box and the rows below get covered by the shell's 工作区 section
      (measured: host bottom 770px, tree content down to 1141px, the covered
@@ -800,7 +810,8 @@ ${ROW_STYLES}
   align-items: center;
   gap: 6px;
   min-height: 36px;
-  padding: 0 2px;
+  /* Matches the rows' own inset, so the title lines up with the connection glyph. */
+  padding: 0 8px;
   color: var(--dsw-alias-label-secondary);
 }
 .dsh-rw-side-title {
@@ -844,7 +855,7 @@ ${ROW_STYLES}
 }
 
 .dsh-rw-side-error {
-  margin: 2px 2px 0;
+  margin: 2px 8px 0;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-state-error-primary);
