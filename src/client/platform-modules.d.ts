@@ -329,6 +329,9 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
 
   export function Tag(props: { tone?: TagTone; className?: string | undefined; children?: ReactNode }): any
 
+  /** Official relative-time formatter (unit + count) used by the row time column. */
+  export function relativeTime(at: number, now: number): { unit: 'now' | 'minutes' | 'hours' | 'days' | 'months' | 'years'; n: number }
+
   export type StateDotState = 'done' | 'warning' | 'ongoing' | 'error' | 'idle'
 
   export function StateDot(props: {
@@ -386,4 +389,26 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
   export const IconWorkspaceTreeOutlineRegular: IconComponent
   export const IconLinkOutlineRegular: IconComponent
   export const IconEllipsisOutlineRegular: IconComponent
+  export const IconArchiveOutlineRegular: IconComponent
+  export const IconEditOutlineRegular: IconComponent
+  export const IconNewChatOutlineRegular: IconComponent
+  export const IconPinFillRegular: IconComponent
+  export const IconTrashOutlineRegular: IconComponent
+  export const IconTriangleRightFillRegular: IconComponent
+  export const IconUnarchiveOutlineRegular: IconComponent
+}
+
+
+/* -------------------------------------------------------------------------
+ * @deepseek-ai/dsh-client-ui-slots
+ * The slot *service* arrives through `ctx.slots`; only the render-seat types are
+ * imported by value-free code (the vendored rows take one as a prop).
+ * ---------------------------------------------------------------------- */
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  export type RenderSlotFn<Key extends string> = (key: Key, owner?: unknown, options?: unknown) => unknown
+  export type PropsRenderSlots<S extends string> = {
+    renderSlot: RenderSlotFn<S>
+    readonly __renders?: ((key: S) => void) | undefined
+  }
 }

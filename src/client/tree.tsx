@@ -1,318 +1,327 @@
 /**
- * The remote tree rows — connections → workspaces → sessions.
+ * The remote tree — rendered with the **official** workspace row components.
  *
- * Rendered in two places: the LEFT SIDEBAR section (the primary surface, right
- * next to the shell's own 工作区 section) and the plugin panel (the connection
- * wizard's home, and the fallback when the sidebar anchor is unavailable).
- * `compact` only changes spacing and which metadata fits — never behaviour —
- * because the sidebar column is much narrower than the main column.
+ * The rows are not drawn here: `ProjectRowItem` (a group/workspace row) and
+ * `SessionNodeItem` (a session row) are vendored verbatim from the shell's
+ * `ui-workspace` client into `./vendor/workspace-rows`, together with their
+ * stylesheet and the `workspace` locale dictionaries. So a remote workspace and
+ * a remote session look and behave exactly like the shell's own — 34px/32px
+ * rows, hover swaps (folder → chevron, time → row actions), title marquee,
+ * hover cards, the `⋮` menu, selected/hover backgrounds — with no row styling
+ * of our own.
+ *
+ * What this file owns is the walk, because our hierarchy has one level the
+ * shell's does not: connection → workspace → session. Each level nests one step
+ * deeper through the official `--dsh-workspace-indent` custom property, which
+ * the vendored CSS already reads.
+ *
+ * Row verbs are the official ones with our meanings (the menu is fixed to a
+ * rename/delete pair plus the `+` button, so the *labels* are what change):
+ *
+ *   connection  ＋ 添加工作区   ⋮ 连接/断开 · 忘记连接
+ *   workspace   ＋ 新会话       ⋮ 刷新会话列表 · 移除工作区
+ *   session     (click the row)  ⋮ 复制会话 ID
  */
-import type { ReactElement } from 'react'
-import {
-  Button, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconDeliverDocRegular,
-  IconGlobeOutlineRegular, IconLinkOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular,
-  IconWorkspaceTreeOutlineRegular, PathLabel, StateDot, Tag,
-} from '@deepseek-ai/dsh-client-ui-primitives'
-import type { StateDotState, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PublicTarget, RemoteSession, RemoteWorkspace, TargetStatus } from './api.ts'
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactElement, ReactNode } from 'react'
+import { MenuItemButton } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PublicTarget, RemoteSession, RemoteWorkspace } from './api.ts'
 import { t } from './locales.ts'
-import { formatTimestamp, shortSessionId, store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
+import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
+import type { AppState } from './store.ts'
+import {
+  LIVE_DOT, ProjectRowItem, SessionNodeItem, rowRenderSlots, rowsTranslate,
+} from './vendor/workspace-rows/index.ts'
+import type { GroupNode, SessionNode } from './vendor/workspace-rows/index.ts'
 
-/** Status label key per target status. */
-const STATUS_LABELS = {
-  unknown: 'list.status.unknown',
-  ready: 'list.status.ready',
-  stopped: 'list.status.stopped',
-  failed: 'list.status.failed',
-} as const
+/** One indent step for the extra hierarchy levels, in CSS pixels. */
+const INDENT_STEP = 14
 
-/** Tag palette per target status. */
-const STATUS_TONES: Record<TargetStatus, TagTone> = {
-  unknown: 'neutral',
-  ready: 'success',
-  stopped: 'neutral',
-  failed: 'danger',
+/** Relabel one official row verb for a specific row. */
+type VerbTranslate = (key: string, params?: Record<string, unknown>) => string
+
+/** Tick the clock so relative row times stay honest while the panel is open. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => { setNow(Date.now()) }, 60_000)
+    return () => { window.clearInterval(timer) }
+  }, [])
+  return now
+}
+
+/** Wrap one level's rows and set that level's indent. */
+function Level(props: { depth: number; state?: string; className?: string; children: ReactNode }): ReactElement {
+  return (
+    <div
+      className={props.className}
+      data-state={props.state}
+      style={{ '--dsh-workspace-indent': `${props.depth * INDENT_STEP}px` } as Record<string, string>}
+    >
+      {props.children}
+    </div>
+  )
+}
+
+/** The shell's row verb for one connection, relabelled to what we actually do. */
+function connectionTranslate(target: PublicTarget): VerbTranslate {
+  const connected = target.status === 'ready'
+  return (key, params) => {
+    if (key === 'rename') return connected ? t('tree.conn.disconnect') : t('tree.conn.connect')
+    if (key === 'delete.workspace') return t('tree.forgetConnection')
+    if (key === 'actions.newSession' || key === 'actions.newSession.aria') return t('tree.conn.addWorkspace')
+    return rowsTranslate(key, params)
+  }
+}
+
+/** Row verbs for a remote workspace. */
+function workspaceTranslate(workspace: RemoteWorkspace): VerbTranslate {
+  return (key, params) => {
+    if (key === 'rename') return t('tree.sessions.refresh')
+    if (key === 'delete.workspace') return t('tree.workspace.forget')
+    if (key === 'actions.newSession' || key === 'actions.newSession.aria') return t('tree.workspace.newSession')
+    if (key === 'actions.workspace.aria') return t('tree.workspace.aria', { name: workspace.title })
+    return rowsTranslate(key, params)
+  }
+}
+
+/** Row verbs for a remote session. */
+function sessionTranslate(title: string): VerbTranslate {
+  return (key, params) => {
+    if (key === 'actions.session.aria') return t('tree.session.aria', { name: title })
+    return rowsTranslate(key, params)
+  }
+}
+
+/** One stored remote session as the official session row consumes it. */
+function sessionNode(session: RemoteSession): SessionNode {
+  return {
+    id: session.id,
+    title: session.title ?? '',
+    blank: false,
+    running: false,
+    runningSubagentCount: 0,
+    completed: false,
+    pinned: false,
+    archived: false,
+    // The row's time column: last activity, falling back to creation.
+    updatedAt: session.updatedAt ?? session.createdAt ?? Date.now(),
+  }
+}
+
+/** The provisional New Session row: the official blank-session presentation. */
+function blankSessionNode(): SessionNode {
+  return {
+    id: '',
+    title: '',
+    blank: true,
+    running: false,
+    runningSubagentCount: 0,
+    completed: false,
+    pinned: false,
+    archived: false,
+    updatedAt: Date.now(),
+  }
 }
 
 /**
- * The connection's tri-state indicator.
+ * The entries of a session row's `⋮` menu.
  *
- * `ready` is the only state that proves a live channel: the host computes it
- * from the channel map, so a stale persisted "ready" cannot show green.
+ * The official session row builds this menu from the
+ * `sidebar.workspaces.session.menu.item` slot, so the host has to supply the
+ * entries; copying the session id is the one row verb that has no visible
+ * affordance on the row itself.
  */
-function connectionState(status: TargetStatus): StateDotState {
-  if (status === 'ready') return 'done'
-  if (status === 'failed') return 'error'
-  return 'idle'
-}
-
-/** Connection state wording (never the stored status word alone). */
-function connectionLabel(status: TargetStatus): string {
-  if (status === 'ready') return t('tree.conn.connected')
-  if (status === 'failed') return t('tree.conn.failed')
-  return t('tree.conn.disconnected')
-}
-
-/** Row context shared by every node. */
-interface TreeContext {
-  /** Sidebar presentation: tighter rows, less metadata. */
-  readonly compact: boolean
-  readonly pending: boolean
-}
-
-/** One expand/collapse twisty. */
-function Twisty(props: { open: boolean; label: string; onToggle: () => void }): ReactElement | null {
+function sessionMenu(sessionId: string): ReactElement {
   return (
-    <button
-      type="button"
-      className="dsh-rw-twisty"
-      aria-expanded={props.open}
-      aria-label={props.label}
-      onClick={props.onToggle}
+    <MenuItemButton
+      key="copy"
+      onSelect={() => {
+        void navigator.clipboard.writeText(sessionId).then(
+          () => { store.notifySuccess(t('tree.session.copied')) },
+          () => { store.notifyError(t('tree.session.copyFailed')) },
+        )
+      }}
     >
-      {props.open ? <IconChevronDownOutlineRegular size={12} /> : <IconChevronRightOutlineRegular size={12} />}
-    </button>
+      {t('tree.session.copyId')}
+    </MenuItemButton>
   )
 }
 
-/** One stored remote session row. */
-function SessionRow(props: { workspace: RemoteWorkspace; session: RemoteSession } & TreeContext): ReactElement | null {
-  const { session } = props
-  const created = session.createdAt === undefined ? undefined : formatTimestamp(new Date(session.createdAt).toISOString())
-  const isCurrent = props.workspace.sessionId === session.id
+/** The leading dot of a session row: only the session this device has open is live. */
+function sessionLeading(workspace: RemoteWorkspace, state: AppState): ReactElement | null {
+  return state.currentSessionId !== undefined && workspace.sessionId === state.currentSessionId ? LIVE_DOT : null
+}
+
+/** One session row plus the trailing New Session row of an expanded workspace. */
+function SessionRows(props: { workspace: RemoteWorkspace; now: number }): ReactElement | null {
+  const state = useAppState()
+  const list = state.sessions[props.workspace.id]
+  const items = list?.items ?? []
   return (
-    <li className="dsh-rw-tree-session" data-current={isCurrent ? 'true' : 'false'}>
-      <span className="dsh-rw-tree-gutter" />
-      <span className="dsh-rw-tree-icon"><IconDeliverDocRegular size={13} /></span>
-      <span className="dsh-rw-tree-label dsh-rw-mono" title={session.id}>
-        {shortSessionId(session.id)}
-      </span>
-      {!props.compact && created !== undefined && (
-        <span className="dsh-rw-tree-meta">{t('tree.session.createdAt', { time: created })}</span>
+    <>
+      {items.map(session => (
+        <SessionNodeItem
+          key={session.id}
+          node={sessionNode(session)}
+          currentId={state.currentSessionId}
+          now={props.now}
+          onOpen={(id) => {
+            const found = items.find(candidate => candidate.id === id)
+            if (found !== undefined) void store.openSession(props.workspace, found)
+          }}
+          onRenameRequest={() => {}}
+          renderSlot={rowRenderSlots(sessionLeading(props.workspace, state), sessionMenu(session.id))}
+          t={sessionTranslate(session.title ?? props.workspace.title)}
+        />
+      ))}
+      {list !== undefined && list.error !== undefined && (
+        <p className="dsh-rw-side-error">{t('tree.sessions.failed', { message: list.error.message })}</p>
       )}
-      {isCurrent && <Tag tone="info">{t('tree.workspace.open')}</Tag>}
-      <span className="dsh-rw-tree-actions">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={props.pending}
-          onClick={() => { void store.continueSession(props.workspace, session) }}
-        >
-          {t('tree.session.continue')}
-        </Button>
-      </span>
-    </li>
+      {list !== undefined && list.loading && items.length === 0 && (
+        <p className="dsh-rw-tree-empty">{t('tree.sessions.loading')}</p>
+      )}
+      {/* The blank session row is the official 新会话 affordance: clicking it
+          starts a fresh remote session in this workspace. */}
+      <SessionNodeItem
+        node={blankSessionNode()}
+        currentId={state.currentSessionId}
+        now={props.now}
+        onOpen={() => { void store.reopenWorkspace(props.workspace) }}
+        onRenameRequest={() => {}}
+        renderSlot={rowRenderSlots(null, null)}
+        t={sessionTranslate(props.workspace.title)}
+      />
+    </>
   )
 }
 
-/** One workspace node with its (lazy) session children. */
-function WorkspaceNode(props: { workspace: RemoteWorkspace; target: PublicTarget } & TreeContext): ReactElement | null {
+/** One remote workspace row plus its session rows. */
+function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget; now: number }): ReactElement | null {
   const state = useAppState()
   const { workspace } = props
   const key = workspaceNodeKey(workspace.id)
-  const open = state.expanded[key] ?? false
-  const sessions = state.sessions[workspace.id]
+  const expanded = state.expanded[key] ?? false
+  const list = state.sessions[workspace.id]
   const connected = props.target.status === 'ready'
+  const translate = useMemo(() => workspaceTranslate(workspace), [workspace.title])
+  const group: GroupNode = {
+    key: workspace.id,
+    workspaceId: workspace.remoteWorkspaceId ?? workspace.id,
+    cwd: workspace.path,
+    createdAt: Date.parse(workspace.createdAt),
+    label: workspace.title,
+    sessionCount: list?.items.length ?? 0,
+    expanded,
+    containsCurrent: state.currentSessionId !== undefined && workspace.sessionId === state.currentSessionId,
+    sessions: [],
+  }
   return (
-    <li className="dsh-rw-tree-workspace">
-      <div className="dsh-rw-tree-row" data-open={open ? 'true' : 'false'}>
-        <Twisty open={open} label={open ? t('tree.collapse') : t('tree.expand')} onToggle={() => { store.toggleNode(key) }} />
-        <span className="dsh-rw-tree-icon"><IconWorkspaceTreeOutlineRegular size={13} /></span>
-        <span className="dsh-rw-tree-label">{workspace.title}</span>
-        {!props.compact && <PathLabel path={workspace.path} className="dsh-rw-tree-path" />}
-        <span className="dsh-rw-tree-actions">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!connected || props.pending}
-            onClick={() => { void store.openWorkspaceRecord(workspace) }}
-          >
-            {t('tree.workspace.open')}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!connected || props.pending}
-            onClick={() => { void store.reopenWorkspace(workspace) }}
-          >
-            {t('tree.workspace.newSession')}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={props.pending}
-            onClick={() => { void store.forgetWorkspace(workspace) }}
-          >
-            {props.compact ? t('tree.workspace.forget') : t('tree.workspace.forget')}
-          </Button>
-        </span>
-      </div>
-      {open && (
-        <ul className="dsh-rw-tree-children">
-          {sessions === undefined || (sessions.loading && sessions.items.length === 0) ? (
-            <li className="dsh-rw-tree-note">{t('tree.sessions.loading')}</li>
-          ) : sessions.error !== undefined ? (
-            <li className="dsh-rw-tree-note dsh-rw-tree-note-error">
-              {t('tree.sessions.failed', { message: sessions.error.message })}
-            </li>
-          ) : sessions.items.length === 0 ? (
-            <li className="dsh-rw-tree-note">{t('tree.sessions.empty')}</li>
-          ) : (
-            sessions.items.map(session => (
-              <SessionRow
-                key={session.id}
-                workspace={workspace}
-                session={session}
-                compact={props.compact}
-                pending={props.pending}
-              />
-            ))
-          )}
-          <li className="dsh-rw-tree-note">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!connected || props.pending}
-              icon={<IconPlusOutlineRegular size={12} />}
-              onClick={() => { void store.reopenWorkspace(workspace) }}
-            >
-              {t('tree.workspace.newSession')}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={sessions?.loading ?? false}
-              icon={<IconRefreshOutlineRegular size={12} />}
-              aria-label={t('common.refresh')}
-              onClick={() => { void store.loadSessions(workspace, true) }}
-            >
-              {props.compact ? '' : t('common.refresh')}
-            </Button>
-          </li>
-        </ul>
-      )}
-    </li>
+    <>
+      <ProjectRowItem
+        group={group}
+        onToggle={() => { store.toggleNode(key) }}
+        onCreate={() => { void store.reopenWorkspace(workspace) }}
+        actions={{
+          rename: () => { void store.loadSessions(workspace, true) },
+          delete: () => { void store.forgetWorkspace(workspace) },
+        }}
+        // A disconnected connection cannot start sessions; the row still
+        // renders, with the plain dictionary labels.
+        t={connected ? translate : ((verb: string, params?: Record<string, unknown>) => rowsTranslate(verb, params))}
+      />
+      {expanded && <Level depth={2}><SessionRows workspace={workspace} now={props.now} /></Level>}
+    </>
   )
 }
 
-/** One connection node: the tri-state icon and its workspace children. */
-function ConnectionNode(props: { target: PublicTarget; workspaces: RemoteWorkspace[] } & TreeContext): ReactElement | null {
+/** One connection row (the level the shell's own tree does not have) plus its workspaces. */
+function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspace[]; now: number }): ReactElement | null {
   const state = useAppState()
   const { target } = props
   const key = targetNodeKey(target.id)
-  const open = state.expanded[key] ?? false
-  const lastConnectedAt = formatTimestamp(target.lastConnectedAt)
+  const expanded = state.expanded[key] ?? false
   const connected = target.status === 'ready'
+  const translate = useMemo(() => connectionTranslate(target), [target.status])
+  const sessionCount = props.workspaces.reduce(
+    (total, workspace) => total + (state.sessions[workspace.id]?.items.length ?? 0),
+    0,
+  )
+  const lastConnectedAt = Date.parse(target.lastConnectedAt ?? '')
+  const group: GroupNode = {
+    // The official row keys itself `workspace:<key>`; the key identifies this
+    // node rather than a local workspace, which is fine — it is only identity,
+    // and it keeps the row's own DOM contract intact.
+    key: `conn:${target.id}`,
+    // NOT `undefined`: the vendored row reads that as the ungrouped bucket and
+    // replaces the label with 未分组. Any string keeps our own label and the
+    // hover card's workspace lines.
+    workspaceId: `conn:${target.id}`,
+    cwd: t('list.endpoint', { username: target.username, host: target.host, port: target.port }),
+    createdAt: Number.isNaN(lastConnectedAt) ? undefined : lastConnectedAt,
+    label: target.label,
+    sessionCount,
+    expanded,
+    containsCurrent: false,
+    sessions: [],
+  }
   return (
-    <li className="dsh-rw-tree-connection" data-state={target.status}>
-      <div className="dsh-rw-tree-row" data-open={open ? 'true' : 'false'}>
-        <Twisty open={open} label={open ? t('tree.collapse') : t('tree.expand')} onToggle={() => { store.toggleNode(key) }} />
-        <span className="dsh-rw-tree-icon dsh-rw-conn-icon" data-state={target.status}>
-          <IconGlobeOutlineRegular size={14} />
-        </span>
-        {/* The tri-state itself: grey 未连接 / green 已连接 / red 连接失败. */}
-        <StateDot state={connectionState(target.status)} size={8} />
-        <span className="dsh-rw-tree-label">{target.label}</span>
-        <Tag tone={STATUS_TONES[target.status]}>{connectionLabel(target.status)}</Tag>
-        {!props.compact && (
-          <>
-            <Tag tone="quiet">{t('list.kind.ssh')}</Tag>
-            <span className="dsh-rw-tree-meta dsh-rw-mono">
-              {t('list.endpoint', { username: target.username, host: target.host, port: target.port })}
-            </span>
-            {lastConnectedAt !== undefined && (
-              <span className="dsh-rw-tree-meta">{t('list.lastConnectedAt', { time: lastConnectedAt })}</span>
-            )}
-          </>
-        )}
-        <span className="dsh-rw-tree-actions">
-          {/* 先连接才能建会话: while the connection is down its single primary
-              action is 连接; every workspace action stays disabled until the
-              host reports a live channel. */}
-          {!connected && (
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={props.pending}
-              icon={<IconLinkOutlineRegular size={12} />}
-              onClick={() => { void store.connectTarget(target) }}
-            >
-              {target.status === 'unknown' ? t('tree.conn.connect') : t('tree.conn.reconnect')}
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!connected || props.pending}
-            icon={<IconPlusOutlineRegular size={12} />}
-            onClick={() => { void store.openAddWorkspace(target) }}
-          >
-            {t('tree.conn.addWorkspace')}
-          </Button>
-          {connected && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={props.pending}
-              onClick={() => { void store.stopTarget(target) }}
-            >
-              {t('tree.conn.disconnect')}
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={props.pending}
-            aria-label={t('list.forget')}
-            onClick={() => { void store.forgetTarget(target) }}
-          >
-            {props.compact ? '' : t('list.forget')}
-          </Button>
-        </span>
-      </div>
-      {target.lastError !== undefined && target.lastError !== '' && (
-        <div className="dsh-rw-tree-error">{t('list.lastError', { message: target.lastError })}</div>
-      )}
-      {open && (
-        <ul className="dsh-rw-tree-children">
+    <>
+      <Level depth={0} state={target.status} className="dsh-rw-conn">
+        <ProjectRowItem
+          group={group}
+          // Clicking a disconnected connection connects it; a live one folds,
+          // exactly like the shell's workspace rows fold.
+          onToggle={() => {
+            if (connected) store.toggleNode(key)
+            else void store.connectTarget(target)
+          }}
+          onCreate={() => { void store.openAddWorkspace(target) }}
+          actions={{
+            rename: () => { void (connected ? store.stopTarget(target) : store.connectTarget(target)) },
+            delete: () => { void store.forgetTarget(target) },
+          }}
+          t={translate}
+        />
+      </Level>
+      {expanded && (
+        <Level depth={1}>
           {props.workspaces.length === 0
-            ? <li className="dsh-rw-tree-note">{t('tree.conn.noWorkspace')}</li>
+            ? <p className="dsh-rw-tree-empty">{t('tree.conn.noWorkspace')}</p>
             : props.workspaces.map(workspace => (
-              <WorkspaceNode
-                key={workspace.id}
-                workspace={workspace}
-                target={target}
-                compact={props.compact}
-                pending={props.pending}
-              />
+              <WorkspaceRow key={workspace.id} workspace={workspace} target={target} now={props.now} />
             ))}
-        </ul>
+        </Level>
       )}
-    </li>
+    </>
   )
 }
 
 /**
  * The whole remote tree.
- * @param props.compact - sidebar presentation (narrow column).
  * @param props.empty - text shown when no connection is saved yet.
+ * @param props.compact - sidebar presentation flag (kept for the panel copy).
  */
 export function RemoteTree(props: { compact: boolean; empty?: string }): ReactElement | null {
   const state = useAppState()
+  const now = useNow()
   if (state.targets.length === 0) {
     return <p className="dsh-rw-tree-empty">{props.empty ?? t('tree.empty')}</p>
   }
   return (
-    <ul className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}>
+    <div
+      className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}
+      role="tree"
+      aria-label={t('tree.sidebar.title')}
+    >
       {state.targets.map(target => (
-        <ConnectionNode
+        <ConnectionRow
           key={target.id}
           target={target}
           workspaces={state.workspaces.filter(workspace => workspace.targetId === target.id)}
-          compact={props.compact}
-          pending={state.pending}
+          now={now}
         />
       ))}
-    </ul>
+    </div>
   )
 }

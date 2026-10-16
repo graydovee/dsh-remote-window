@@ -90,6 +90,10 @@ export interface RemoteSession {
   /** Creation time from the stored header (epoch milliseconds). */
   createdAt?: number
   sizeBytes?: number
+  /** Log title (`session/title`), absent when the session has none. */
+  title?: string
+  /** Last activity in the log (epoch milliseconds), for the row's time column. */
+  updatedAt?: number
 }
 
 /** Response of `/api/ssh-aliases`. */

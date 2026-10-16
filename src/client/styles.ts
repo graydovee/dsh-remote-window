@@ -15,7 +15,13 @@
 export const STYLE_PLUGIN_ID = 'dsh-remote-workspace'
 
 /** The complete stylesheet. */
+import { ROW_STYLES } from './vendor/workspace-rows/generated/row-styles.ts'
+
 export const STYLE_TEXT = `
+/* The official workspace rows bring their own stylesheet; it is injected with
+   ours so both surfaces (sidebar section and panel) share one <style> tag. */
+${ROW_STYLES}
+
 /* ---------------------------------------------------------------- footer */
 
 .dsh-rw-page {
@@ -639,157 +645,43 @@ export const STYLE_TEXT = `
   gap: 8px;
 }
 
-/* ------------------------------------------------------------ remote tree */
+/* --------------------------------------------------------- remote tree shell
 
-.dsh-rw-tree,
-.dsh-rw-tree-children {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+   The ROWS are not styled here: they are the shell's own row components and
+   stylesheet (src/client/vendor/workspace-rows, injected with STYLE_TEXT). This
+   block only positions the three-level tree inside the region and tints the
+   official folder icon on a connection row by its state. */
+
+.dsh-rw-tree {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
-/* One indent step per depth level: connection → workspace → session. */
-.dsh-rw-tree-children {
-  margin-left: 14px;
-  padding-left: 6px;
-  border-left: 1px solid var(--dsw-alias-border-l2);
+/* One indent level per hierarchy step; the vendored row CSS reads this. */
+.dsh-rw-conn > div,
+.dsh-rw-tree > div > div {
+  min-width: 0;
 }
 
-.dsh-rw-tree-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 3px 8px 3px 4px;
-  border-radius: var(--dsw-radius-sm, 6px);
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-}
-.dsh-rw-tree-row:hover {
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-secondary));
-}
-
-/* The twisty is deliberately chrome-free: the row is the click target. */
-.dsh-rw-twisty {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  border-radius: 4px;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-}
-.dsh-rw-twisty:hover {
-  background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-secondary));
-  color: var(--dsw-alias-label-primary);
-}
-
-.dsh-rw-tree-icon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  color: var(--dsw-alias-label-secondary, inherit);
-}
-
-/* Connection globe colour follows the same tri-state as the StateDot next to
-   it: green connected / red failed / neutral otherwise. */
-.dsh-rw-conn-icon[data-state="ready"] {
+/* Connection state on the official folder icon: green connected / red failed /
+   neutral otherwise. Only the icon's colour is ours — the row keeps its size,
+   hover swap and menus. */
+.dsh-rw-conn[data-state="ready"] .dsh-rwv-rows-folder {
   color: var(--dsw-alias-state-success-primary);
 }
-.dsh-rw-conn-icon[data-state="failed"] {
+.dsh-rw-conn[data-state="failed"] .dsh-rwv-rows-folder {
   color: var(--dsw-alias-state-error-primary);
 }
-
-.dsh-rw-tree-label {
-  flex: none;
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dsh-rw-tree-path {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: 12px;
+.dsh-rw-conn[data-state="unknown"] .dsh-rwv-rows-folder,
+.dsh-rw-conn[data-state="stopped"] .dsh-rwv-rows-folder {
   color: var(--dsw-alias-label-tertiary);
 }
 
-.dsh-rw-tree-meta {
-  flex: none;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-  white-space: nowrap;
-}
-
-.dsh-rw-tree-actions {
-  margin-left: auto;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  /* De-emphasised, never hidden: an action that only exists on hover is
-     invisible to assistive tech and impossible to discover. */
-  opacity: 0.55;
-  transition: opacity 120ms ease;
-}
-.dsh-rw-tree-row:hover .dsh-rw-tree-actions,
-.dsh-rw-tree-row:focus-within .dsh-rw-tree-actions,
-.dsh-rw-tree-session:hover .dsh-rw-tree-actions,
-.dsh-rw-tree-session:focus-within .dsh-rw-tree-actions {
-  opacity: 1;
-}
-
-.dsh-rw-tree-session {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 26px;
-  padding: 2px 8px 2px 4px;
-  border-radius: var(--dsw-radius-sm, 6px);
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary);
-}
-.dsh-rw-tree-session:hover {
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-secondary));
-}
-.dsh-rw-tree-session[data-current="true"] .dsh-rw-tree-label {
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-}
-
-/* Sessions have no twisty, so a gutter keeps their icons aligned with rows. */
-.dsh-rw-tree-gutter {
-  flex: none;
-  width: 18px;
-}
-
-.dsh-rw-tree-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px 3px 28px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-.dsh-rw-tree-note-error {
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.dsh-rw-tree-error {
-  padding: 0 8px 4px 42px;
+.dsh-rw-tree-empty {
+  margin: 4px 8px;
   font-size: 12px;
   line-height: 18px;
-  color: var(--dsw-alias-state-error-primary);
-  word-break: break-word;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 /* ----------------------------------------------------- add-workspace list */
@@ -925,35 +817,6 @@ export const STYLE_TEXT = `
   word-break: break-word;
 }
 
-/* Compact rows for the narrow column. The sidebar is ~270px wide and the
-   region clips overflow, so a row that cannot fit its actions must WRAP them
-   onto a second line rather than push them out of the column (measured: the
-   connection row's actions ran 104px past the right edge and became
-   unclickable). */
-.dsh-rw-tree--compact .dsh-rw-tree-row {
-  min-height: 28px;
-  gap: 4px;
-  font-size: 12px;
-  flex-wrap: wrap;
-}
-.dsh-rw-tree--compact .dsh-rw-tree-label {
-  min-width: 0;
-  max-width: 100%;
-}
-.dsh-rw-tree--compact .dsh-rw-tree-actions {
-  gap: 2px;
-  margin-left: auto;
-}
-/* Wrapped actions start on their own line, aligned under the label. */
-.dsh-rw-tree--compact .dsh-rw-tree-row > .dsh-rw-tree-actions:not(:first-child) {
-  padding-left: 22px;
-}
-.dsh-rw-tree-empty {
-  margin: 4px 2px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
 `
 
 /**

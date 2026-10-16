@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-workspace",
-  "version": "0.1.0-alpha9",
+  "version": "0.1.0-alpha11",
   "description": "Open an SSH host as a DeepSeek Harness workspace: a headless execution-world server runs on the remote machine while the agent loop, models and credentials stay local.",
   "type": "module",
   "main": "lib/index.js",
@@ -128,6 +128,7 @@
     }
   },
   "dependencies": {
+    "clsx": "^2.1.1",
     "ssh2": "^1.16.0",
     "zod": "^4.4.3"
   },

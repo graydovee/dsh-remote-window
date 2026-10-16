@@ -141,7 +141,47 @@ header 重新锚定到**本地 stub**（构造参数 `localCwd`，由 routing �
 resume 两条路一致），远端路径只在 realm 的 stub→remote 别名处出现。少了这一步，
 `agents.resume` 出来的会话 attach 不上、点开会话会被判 cwd 冲突。
 
-## P4：左侧栏「远程工作区」区域与「换设备续聊」（2026-10-16）
+## P4：左侧栏「远程工作区」= 官方行组件 + 我们的三层走树（2026-10-16 定稿）
+
+**行不是我们画的**。`src/client/vendor/workspace-rows/` 内置了官方
+`ui-workspace` 的行层（`Rows.tsx` / `AnimatedRows.tsx` / 两个 `.module.css` /
+`workspace` 命名空间词典），由 `scripts/vendor-workspace-rows.mjs` 生成：脚本从
+DSH 检出拷贝、给 CSS 类名加前缀（`dsh-rwv-rows-` / `dsh-rwv-anim-`）、把
+CSS-module 导入换成类名映射、把 shell 内部类型导入换到 `models.ts`。
+`generated/*` 里带 `@ts-nocheck`（逐字节保留上游，props 仍参与我们调用点的类型检查）。
+
+由此得到的能力（**不要再手写行样式**）：
+
+- 工作区行 = `ProjectRowItem`（34px，文件夹图标 hover 换成展开箭头，`＋` 与 `⋮` 菜单，
+  官方 hover 卡）；会话行 = `SessionNodeItem`（32px，标题跑马灯、时间 hover 让位给
+  行操作、点击整行 = 打开会话、`blank` 行即官方的「新会话」行）。
+- 缩进用**官方自己的变量** `--dsh-workspace-indent`（官方 CSS 已是
+  `calc(8px + var(--dsh-workspace-indent,0px))`）：连接 0px / 工作区 14px / 会话 28px，
+  一行 CSS 都不用改。
+- 菜单只有 `rename` / `delete.workspace` 两个固定项、`t` 由行宿主传入，所以我们的
+  **语义靠改这两个 key 的译文**实现（连接行：连接/断开、忘记连接；工作区行：
+  刷新会话列表、移除工作区）。`delete` 不是有效 key，必须是 `delete.workspace`。
+- 连接行**不能**把 `workspaceId` 传 `undefined`：vendored 组件把 `undefined` 当作
+  "未分组" 桶，会把标签替换成「未分组」。任何字符串都行（我们用 `conn:<targetId>`）。
+- 三态只体现在连接行**文件夹图标的颜色**上（`.dsh-rw-conn[data-state=…]
+  .dsh-rwv-rows-folder`），行的尺寸/hover/菜单都是官方的。
+
+不内置的部分：`WorkspaceBrowser.tsx`（1487 行）写死了「工作区 → 会话」两层，而我们要
+「连接 → 工作区 → 会话」三层；行层与走树在官方代码里本来就是分开的，所以复用的单位是行层。
+
+## 会话标题：必须从远端日志读（`persist.titles`）
+
+官方行显示 `node.title`，而标题是 `session/title` 事件（log-only，latest wins）——
+**远端 profile 不挂 session-title，标题是本机 dsh 生成后经 routing 写进远端日志的**。
+所以新增批量 RPC `persist.titles`（`src/server/session-store.ts::titles`）：对工作区内
+每个会话取 `read` handle 读日志、fold 最后一个 `session/title` 取 `data.title`，
+同时用最后一个事件的 `time` 作为 `updatedAt`（行的时间列）；按 `(id, sizeBytes)` 记忆化，
+并发上限 4，单会话读失败只丢它自己。客户端 `listRemoteSessions` 先回 `persist.list`
+再合并标题（旧远端 server 没有该 RPC → 捕获、标题留空 → 行显示「未命名」）。
+
+## 历史：更早的形态（已被上面的方案取代）
+
+## P4（旧）：左侧栏「远程工作区」区域与「换设备续聊」（2026-10-16）
 
 形态：**左侧栏**里、shell 自己的「工作区」区域**正上方**并列一个「远程工作区」区域：
 

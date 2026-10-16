@@ -158,6 +158,8 @@ export interface AppState {
   sessions: Record<string, SessionListState>
   /** The 添加工作区 picker, when it is open. */
   addWorkspace?: AddWorkspaceState
+  /** The session this device most recently opened (row selection state). */
+  currentSessionId?: string
   error?: WireError
   notice?: Notice
   connect: ConnectState
@@ -586,6 +588,16 @@ function patchConfig(patch: Partial<ConnectDraft>): void {
 
 function dismissError(): void {
   commit({ error: undefined })
+}
+
+/** Report one success notice (used by row verbs that own no panel chrome). */
+function notifySuccess(text: string): void {
+  commit({ notice: { kind: 'success', text } })
+}
+
+/** Report one failure notice. */
+function notifyError(text: string): void {
+  commit({ notice: { kind: 'error', text } })
 }
 
 function dismissNotice(): void {
@@ -1182,13 +1194,13 @@ async function loadSessions(workspace: RemoteWorkspace, force = false): Promise<
 }
 
 /**
- * Continue one stored remote session (换设备续聊).
+ * Open one stored remote session — what a click on a session row does.
  *
  * The host resumes it through the official agent-resume path, so the history
  * comes back from the remote log; the shell then adopts the live session like
  * any local one.
  */
-async function continueSession(workspace: RemoteWorkspace, session: RemoteSession): Promise<void> {
+async function openSession(workspace: RemoteWorkspace, session: RemoteSession): Promise<void> {
   return await withConnecting(async () => {
   if (state.pending) return
   const gen = generation
@@ -1198,7 +1210,11 @@ async function continueSession(workspace: RemoteWorkspace, session: RemoteSessio
     if (gen !== generation) return
     commit({
       pending: false,
-      notice: { kind: 'success', text: t('tree.session.opened', { id: shortSessionId(session.id) }) },
+      currentSessionId: result.sessionId,
+      notice: {
+        kind: 'success',
+        text: t('tree.session.opened', { title: session.title ?? shortSessionId(session.id) }),
+      },
     })
     revealSession(result.sessionId)
     await refreshState()
@@ -1342,7 +1358,11 @@ async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
       if (gen !== generation) return
       commit({
         pending: false,
-        notice: { kind: 'success', text: t('tree.session.opened', { id: shortSessionId(result.sessionId) }) },
+        currentSessionId: result.sessionId,
+        notice: {
+          kind: 'success',
+          text: t('tree.session.opened', { title: workspace.title }),
+        },
       })
       revealSession(result.sessionId)
       await refreshState()
@@ -1374,6 +1394,8 @@ export const store = {
   patchConfig,
   dismissError,
   dismissNotice,
+  notifySuccess,
+  notifyError,
   loadAliases,
   chooseAlias,
   startConnect,
@@ -1397,7 +1419,7 @@ export const store = {
   // The remote tree (P4): connections → workspaces → stored sessions.
   toggleNode,
   loadSessions,
-  continueSession,
+  openSession,
   openAddWorkspace,
   closeAddWorkspace,
   refreshAddWorkspace,

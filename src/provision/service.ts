@@ -24,7 +24,7 @@ import { shellQuote } from './profile.ts'
 import { authFor, provisionTarget, readPrivateKey, type ProvisionEvent, type ProvisionStep } from './channel.ts'
 import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemoteRuntimeRecord, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
-import type { WorkspaceId, RemoteSessionSummary, RemoteWorkspaceSummary } from '../protocol.ts'
+import type { WorkspaceId, RemoteSessionSummary, RemoteSessionTitle, RemoteWorkspaceSummary } from '../protocol.ts'
 
 /** One browser-facing connection attempt, driven by an SSE stream. */
 export interface ConnectTicket {
@@ -74,6 +74,16 @@ export interface RemoteSessionEntry {
   /** Creation time as stored in the session header (epoch milliseconds). */
   readonly createdAt?: number
   readonly sizeBytes?: number
+  /**
+   * The session's title, read from the log's latest `session/title` event.
+   *
+   * Empty/absent when the log carries none (a session that never got far enough
+   * to be titled) or when the remote server predates `persist.titles`; the tree
+   * then renders the localized 未命名 placeholder, exactly like the shell does.
+   */
+  readonly title?: string
+  /** Time of the log's last event (epoch ms): what the row's time column shows. */
+  readonly updatedAt?: number
 }
 
 /** A remote directory fully anchored on this machine, ready for a session. */
@@ -109,7 +119,7 @@ class RemoteClient {
         workspace,
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
-      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha9' }, z.object({
+      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha11' }, z.object({
         protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
       }), AbortSignal.timeout(20_000)).catch(() => undefined)
       const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat())
@@ -660,11 +670,33 @@ export class RemoteWorkspaces {
       'persist.list',
       { workspaceId },
     )
-    return summaries.map(summary => ({
-      id: String(summary.id),
-      ...(summary.createdAt === undefined ? {} : { createdAt: summary.createdAt }),
-      ...(summary.sizeBytes === undefined ? {} : { sizeBytes: summary.sizeBytes }),
-    }))
+    // Titles are a second, additive call: a remote server that predates
+    // `persist.titles` still lists sessions, so a failure here degrades the row
+    // label (未命名) instead of failing the list.
+    const titles = new Map<string, { title: string; updatedAt?: number }>()
+    try {
+      const rows = await this.sessionRequest<readonly RemoteSessionTitle[]>(
+        targetId,
+        'persist.titles',
+        { workspaceId },
+      )
+      for (const row of rows) titles.set(String(row.id), { title: row.title, ...(row.updatedAt === undefined ? {} : { updatedAt: row.updatedAt }) })
+    } catch {
+      // Older server bundle: no titles plane yet.
+    }
+    return summaries
+      .map(summary => {
+        const meta = titles.get(String(summary.id))
+        return {
+          id: String(summary.id),
+          ...(summary.createdAt === undefined ? {} : { createdAt: summary.createdAt }),
+          ...(summary.sizeBytes === undefined ? {} : { sizeBytes: summary.sizeBytes }),
+          ...(meta === undefined || meta.title === '' ? {} : { title: meta.title }),
+          ...(meta?.updatedAt === undefined ? {} : { updatedAt: meta.updatedAt }),
+        }
+      })
+      // Newest activity first, like the shell's own session list.
+      .sort((left, right) => (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0))
   }
 
   /** The remote workspace a stub-cwd session belongs to (routing persistence). */
