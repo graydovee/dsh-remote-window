@@ -11,9 +11,8 @@
  * of our own.
  *
  * What this file owns is the walk, because our hierarchy has one level the
- * shell's does not: connection → workspace → session. Each level nests one step
- * deeper through the official `--dsh-workspace-indent` custom property, which
- * the vendored CSS already reads.
+ * shell's does not: connection → workspace → session. No level is indented —
+ * the shell's own tree is flat (see {@link Level}), so ours is too.
  *
  * Row verbs are the official ones with our meanings (the menu is fixed to a
  * rename/delete pair plus the `+` button, so the *labels* are what change):
@@ -29,6 +28,7 @@ import type { PublicTarget, RemoteSession, RemoteWorkspace } from './api.ts'
 import { t } from './locales.ts'
 import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
 import type { AppState } from './store.ts'
+import { AddWorkspaceDialog } from './list.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
 import { RenameSessionDialog } from './rename-dialog.tsx'
 import { SessionMenu, SessionRowActions } from './session-row-parts.tsx'
@@ -38,9 +38,6 @@ import {
   ProjectRowItem, SessionNodeItem, rowRenderSlots, rowsTranslate,
 } from './vendor/workspace-rows/index.ts'
 import type { GroupNode, SessionNode } from './vendor/workspace-rows/index.ts'
-
-/** One indent step for the extra hierarchy levels, in CSS pixels. */
-const INDENT_STEP = 14
 
 /** Relabel one official row verb for a specific row. */
 type VerbTranslate = (key: string, params?: Record<string, unknown>) => string
@@ -55,14 +52,21 @@ function useNow(): number {
   return now
 }
 
-/** Wrap one level's rows and set that level's indent. */
-function Level(props: { depth: number; state?: string; className?: string; children: ReactNode }): ReactElement {
+/**
+ * One level's wrapper.
+ *
+ * **No indent anywhere.** The shell's own tree is flat: a workspace row and the
+ * session rows under it both carry the official row CSS's base inset
+ * (`padding-inline-start: calc(8px + var(--dsh-workspace-indent, 0px))`) with
+ * `--dsh-workspace-indent: 0px` on every group section — measured on the deployed
+ * shell: workspace row padding 8px, session row padding 8px, first child at x=20
+ * for both. So this plugin sets no indent either, and its three levels line up
+ * exactly like the shell's rows (the connection row reads as the header above
+ * the workspace rows).
+ */
+function Level(props: { state?: string; className?: string; children: ReactNode }): ReactElement {
   return (
-    <div
-      className={props.className}
-      data-state={props.state}
-      style={{ '--dsh-workspace-indent': `${props.depth * INDENT_STEP}px` } as Record<string, string>}
-    >
+    <div className={props.className} data-state={props.state}>
       {props.children}
     </div>
   )
@@ -256,7 +260,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         // renders, with the plain dictionary labels.
         t={connected ? translate : ((verb: string, params?: Record<string, unknown>) => rowsTranslate(verb, params))}
       />
-      {expanded && <Level depth={1}><SessionRows workspace={workspace} now={props.now} flags={flags} /></Level>}
+      {expanded && <SessionRows workspace={workspace} now={props.now} flags={flags} />}
     </>
   )
 }
@@ -293,7 +297,7 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
   }
   return (
     <>
-      <Level depth={0} state={target.status} className="dsh-rw-conn">
+      <Level state={target.status} className="dsh-rw-conn">
         <ProjectRowItem
           // Keyed by state: switching between connected/disconnected remounts the
           // row, which resets its (vendored, internal) menu to closed. A menu that
@@ -315,13 +319,13 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
         />
       </Level>
       {expanded && (
-        <Level depth={0}>
+        <>
           {props.workspaces.length === 0
             ? <p className="dsh-rw-tree-empty">{t('tree.conn.noWorkspace')}</p>
             : props.workspaces.map(workspace => (
               <WorkspaceRow key={workspace.id} workspace={workspace} target={target} now={props.now} />
             ))}
-        </Level>
+        </>
       )}
     </>
   )
@@ -340,6 +344,10 @@ export function RemoteTree(props: { compact: boolean; empty?: string }): ReactEl
   }
   return (
     <>
+    {/* Dialogs belong to the tree, not to one surface: the sidebar section is the
+        primary one, and a picker rendered only by the panel opened nothing when the
+        user clicked 添加工作区 there. */}
+    <AddWorkspaceDialog />
     <ConfirmDialog />
     <RenameSessionDialog />
     <div

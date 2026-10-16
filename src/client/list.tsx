@@ -132,7 +132,7 @@ export function ListBody(): ReactElement | null {
           <RemoteTree compact={false} />
         </div>
       </div>
-      <AddWorkspaceDialog />
+      {/* The picker is rendered by `RemoteTree` (it is a tree-level dialog). */}
     </div>
   )
 }

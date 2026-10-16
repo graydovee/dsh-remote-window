@@ -11,6 +11,11 @@
  * follows the active theme.
  */
 
+/** A plug/link glyph: the connection row's 连接 button (the mask uses its alpha). */
+const PLUG_MASK = `url("data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6z"/><path d="M12 17v5"/></svg>',
+)}")`
+
 /** A minimal single-colour globe (the mask only uses its alpha). */
 const GLOBE_MASK = `url("data:image/svg+xml;utf8,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>',
@@ -685,11 +690,34 @@ ${ROW_STYLES}
   mask: ${GLOBE_MASK} center / contain no-repeat;
 }
 
-/* A connection that is down keeps its action strip visible: the `+` slot is its
-   连接 button there, and a hover-only connect button is invisible exactly when it
-   is needed. */
+/* A connection that is down shows exactly ONE control: its 连接 button.
+   The official project row has two action seats (the menu trigger, then the
+   plus) and fixed glyphs,
+   so the state is expressed by which seats are shown and by an unmistakable
+   glyph:
+     - the menu trigger is hidden: a menu affordance sitting on a disconnected row
+       reads as a menu left open;
+     - the plus seat stays visible and paints a plug instead of the new-session
+       glyph, so 连接 can never be mistaken for 添加工作区.
+   Once connected the strip returns to the official pair, revealed on hover like
+   every other row. */
 .dsh-rw-conn:not([data-state="ready"]) .dsh-rwv-rows-rowActions {
   display: inline-flex;
+}
+.dsh-rw-conn:not([data-state="ready"]) .dsh-rwv-rows-rowActions > *:first-child {
+  display: none;
+}
+.dsh-rw-conn:not([data-state="ready"]) .dsh-rwv-rows-rowActions > button:last-child svg {
+  display: none;
+}
+.dsh-rw-conn:not([data-state="ready"]) .dsh-rwv-rows-rowActions > button:last-child::before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask: ${PLUG_MASK} center / contain no-repeat;
+  mask: ${PLUG_MASK} center / contain no-repeat;
 }
 
 /* Connection state colours that globe: green connected / red failed /
