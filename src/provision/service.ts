@@ -18,6 +18,7 @@ import { DEFAULT_MAX_FRAME_BYTES } from '../frame/codec.ts'
 import { FrameMux, streamTransport } from '../frame/mux.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from '../ssh/hostkey.ts'
 import { connectSsh, execRemote } from '../ssh/connect.ts'
+import { normalizeSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { remotePresetDefinition, remotePresetId } from '../preset/world.ts'
 import { openRemoteSession, resumeRemoteSession } from '../session/open.ts'
 import { shellQuote } from './profile.ts'
@@ -119,7 +120,7 @@ class RemoteClient {
         workspace,
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
-      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha18' }, z.object({
+      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha19' }, z.object({
         protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
       }), AbortSignal.timeout(20_000)).catch(() => undefined)
       const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat())
@@ -902,35 +903,63 @@ export class RemoteWorkspaces {
   /**
    * Rename one stored remote session.
    *
-   * The shell's client-side rename hop (`sessions.using(...).rename`) cannot
-   * reach a remote session: the client session service keeps its own index from
-   * the host's session list, and answers `sessions.retain: unknown session`
-   * before any request leaves the page (measured). So the plugin performs the
-   * same *host* steps itself: make the session live (which reads its log back
-   * from the remote host through the routing persistence) and then rename it
-   * through the official title service, whose user-rename event is appended to
-   * the live session — and therefore, through the live writer, into the remote
-   * log that `persist.titles` reads.
+   * **No session is opened.** The official rename is one `session/title` append
+   * with `source: {kind:'user'}`; the shell's title service is session-scoped, so
+   * it needs a live session, but on the remote plane the log is appendable
+   * directly — so this normalizes the text with the official normalizer and asks
+   * the target's server to append the event (`persist.rename`). Nothing is
+   * resumed, no agent is created, and no conversation is revealed.
+   *
+   * The one case that does go through the title service is a session that is
+   * *already live in this process*: it holds the log's write lease, so the
+   * server would refuse the open, and the in-memory session is the right place
+   * to append anyway.
    *
    * @param targetId - stored target.
    * @param path - absolute remote workspace directory.
    * @param sessionId - stored remote session id.
-   * @param title - the new title (already trimmed by the caller).
+   * @param title - raw user input; normalized here.
    */
   async renameSession(targetId: string, path: string, sessionId: string, title: string): Promise<void> {
-    await this.resumeSession(targetId, path, sessionId)
-    const liveSessions = this.ctx.get('sessions') as { get(id: string): unknown; flush?(session: never): Promise<boolean> } | undefined
+    const normalized = this.normalizeTitle(title)
+    if (normalized === '') throw new Error('session title must contain visible characters')
+
+    const liveSessions = this.ctx.get('sessions') as {
+      get(id: string): unknown
+      flush?(session: never): Promise<boolean>
+    } | undefined
     const live = liveSessions?.get(sessionId)
-    if (live === undefined) throw new Error(`session "${sessionId}" did not become live, so it cannot be renamed`)
-    const titles = this.ctx.get('sessionTitle') as { rename(session: never, title: string): unknown } | undefined
-    if (titles === undefined) throw new Error('the session title service is unavailable')
-    titles.rename(live as never, title)
-    // The rename is an append on the live session; the durability barrier is
-    // what pushes it through this plugin's live writer into the remote log.
-    // Without it the next `persist.titles` reads the previous title back (it
-    // memoizes by artifact size, which has not changed yet) and the row keeps
-    // showing the old name until something else flushes.
-    await liveSessions?.flush?.(live as never).catch(() => {})
+    if (live !== undefined) {
+      const titles = this.ctx.get('sessionTitle') as { rename(session: never, title: string): unknown } | undefined
+      if (titles === undefined) throw new Error('the session title service is unavailable')
+      titles.rename(live as never, normalized)
+      await liveSessions?.flush?.(live as never).catch(() => {})
+      return
+    }
+
+    // Not live: append straight to the stored log, without opening anything.
+    this.requireConnectedTarget(targetId, 'renaming a session')
+    const workspaceId = await this.remoteWorkspaceIdFor(targetId, path)
+    await this.sessionRequest(targetId, 'persist.rename', { workspaceId, sessionId, title: normalized })
+  }
+
+  /** Normalize user title text with the official normalizer (same rules, same cap). */
+  private normalizeTitle(title: string): string {
+    const titles = this.ctx.get('sessionTitle') as { config?: { maxTitleBytes?: number } } | undefined
+    const maxBytes = titles?.config?.maxTitleBytes ?? 200
+    return normalizeSessionTitle(title, maxBytes)
+  }
+
+  /**
+   * The server-side workspace id for one remote directory, discovering the
+   * workspace when this machine has never opened it (no stub, no session).
+   */
+  private async remoteWorkspaceIdFor(targetId: string, path: string): Promise<WorkspaceId> {
+    const record = this.store.listWorkspaces(targetId).find(candidate => candidate.path === path)
+    if (record?.remoteWorkspaceId !== undefined) return record.remoteWorkspaceId as WorkspaceId
+    const listing = await this.listDirectory(targetId, path)
+    const discovered = await this.ensureRemoteWorkspace(targetId, listing.path)
+    return discovered.id
   }
 
   /**

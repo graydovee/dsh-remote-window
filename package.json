@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-workspace",
-  "version": "0.1.0-alpha18",
+  "version": "0.1.0-alpha19",
   "description": "Open an SSH host as a DeepSeek Harness workspace: a headless execution-world server runs on the remote machine while the agent loop, models and credentials stay local.",
   "type": "module",
   "main": "lib/index.js",
@@ -99,6 +99,7 @@
     "@deepseek-ai/dsh-session-persistence": ">=0.2.0-rc.1 <0.3.0",
     "@deepseek-ai/dsh-session-persistence-jsonl": ">=0.2.0-rc.1 <0.3.0",
     "@deepseek-ai/dsh-session-projection": ">=0.2.0-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-session-title": ">=0.2.0-rc.1 <0.3.0",
     "@deepseek-ai/dsh-ssh": ">=0.2.0-rc.1 <0.3.0",
     "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.1 <0.3.0",
     "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.1 <0.3.0",
@@ -150,6 +151,7 @@
     "@deepseek-ai/dsh-session-persistence": "0.2.0-rc.1",
     "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.0-rc.1",
     "@deepseek-ai/dsh-session-projection": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-session-title": "0.2.0-rc.1",
     "@deepseek-ai/dsh-ssh": "0.2.0-rc.1",
     "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1",
     "@deepseek-ai/dsh-subprocess": "0.2.0-rc.1",
