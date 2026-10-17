@@ -18,10 +18,9 @@ import { z } from 'zod'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
-import { SshRpcPeer, SSH_PROTOCOL_VERSION } from '@deepseek-ai/dsh-ssh/protocol'
 import { helloSchema, type SshStreamEndpoint } from '@deepseek-ai/dsh-ssh/schemas'
 import { FrameMux, streamTransport } from '../frame/mux.ts'
-import type { RemoteChannel, RemoteWorkspaceService } from '../targets/types.ts'
+import type { RemoteProtocolClient, RemoteWorkspaceService } from '../targets/types.ts'
 
 /** Wire handshake observation, matching the official helper's `hello`. */
 export type RemoteHello = z.infer<typeof helloSchema>
@@ -61,11 +60,9 @@ export default class RemoteConnection extends Service {
   private readonly config: Required<Omit<Config, 'label'>> & Pick<Config, 'label'>
   private readonly lifetime = new AbortController()
   private connecting: Promise<RemoteHello> | undefined
-  private rpc: SshRpcPeer | undefined
-  private mux: FrameMux | undefined
-  private channel: RemoteChannel | undefined
+  /** The target's single RPC client, shared with the plugin's browse plane. */
+  private link: RemoteProtocolClient | undefined
   private remote: RemoteHello | undefined
-  private heartbeat: NodeJS.Timeout | undefined
   private failure: Error | undefined
   private closing = false
   private disposal: Promise<void> | undefined
@@ -91,14 +88,18 @@ export default class RemoteConnection extends Service {
     if (!this.ctx.get('remoteWorkspaces')) throw new Error(`remote target "${this.config.targetId}" has no workspace service`)
   }
 
-  /** Verified remote Node executable; unavailable before the first operation. */
-  get nodeExecutable(): string {
+  /**
+   * Verified remote PTC launch coordinates.
+   *
+   * The official `SshConnection` surface (dsh-ssh 0.2.1-rc.2) replaced the
+   * separate `nodeExecutable` / `bootstrapPath` getters with this union, and the
+   * hello it validates now carries `kind` + `executable` instead of `node`. This
+   * world is a `node-script` deployment whose PTC bootstrap is never
+   * provisioned, so PTC stays unsupported exactly as before — no installed
+   * provider reads this member, so the refusal cannot break a session.
+   */
+  get ptcLaunch(): { kind: 'embedded'; executable: string } | { kind: 'node-script'; executable: string; bootstrapPath: string } {
     if (this.remote === undefined) throw new Error('the remote workspace is not connected yet')
-    return this.remote.node
-  }
-
-  /** PTC bootstrap entries are not provisioned in v1. */
-  get bootstrapPath(): string {
     throw new Error('remote PTC is not supported by dsh-remote-workspace v1')
   }
 
@@ -128,7 +129,7 @@ export default class RemoteConnection extends Service {
       : signal === undefined
         ? AbortSignal.timeout(this.config.requestTimeoutMs)
         : AbortSignal.any([signal, AbortSignal.timeout(this.config.requestTimeoutMs)])
-    return (this.rpc as SshRpcPeer).request(method, outgoing, result, bounded)
+    return (await this.shared()).request(method, outgoing, result, bounded)
   }
 
   /** RPC seam used by the realm-scoped RemotePersistence provider. */
@@ -184,14 +185,10 @@ export default class RemoteConnection extends Service {
   async connectStream(endpoint: SshStreamEndpoint, signal?: AbortSignal): Promise<import('node:net').Socket> {
     const hello = await this.ready
     this.assertOpen()
-    const remote = endpoint.path
-    if (!remote.startsWith(`${hello.root}/`) || /[:\r\n\0]/u.test(remote)) {
-      throw new Error('the remote server returned an invalid stream path')
-    }
+    void hello
     const combined = signal === undefined ? this.lifetime.signal : AbortSignal.any([signal, this.lifetime.signal])
     combined.throwIfAborted()
-    const stream = await (this.mux as FrameMux).open(endpoint, combined)
-    return stream as unknown as import('node:net').Socket
+    return await (await this.shared()).openStream(endpoint, combined)
   }
 
   /** Close the remote server channel and release every stream. */
@@ -203,17 +200,12 @@ export default class RemoteConnection extends Service {
   private async disposeOnce(): Promise<void> {
     this.closing = true
     this.lifetime.abort(new Error('remote workspace connection is closing'))
-    if (this.heartbeat !== undefined) clearInterval(this.heartbeat)
-    try {
-      if (this.failure === undefined && this.rpc !== undefined) {
-        await this.rpc.request('close', {}, z.null(), AbortSignal.timeout(this.config.requestTimeoutMs)).catch(() => {})
-      }
-    } finally {
-      this.rpc?.close()
-      this.mux?.close()
-      await this.channel?.close().catch(() => {})
-      this.channel = undefined
-    }
+    // The client belongs to the target, not to this adapter: closing its peer or
+    // channel here would take down the plugin's browse plane and the remote
+    // server process itself. Only the pin is released; 停止/忘记 close the channel.
+    this.link = undefined
+    const workspaces = this.ctx.get('remoteWorkspaces') as { releaseRemoteClient?(targetId: string): void } | undefined
+    workspaces?.releaseRemoteClient?.(this.config.targetId)
   }
 
   private assertOpen(): void {
@@ -225,32 +217,28 @@ export default class RemoteConnection extends Service {
     if (this.failure !== undefined) return
     this.failure = error
     this.lifetime.abort(error)
-    if (this.heartbeat !== undefined) clearInterval(this.heartbeat)
-    this.rpc?.close(error)
-    this.mux?.close(error)
-    void this.channel?.close().catch(() => {})
+    this.link = undefined
+  }
+
+  /** The shared client of this target, waiting for startup when needed. */
+  private async shared(): Promise<RemoteProtocolClient> {
+    await this.ready
+    this.assertOpen()
+    if (this.link === undefined) throw new Error('remote workspace connection is not attached')
+    return this.link
   }
 
   private async start(): Promise<RemoteHello> {
     const workspaces = this.ctx.get('remoteWorkspaces') as RemoteWorkspaceService | undefined
     if (workspaces === undefined) throw new Error(`remote target "${this.config.targetId}" has no workspace service`)
-    const channel = await workspaces.connectChannel(this.config.targetId, this.lifetime.signal)
+    // Exactly one peer owns the channel; see RemoteClient in provision/service.
+    const client = await workspaces.remoteClient(this.config.targetId)
     if (this.closing) {
-      await channel.close().catch(() => {})
+      workspaces.releaseRemoteClient?.(this.config.targetId)
       throw new Error('remote workspace connection closed before startup')
     }
-    this.channel = channel
-    const mux = new FrameMux({ transport: streamTransport(channel.input, channel.output), role: 'client', label: `remote:${this.config.targetId}` })
-    this.mux = mux
-    const rpc = new SshRpcPeer(mux.jsonInput(), mux.jsonOutput(), this.config.maxFrameBytes, this.config.maxPending)
-    this.rpc = rpc
-    rpc.once('closed', (error) => { this.fail(error as Error) })
-    void mux.closed.then((error) => { if (error) this.fail(error) })
-    const hello = await rpc.request('hello', {
-      protocol: SSH_PROTOCOL_VERSION,
-      workspace: '/',
-      leaseMs: this.config.leaseMs,
-    }, helloSchema, AbortSignal.timeout(this.config.requestTimeoutMs))
+    this.link = client
+    const hello = client.hello as unknown as RemoteHello
     const expected = await workspaces.expectedDigest(this.config.targetId).catch(() => undefined)
     if (expected !== undefined && expected !== hello.hash) {
       const detail = `remote server digest ${hello.hash.slice(0, 16)}… differs from the installed plugin ${expected.slice(0, 16)}…`
@@ -258,13 +246,8 @@ export default class RemoteConnection extends Service {
       throw new Error(`${detail}; install the same dsh-remote-workspace version on the remote host`)
     }
     this.remote = hello
-    let heartbeatPending: Promise<unknown> | undefined
-    this.heartbeat = setInterval(() => {
-      heartbeatPending ??= rpc.request('heartbeat', {}, z.null(), AbortSignal.timeout(Math.floor(this.config.leaseMs / 2)))
-        .catch((error: unknown) => { this.fail(error as Error) })
-        .finally(() => { heartbeatPending = undefined })
-    }, Math.floor(this.config.leaseMs / 3))
-    this.heartbeat.unref()
+    // The heartbeat lives in the shared client (it must keep running between
+    // turns); duplicating it here renewed the same lease from a second peer.
     return hello
   }
 }

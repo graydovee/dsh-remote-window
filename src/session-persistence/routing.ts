@@ -1,13 +1,14 @@
 /**
  * Root-context session persistence routed by session cwd.
  *
- * This module is bound to the official `sessions` composition row via this
- * bundle's cordis.patch.yml (a later-layer row override by id replaces the
- * JSONL row's `name`/`config` entirely). Routing exists because the agent loop
- * resolves `sessionPersistence` on the HOST plane — a preset-realm provide
- * never reaches it (measured against dsh 0.2.0-rc.1, 2026-10-15) — so the only
- * way a remote-workspace session can persist to the remote server is for the
- * host-level service itself to route.
+ * This module is provided by the plugin's own `apply()` on the service name the
+ * bundle's cordis.patch.yml frees by disabling the official JSONL row (a patch
+ * row cannot swap a row's `name`, and an inserted replacement row was never
+ * constructed — see AGENTS.md "会话持久层的路由接线"). Routing exists because
+ * the agent loop resolves `sessionPersistence` on the HOST plane — a
+ * preset-realm provide never reaches it (measured against dsh 0.2.0-rc.1,
+ * 2026-10-15) — so the only way a remote-workspace session can persist to the
+ * remote server is for the host-level service itself to route.
  *
  * Routing rule, evaluated per call:
  * - `create(header)`: the header cwd of a remote-workspace session is its
@@ -27,7 +28,7 @@
  * with the ownership error), so no client-side locking is added.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { apply as applyJsonl } from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import {
   SessionPersistence,
@@ -70,7 +71,14 @@ interface RoutingRemoteService {
   stubForWorkspace(workspaceId: string): string | undefined
 }
 
-/** A context stub that absorbs the base class' self-registration. */
+/**
+ * A context stub that absorbs a base class' self-registration.
+ *
+ * Only the remote façade still needs it: `RemotePersistence` extends the
+ * official `SessionPersistence`, whose constructor registers the instance under
+ * `sessionPersistence`, and the routing owns that name. The embedded *local*
+ * backend no longer needs a stub — it is mounted into an isolated scope instead.
+ */
 function registrationAbsorbingContext(): Context {
   return {
     reflect: { provide: () => () => {} },
@@ -213,6 +221,15 @@ class DrainedHandle implements SessionHandle {
 
 const ROUTING_MARKER = Symbol.for('dsh-remote-workspace.routing-persistence')
 
+/**
+ * Scope label for the embedded local backend's service registration.
+ *
+ * `isolate()` joins every call carrying the same label, so all routing
+ * instances in one process share one local backend instead of racing to register
+ * a second one.
+ */
+const LOCAL_SCOPE = Symbol.for('dsh-remote-workspace.local-persistence')
+
 export default class RoutingSessionPersistence extends SessionPersistence {
   /**
    * Deliberately NO `static inject = ['remoteWorkspaces']`: the row provides
@@ -231,29 +248,40 @@ export default class RoutingSessionPersistence extends SessionPersistence {
 
   static Config = undefined
 
-  private readonly local: JsonlSessionPersistence
+  /**
+   * The embedded official JSONL backend, resolved asynchronously.
+   *
+   * dsh 0.2.1-rc.2 turned the JSONL backend into a *plugin row*
+   * (`apply(ctx, config)`) with no exported class, so it can no longer be
+   * constructed against a stub context. It now registers `sessionPersistence`
+   * on whatever context it is mounted on and installs its live-event tracker
+   * there; mounting it into a **service-isolated** child scope keeps our own
+   * `sessionPersistence` name intact. Its tracker still observes every
+   * `session/event` because cordis dispatches to all subscribers unless the
+   * dispatcher supplies a service filter.
+   */
+  private readonly localReady: Promise<SessionPersistence>
   private readonly remotes = new Map<WorkspaceId, RemotePersistence>()
   /** Open remote write handles by session id — the live-event routing key. */
   private readonly writers = new Map<string, RemoteLiveWriter>()
+  /** Where each session this process has seen lives; see {@link routeOf}. */
+  private readonly routes = new Map<string, SessionRoute>()
 
   constructor(ctx: Context, config: RoutingPersistenceConfig) {
     super(ctx)
-    // The delegate must not register anything (the service name is ours now),
-    // so its constructor runs against a stub and only its real context is
-    // restored afterwards — the JSONL backend uses `this.ctx` solely for
-    // torn-tail warnings.
-    this.local = Reflect.construct(JsonlSessionPersistence, [
-      registrationAbsorbingContext(),
-      { root: config.root, ...(config.compression === undefined ? {} : { compression: config.compression }) },
-    ])
-    ;(this.local as unknown as { ctx: Context }).ctx = ctx
-    // The embedded backend installs its live-session routing (`session/event` →
-    // its write handle, drain on `session/flush`, final drain on
-    // `session/disposed`) **in its constructor** — which ran against the stub
-    // context above, where `on`/`effect` are no-ops. Without this re-install no
-    // backend at all would route live events, so even ordinary LOCAL sessions
-    // would keep only their seed on disk.
-    ;(this.local as unknown as { tracker: { install(ctx: Context): void } }).tracker.install(ctx)
+    this.localReady = (async (): Promise<SessionPersistence> => {
+      const scope = ctx.isolate('sessionPersistence', LOCAL_SCOPE)
+      await applyJsonl(scope, {
+        root: config.root,
+        ...(config.compression === undefined ? {} : { compression: config.compression }),
+      })
+      const local = scope.get('sessionPersistence') as SessionPersistence | undefined
+      if (local === undefined) throw new Error('the embedded JSONL persistence did not register its service')
+      return local
+    })()
+    // A mount failure must surface at the first local call (where a caller can
+    // report it), not as an unhandled rejection that could take the process down.
+    void this.localReady.catch(() => {})
     // Remote sessions are not in that backend's writer registry (it never saw a
     // handle for them), so the routing mirrors the same three hooks for the
     // remote plane. Exactly one of the two paths owns any given session id.
@@ -271,6 +299,11 @@ export default class RoutingSessionPersistence extends SessionPersistence {
       writers.delete(key)
       return writer.close()
     })
+  }
+
+  /** The embedded backend, once mounted. */
+  private local(): Promise<SessionPersistence> {
+    return this.localReady
   }
 
   private remotesService(): RoutingRemoteService | undefined {
@@ -323,13 +356,21 @@ export default class RoutingSessionPersistence extends SessionPersistence {
       const remote = this.remoteFor(route)
       // The server rewrites the header cwd to the workspace path anyway; a
       // missing cwd only satisfies the wire type.
-      if (remote !== undefined) return this.routeLive(await remote.create({ ...header, cwd: header.cwd ?? '' }, options))
+      if (remote !== undefined) {
+        const handle = await remote.create({ ...header, cwd: header.cwd ?? '' }, options)
+        // Remember where it landed: the very next `open`/`stat` for a session
+        // this process just created must not depend on a server-side locate
+        // round-trip. A miss there falls back to the *local* store and answers
+        // `session "…" not found` for a session that plainly exists remotely.
+        this.routes.set(String(handle.id), route)
+        return this.routeLive(handle)
+      }
     }
-    return await this.local.create(header, options)
+    return await (await this.local()).create(header, options)
   }
 
   override async open(id: SessionId, access: SessionAccess, options?: SessionPersistenceOpenOptions): Promise<SessionHandle> {
-    const route = await this.remotesService()?.locateRemoteSession(id)
+    const route = await this.routeOf(id)
     if (route !== undefined) {
       const remote = this.remoteFor(route)
       // Only a write open is a mutation target; a read handle never receives
@@ -344,28 +385,44 @@ export default class RoutingSessionPersistence extends SessionPersistence {
           if (live !== undefined && !live.closed) return live.borrow()
         }
         const handle = await remote.open(id, access, options)
+        this.routes.set(String(id), route)
         return access === 'write' ? this.routeLive(handle) : handle
       }
     }
-    return await this.local.open(id, access, options)
+    return await (await this.local()).open(id, access, options)
   }
 
   override async stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<SessionPersistenceSnapshot | undefined> {
-    const route = await this.remotesService()?.locateRemoteSession(id)
+    const route = await this.routeOf(id)
     if (route !== undefined) {
       const remote = this.remoteFor(route)
       if (remote !== undefined) return await remote.stat(id, options)
     }
-    return await this.local.stat(id, options)
+    return await (await this.local()).stat(id, options)
+  }
+
+  /**
+   * Where one session lives: the process-local table first, then the server.
+   *
+   * `persist.locate` is only consulted for ids this process has not seen. The
+   * table is authoritative for the process lifetime because a remote session
+   * cannot move between workspaces (its log lives under one project key).
+   */
+  private async routeOf(id: SessionId): Promise<SessionRoute | undefined> {
+    const known = this.routes.get(String(id))
+    if (known !== undefined) return known
+    const route = await this.remotesService()?.locateRemoteSession(id)
+    if (route !== undefined) this.routes.set(String(id), route)
+    return route
   }
 
   override async list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]> {
     // Local only by design: remote sessions belong to the plugin panel.
-    return await this.local.list(options)
+    return await (await this.local()).list(options)
   }
 
   override async flush(): Promise<void> {
-    await this.local.flush()
+    await (await this.local()).flush()
     for (const remote of this.remotes.values()) await remote.flush().catch(() => {})
   }
 }

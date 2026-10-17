@@ -25,6 +25,7 @@ import SandboxedFileSystem from '@deepseek-ai/dsh-fs-sandbox'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import LocalSandboxProvider from '@deepseek-ai/dsh-sandbox-local'
 import SshFileSystem from '@deepseek-ai/dsh-fs-ssh'
+import { openRemoteClient } from '../src/provision/service.ts'
 import SshSubprocessRuntime from '@deepseek-ai/dsh-subprocess-ssh'
 import SshSandboxProvider from '@deepseek-ai/dsh-sandbox-ssh'
 import type { FsError, FsTarget } from '@deepseek-ai/dsh-fs'
@@ -69,6 +70,9 @@ async function mountClientProviders(
 ): Promise<void> {
   const service: RemoteWorkspaceService = {
     connectChannel: async () => channel,
+    // The adapter borrows this client instead of building its own multiplexer.
+    remoteClient: async () => await openRemoteClient(channel),
+    releaseRemoteClient: () => {},
     expectedDigest: async () => await expectedDigest(),
     getPackagePolicy: () => ({ policy: 'auto', mirror: '' }),
     setPackagePolicy: async () => {},

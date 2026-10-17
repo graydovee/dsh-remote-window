@@ -18,9 +18,9 @@
  * A marker is written only *after* the component verifies, so a failed deploy
  * can never make an old binary look current.
  */
-import type { Client, SFTPWrapper } from 'ssh2'
-import { execRemote, mkdirp, uploadRemoteFile, writeRemoteFile, writeRemoteFileViaExec, type RemoteFile } from '../ssh/connect.ts'
+import type { RemoteTransport } from './transport.ts'
 import { pathAssignment, shellQuote } from './profile.ts'
+import type { RemoteFile } from './profile.ts'
 import type { CachedAsset } from './assets.ts'
 
 /** The fixed remote installation root. */
@@ -231,11 +231,17 @@ export function installDshPackageScript(options: { home: string; version: string
     `rm -rf ${q(extract)}`,
     `command mkdir -p ${q(extract)}`,
     `tar -xzf ${q(tarball)} -C ${q(extract)}`,
-    `test -x ${q(`${extract}/node_modules/.bin/dsh`)} || { echo 'the dsh package has no launcher' >&2; exit 5; }`,
+    // `-e`, not `-x`: a package packed on **Windows** carries mode 0666 on every
+    // file (NTFS has no execute bit), so the launcher arrives non-executable and
+    // the old `test -x` rejected a perfectly good deployment. Restore the bit and
+    // let the version probe below be the real check.
+    `test -e ${q(`${extract}/node_modules/.bin/dsh`)} || { echo 'the dsh package has no launcher' >&2; exit 5; }`,
+    `command chmod +x ${q(`${extract}/node_modules/.bin/dsh`)} 2>/dev/null || true`,
     `got=$(${pathAssignment([`${root}/node/bin`, `${extract}/node_modules/.bin`])} ${q(`${extract}/node_modules/.bin/dsh`)} --version | head -1)`,
     `[ -n "$got" ] || { echo 'the staged dsh launcher printed nothing (node too old for import.meta.main?)' >&2; exit 6; }`,
     `rm -rf ${q(target)} ${q(`${root}/prefix`)}`,
     `command mv -f ${q(extract)} ${q(target)}`,
+    `command chmod +x ${q(launcher)} 2>/dev/null || true`,
     `rm -f ${q(tarball)}`,
     `printf %s ${q(markerJson({ id: 'dsh', version: options.version, sha256: options.sha256 }))} > ${q(`${root}/.components/dsh.json`)}`,
   ].join('\n')
@@ -247,7 +253,10 @@ export function checkDshScript(options: { home: string }): string {
   return [
     'set -eu',
     `d=${q(`${root}/dsh/node_modules/.bin/dsh`)}`,
-    'test -x "$d" || exit 9',
+    // A Windows-packed deployment may carry a non-executable launcher; the
+    // "does it run" answer is the version line, not the mode bit.
+    'test -e "$d" || exit 9',
+    'command chmod +x "$d" 2>/dev/null || true',
     `${pathAssignment([`${root}/node/bin`, `${root}/dsh/node_modules/.bin`])} "$d" --version | head -1`,
   ].join('\n')
 }
@@ -256,7 +265,7 @@ export function checkDshScript(options: { home: string }): string {
  * Acquire the deployment lock. `mkdir` is the atomic test-and-set; a lock
  * older than ten minutes is a crashed client and is reclaimed once.
  */
-export async function acquireDeployLock(client: Client, home: string, token: string): Promise<void> {
+export async function acquireDeployLock(transport: RemoteTransport, home: string, token: string): Promise<void> {
   const root = `${home}/${SERVER_ROOT}`
   const body = [
     'set -eu',
@@ -272,14 +281,14 @@ export async function acquireDeployLock(client: Client, home: string, token: str
     `echo "another deployment holds ${root}/.deploy.lock (owner ${'$'}{owner:-unknown}, ${'$'}age s old)" >&2`,
     'exit 8',
   ].join('\n')
-  const result = await execRemote(client, sh(body), { maxBytes: 4096, timeoutMs: 30_000 })
+  const result = await transport.exec(sh(body), { maxBytes: 4096, timeoutMs: 30_000 })
   if (result.code !== 0) {
     throw new Error(`cannot acquire the remote deploy lock: ${result.stderr.trim() || `exit ${result.code}`}`)
   }
 }
 
 /** Release the deployment lock (best effort). */
-export async function releaseDeployLock(client: Client, home: string, token: string): Promise<void> {
+export async function releaseDeployLock(transport: RemoteTransport, home: string, token: string): Promise<void> {
   const root = `${home}/${SERVER_ROOT}`
   const body = [
     `[ -f ${q(`${root}/.deploy.lock/owner`)} ] || exit 0`,
@@ -287,53 +296,30 @@ export async function releaseDeployLock(client: Client, home: string, token: str
     `[ "$owner" = ${q(token)} ] || exit 0`,
     `rm -rf ${q(`${root}/.deploy.lock`)}`,
   ].join('\n')
-  await execRemote(client, sh(body), { maxBytes: 4096, timeoutMs: 15_000 }).catch(() => {})
+  await transport.exec(sh(body), { maxBytes: 4096, timeoutMs: 15_000 }).catch(() => {})
 }
 
-/** The head of every upload helper: which transport a session may use. */
-export interface UploadTransport {
-  readonly sftp: SFTPWrapper | undefined
-  readonly client: Client
-}
-
-/** Write small files (profile text, lib bundles) over the session's transport. */
-export async function writeFiles(transport: UploadTransport, files: readonly RemoteFile[]): Promise<void> {
-  if (transport.sftp !== undefined) {
-    for (const file of files) await writeRemoteFile(transport.sftp, file)
-    return
-  }
-  for (const file of files) await writeRemoteFileViaExec(transport.client, file)
+/** Write small files (profile text, lib bundles) through the transport. */
+export async function writeFiles(transport: RemoteTransport, files: readonly RemoteFile[]): Promise<void> {
+  for (const file of files) await transport.writeFile(file.path, file.content)
 }
 
 /** Upload the node tarball with progress, then run the extraction script. */
 export async function uploadNodeTarball(
-  transport: UploadTransport,
+  transport: RemoteTransport,
   options: { home: string; content: Buffer; version: string; platformArch: string },
   onProgress?: (sent: number, total: number) => void,
 ): Promise<{ tarballPath: string; tarballName: string; distDir: string }> {
   const distDir = `node-${options.version}-${options.platformArch}`
   const tarballName = `${distDir}.tar.gz`
   const tarballPath = serverPath(options.home, `staging/${tarballName}`)
-  const file: RemoteFile = { path: tarballPath, content: options.content }
-  if (transport.sftp !== undefined) {
-    await uploadRemoteFile(transport.sftp, file, onProgress)
-  } else {
-    await writeRemoteFileViaExec(transport.client, file)
-    onProgress?.(file.content.length, file.content.length)
-  }
+  await transport.writeFile(tarballPath, options.content, onProgress)
   return { tarballPath, tarballName, distDir }
 }
 
-/** Ensure remote parent directories exist (SFTP mode only; scripts mkdir theirs). */
-export async function ensureRemoteDirs(transport: UploadTransport, home: string): Promise<void> {
-  if (transport.sftp === undefined) return
-  await mkdirp(transport.sftp, serverPath(home, 'staging'))
-  await mkdirp(transport.sftp, serverPath(home, '.components'))
-}
-
 /** Run one deployment step's script, surfacing the remote stderr verbatim. */
-export async function runDeployScript(client: Client, script: string, options: { what: string; timeoutMs: number; maxBytes?: number }): Promise<string> {
-  const result = await execRemote(client, sh(script), { maxBytes: options.maxBytes ?? 256 * 1024, timeoutMs: options.timeoutMs })
+export async function runDeployScript(transport: RemoteTransport, script: string, options: { what: string; timeoutMs: number; maxBytes?: number }): Promise<string> {
+  const result = await transport.exec(sh(script), { maxBytes: options.maxBytes ?? 256 * 1024, timeoutMs: options.timeoutMs })
   if (result.code !== 0) {
     const detail = result.stderr.trim().slice(-2000)
     throw new Error(`remote ${options.what} failed (exit ${result.code ?? 'signal'}): ${detail !== '' ? detail : 'no stderr output'}`)

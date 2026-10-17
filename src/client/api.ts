@@ -36,14 +36,22 @@ export interface RemoteRuntimeConfig {
 export interface PublicTarget {
   id: string
   label: string
-  kind: 'ssh'
+  /** `ssh`, or `wsl` for a local Windows distribution. */
+  kind: 'ssh' | 'wsl'
   host: string
   port: number
   username: string
   authKind: AuthKind
   hasStoredSecret: boolean
+  /**
+   * Pinned host key. Empty for a draft and *always* empty for a `wsl` target:
+   * a local distribution has no host key to verify.
+   */
   hostKeyFingerprint: string
   sshConfigAlias?: string
+  /** `wsl` targets: the distribution and its optional user. */
+  wslDistro?: string
+  wslUser?: string
   remote: RemoteRuntimeConfig
   status: TargetStatus
   lastError?: string
@@ -127,18 +135,39 @@ export interface RemoteRuntimeInput {
 /** Body of `/api/connect/start`. `secret` never leaves this request. */
 export interface ConnectStartRequest {
   label: string
-  host: string
-  port: number
-  username: string
-  authKind: AuthKind
+  /** Omitted means `ssh`. A `wsl` request carries no host/port/credentials. */
+  kind?: 'ssh' | 'wsl'
+  host?: string
+  port?: number
+  username?: string
+  authKind?: AuthKind
   secret?: string
   privateKeyPath?: string
   sshConfigAlias?: string
   /** Present only when retrying after the user confirmed a fingerprint. */
   hostKeyFingerprint?: string
+  /** `wsl` only: the distribution to enter and its optional user. */
+  wslDistro?: string
+  wslUser?: string
   /** Per-target server-package source; omitted = follow the global policy. */
   packageSource?: 'download' | 'upload'
   remote?: RemoteRuntimeInput
+}
+
+/** One installed WSL distribution, as `/api/wsl-distros` reports it. */
+export interface WslDistro {
+  name: string
+  /** wsl.exe's own wording, e.g. `Running` / `Stopped` / `Installing`. */
+  state?: string
+  version?: number
+  default: boolean
+}
+
+/** Response of `/api/wsl-distros`; `available: false` carries the reason. */
+export interface WslProbeResult {
+  available: boolean
+  distros: WslDistro[]
+  error?: string
 }
 
 /** Response of `/api/state`. */
@@ -147,6 +176,8 @@ export interface StateResult {
   workspaces: RemoteWorkspace[]
   pluginVersion: string
   defaultProfile: string
+  /** The harness host's `process.platform`; the WSL method is gated on it. */
+  platform?: string
 }
 
 /** One directory entry of `/api/list-dir`. */
@@ -262,6 +293,16 @@ export const api = {
   /** Saved targets, saved workspaces, plugin version and the default profile. */
   state(): Promise<StateResult> {
     return call<StateResult>('state', {})
+  },
+
+  /**
+   * Installed WSL distributions (`wsl.exe -l -v`).
+   *
+   * Windows hosts only; elsewhere the route answers 400 and the caller never
+   * asks, because the WSL method is not offered there at all.
+   */
+  wslDistros(): Promise<WslProbeResult> {
+    return call<WslProbeResult>('wsl-distros', {})
   },
 
   /** Aliases parsed from the local `~/.ssh/config`, plus parser warnings. */

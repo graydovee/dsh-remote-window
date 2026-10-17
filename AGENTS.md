@@ -5,6 +5,51 @@ DSH（DeepSeek Harness）客户端插件：把一台 SSH 主机接入为远程�
 本插件拥有：SSH 连接与 host-key 校验、目标凭据、连接状态、远端工作区发现、
 `RemotePersistence`、远端部署（provisioning）以及左侧栏的「远程工作区」区域。
 
+**工作方式**：任何需求都按下一节的四人团队（Leader / 架构师 / Developer / QA）分工执行
+—— 先分工、后动手，收工出验收结论；只有「什么时候允许不开团队」里的那类改动例外。
+
+## 工作方式：四人团队（Leader + 架构师 + Developer + QA）
+
+**任何需求都先分工、后动手，收工给结论。** 主 agent 默认是 **Leader**：开工时先输出
+「角色分工 + 当前任务计划」，再按下面的闸门顺序推进；结束时由 Leader 输出验收结论。
+角色由子代理承担（`subagent` / `subagent_fork`），QA 必须真的在浏览器上操作
+（单标签约束见「测试与验收」），不能只做接口级推断。
+
+| 角色 | 职责 | 交付物 | 红线 |
+|---|---|---|---|
+| **Leader** | 澄清需求、定范围/约束/验收标准、拆解与派活、协调交接、处理阻塞、汇总裁决 | 需求与目标说明、验收标准、任务计划、任务分配记录、最终验收结论 | 不替架构师设计、不替 Developer 写实现、不替 QA 做 E2E |
+| **架构师** | 系统架构、模块划分与职责边界、接口定义与依赖关系、关键技术风险与取舍；维护 `doc/` | `doc/` 架构文档（概览、模块职责、依赖关系、接口说明、关键设计决策）+ 架构变更记录 | 不承担业务功能实现；原型代码须经 Leader 明确同意 |
+| **Developer** | 按已确认的架构与接口实现模块，编写并运行单元测试、自测，修 QA 缺陷 | 功能实现、单元测试、自测结果、实现说明（运行方式/已知限制/变更点）、缺陷修复记录 | 不擅自改架构或接口；不自行宣布"端到端通过" |
+| **QA** | 按 Leader 的验收标准设计 E2E，用浏览器工具实测核心流程/异常路径/回归 | E2E 场景、测试记录（步骤·期望·实际·证据）、缺陷清单（可复现步骤·严重程度·影响范围）、回归结果、QA 结论 | 不改业务代码；不替 Leader 做最终验收决策 |
+
+### 闸门顺序（不跳步）
+
+1. **Leader** 澄清需求 → 目标、范围、约束、**验收标准**（要能逐条判定）。
+2. **架构师** 出架构、模块依赖、接口定义并落到 `doc/`（`doc/` 目前不存在，首次架构任务
+   由架构师创建，此后只有架构师写它）。
+3. **Leader** 审架构、拆任务并分配；未过这道闸，Developer 不动手。
+4. **Developer** 实现 + 单元测试 + 自测，提交实现说明。
+5. **QA** 按验收标准跑浏览器 E2E，提交测试记录与缺陷清单。
+6. 缺陷 → Developer 修 → QA 回归；架构/接口问题 → 架构师改 `doc/` 并通知 Leader 与
+   Developer。
+7. **Leader** 汇总交付物，按验收标准逐条判定，写明通过项、未通过项与遗留风险。
+
+**架构以 `doc/` 为唯一权威**：实现与文档有偏差必须先走变更确认（架构师更新文档并通知
+两边），不许"代码先改、文档后补"。
+
+### 交接约定
+
+任何一次交接（含角色内部的小步交付）都写清四件事，缺一项视为没交付：① 交付物路径
+② 当前状态（完成 / 阻塞 / 待确认）③ 下一步交给谁 ④ 需要对方拍板的问题。
+「已完成」不算交付。
+
+### 什么时候允许不开团队
+
+**无代码、无 UI 行为**的小改动（纯文档、脚手架、版本号、注释）可由 Leader 单角色完成，
+但必须在回复里说明"为什么不触发架构/开发/QA"，且不得借此跳过本文件其它硬约束
+（部署循环、版本 bump、零 patch、浏览器验收口径等）。凡触及 `src/`、`lib/` 产物生成、
+`cordis.patch.yml` 或侧栏可见行为，一律走完整分工。
+
 ## 仓库与身份
 
 - 本仓库：<https://github.com/graydovee/dsh-remote-workspace>
@@ -19,10 +64,6 @@ DSH（DeepSeek Harness）客户端插件：把一台 SSH 主机接入为远程�
 
 ## 必读文档
 
-- `../backup/legacy-project/REFACTOR-BRIEF.md` — 重构唯一权威交底（Remote Session
-  架构 v6）：目标形态、协议规范、里程碑 P0–P5。
-- `../backup/legacy-project/PLAN.md` — 旧单仓库的 d1–d12 偏差记录（server bundle
-  为何自包含、为何要 keep-alive、mux 宽容规则等），仍然全部有效。
 - `docs/remote-session-agent-note.md` — Remote Session 设计要点。
 - `src/client/vendor/workspace-rows/NOTICE.md` — 内置的官方行层出处与重新内置方法。
 
@@ -31,9 +72,10 @@ DSH（DeepSeek Harness）客户端插件：把一台 SSH 主机接入为远程�
 ```bash
 pnpm install
 pnpm typecheck    # tsc --noEmit（无 lint 配置）
-pnpm test         # vitest run（77 个用例）
+pnpm test         # vitest run（78 个用例；Windows 上固定 17 个红是 POSIX-only fixture）
 pnpm build        # tsdown → lib/（三个 target，见下）
-# 重新内置官方行层（升级 DSH 后跑，产物已入库）：
+# 重新内置官方行层（升级 DSH 后跑，产物已入库）。
+# 需要**DSH 源码 checkout**：桌面/安装树里的 app.asar 只有 lib/，没有 src/client/rows/Rows.tsx。
 node scripts/vendor-workspace-rows.mjs --dsh <dsh-checkout>
 # 真实 profile 冒烟（需要已安装的 dsh 启动器）：
 DSH_SMOKE_CLI=<path-to-dsh> npx vitest run tests/profile.smoke.test.ts
@@ -62,7 +104,7 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
 2. **server**（`src/server/index.ts`）：远端执行世界 bundle。**自包含**——只
    external `@deepseek-ai/cordis` 与 `@deepseek-ai/schemastery`；DSH 运行时模块
    拦截只解析裸包名、不解析子路径导出，故 `@deepseek-ai/dsh-ssh/protocol|/schemas`
-   与 zod 全部内联（PLAN d2）。
+   与 zod 全部内联。
 3. **client**（浏览器，CJS 工厂，经 `window.__ModuleLoader__.load` 注册）：只允许
    平台模块表 external；**纯度门禁**会让 Node 内置物或跨插件值导入直接构建失败
    ——跨插件协作走 cordis 服务，不走值导入。CSS 运行时注入单个
@@ -72,18 +114,19 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
 目录速览：
 
 - `src/provision/` — profile 生成 + 部署（远端固定安装根 `~/.dsh/server`，一律
-  `/bin/sh -c` + 绝对路径，不依赖远端 PATH/登录 shell/系统 npm，PLAN d11）。
+  `/bin/sh -c` + 绝对路径，不依赖远端 PATH/登录 shell/系统 npm）。
 - `src/session-persistence/routing.ts` — 根平面路由持久层（见下文）。
 - `src/rsession/remote-persistence.ts` — `persist.*` 平面的 `SessionPersistence`。
 - `src/preset/world.ts` — 每目标 `isolate` realm preset（覆盖
   `ssh/fs/subprocess/sandbox/shell`）。
-- `src/ssh/` + `src/ssh-config.ts` — ssh2 连接、host-key 校验、`~/.ssh/config` 解析。
-- `src/targets/` — 目标/工作区记录存储与 `scrubSecrets`。
+- `src/ssh/` + `src/ssh-config.ts` — 两个宿侧传输：`connect.ts`（ssh2：连接、host-key 校验、exec/上传）与 `wsl.ts`（本机 `wsl.exe`：探测发行版、exec、stdin 直传、长驻通道）。`ssh-config.ts` 解析 `~/.ssh/config`。
+- `src/provision/transport.ts` — **传输抽象**（`RemoteTransport`：`exec`/`writeFile`/`openChannel`/`close`），ssh 与 WSL 各一份实现；部署流水线只面向它，不 import `ssh2`。
+- `src/targets/` — 目标/工作区记录存储、`scrubSecrets`，以及 `methods.ts`（平台×连接方式的纯谓词，客户端与 host 共用）。
 - `src/client/` — `sidebar.tsx`（左侧栏区域挂载）、`tree.tsx`（三层走树，用官方行组件渲染）、
   `session-verbs.ts` / `session-row-parts.tsx`（行内动词）、`confirm-dialog.tsx` /
   `rename-dialog.tsx`、`store.ts`（模块级 `useSyncExternalStore` 快照 + 全部动作）、
   `panel.tsx` / `list.tsx`（面板 = 向导宿主 + 回退树）、`styles.ts` / `locales.ts`。
-- `src/client/vendor/workspace-rows/` — **内置的官方行层**（见 P4 一节）。
+- `src/client/vendor/workspace-rows/` — **内置的官方行层**（见「行层是内置的官方代码」一节）。
 
 ## 不变量 — 不要破坏
 
@@ -101,11 +144,11 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
   不可达主机不得在构造时发起连接。
 - **存储域版本恒为 1**：新字段只能 additive optional（`pinnedSessions` /
   `archivedSessions` 就是这么加的），bump 即砖（单文件布局无迁移）。
-- **mux 宽容规则**（PLAN d6）：未知流的 `CREDIT/END/ABORT/OPEN_OK/OPEN_FAIL`
+- **mux 宽容规则**：未知流的 `CREDIT/END/ABORT/OPEN_OK/OPEN_FAIL`
   忽略（迟到消息），仅未知流 `DATA` 是致命帧失步。
 - **client bundle 重装必须 bump `package.json` version**：插件批量 URL 带
   `&rev=<hash>`，不 bump 浏览器吃旧缓存。
-- **行样式一行都不要自己写**：行是内置的官方组件（见 P4）。
+- **行样式一行都不要自己写**：行是内置的官方组件（见「行层是内置的官方代码」）。
 - **对话框与 toast 挂在树上，不挂在面板上**：`RemoteTree` 渲染
   `AddWorkspaceDialog` / `ConfirmDialog` / `RenameSessionDialog`，toast 由
   `NoticeToastHost` 的「第一个挂载者拥有」规则保证只出现一次。只挂在面板上会让
@@ -116,9 +159,17 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
 - TS strict + `noUncheckedIndexedAccess` + `verbatimModuleSyntax` +
   `allowImportingTsExtensions`：相对导入带 `.ts` 后缀；type-only 用 `import type`。
 - 可选 wire 字段沿用条件展开惯用法 `...(x === undefined ? {} : { x })`。
-- 注释解释**实测约束**而非显而易见的事；适用时注明对应的 PLAN 偏差编号。
-- peer 依赖区间是 `>=0.2.0-rc.1 <0.3.0`；`dsh-plugin-dev check --strict` 的
-  `manifest-peers` 失败是已记录偏差，不要靠降区间去"修"。
+- 注释解释**实测约束**而非显而易见的事；写清当年的现象与结论，别只写"按设计如此"。
+- peer 依赖区间是 `>=0.2.1-rc.2 <0.3.0`（**下限就是实测基线**：本插件用到
+  0.2.1-rc.2 才有的 `apply()` 挂载式持久后端与 `hello` 的 `kind`/`executable` 形状，
+  0.2.0-rc.x 上会直接起不来）；`dsh-plugin-dev check --strict` 的 `manifest-peers`
+  失败是已记录偏差，不要靠升降区间去"修"。
+- **`zod` 必须钉死成 harness 用的那个确切版本（当前 `4.4.3`），不要写 `^`。**
+  实测：官方包用 `zod: 4.4.3`，而 `^4.4.3` 会解析到 4.6.x，树里出现两份 zod 后
+  `z.infer`/`ZodType` 跨副本交叉推导，`tsc` 会在 `src/targets/store.ts`、
+  `src/server/processes.ts`、`src/server/controller.ts` 上跑到 4 GB / 8 GB 堆都
+  OOM（`Ineffective mark-compacts near heap limit`），钉回单份后 typecheck 是 6 秒。
+  升级 DSH 时先看 `node_modules/zod/package.json` 与任一官方包的 `dependencies.zod`。
 
 ## 测试与验收
 
@@ -136,14 +187,14 @@ provider 对着 `src/server` 副本在内存传输上跑）、`frame`、`ssh-con
 `pnpm pack --pack-destination ~/.dsh/tarballs` →
 `dsh plugin --profile web remove/add <tgz>` → 重启 3080。
 
-## 会话持久层的路由接线（实测，2026-10-16）
+## 会话持久层的路由接线（实测，2026-10-16；0.2.1-rc.2 复核 2026-10-17）
 
 远程工作区的会话是**远端权威**：本插件在 `apply()` 里构造 `RoutingSessionPersistence`
 （`src/session-persistence/routing.ts`）并 provide 为 `sessionPersistence`，按会话 cwd
 路由——本地 cwd 委托内嵌的官方 JSONL 后端（root 仍是 `~/.dsh/sessions`，本地会话行为
 逐字节不变），远程 stub cwd 走远端 `persist.*` 平面。
 
-四条**实测约束**（踩过的坑，改这里之前先读）：
+五条**实测约束**（踩过的坑，改这里之前先读）：
 
 1. **官方行 id 是 `session-persistence-jsonl`（dsh-base 层），不是 `sessions`**
    （后者属于 dsh-sdk-minimal 层，web profile 里不存在）。覆盖 `sessions`
@@ -156,11 +207,21 @@ provider 对着 `src/server` 副本在内存传输上跑）、`frame`、`ssh-con
    7 个 entry 永久 pending。注册表一律用 `ctx.get('workspaceRegistry')` 懒解析
    （注意：无 inject 时属性访问 `ctx.workspaceRegistry` 会抛
    `cannot get property "workspaceRegistry" without inject`）。
-4. **任何 `extends SessionPersistence` 的内部实例都必须用 stub context 构造**
-   （`Reflect.construct(Klass, [registrationAbsorbingContext(), ...])`）：基类构造函数
-   会 `provide('sessionPersistence')`，在根上下文二次注册直接抛
-   `service "sessionPersistence" has been registered at <...>`；同时它的 live 路由
-   是在构造函数里 `install(ctx)` 的，用 stub 构造就等于**没装**（见下面"三条写路径"）。
+4. **`RemotePersistence`（我们自己 `extends SessionPersistence` 的那个门面）仍必须用
+   stub context 构造**（`Reflect.construct(RemotePersistence, [registrationAbsorbingContext(), ...])`
+   再把 `ctx` 换回真值）：基类构造函数会 `provide('sessionPersistence')`，在根上下文
+   二次注册直接抛 `service "sessionPersistence" has been registered at <...>`。
+   内嵌的**官方**后端不再需要这一套（见第 5 条）。
+5. **官方 JSONL 后端在 0.2.1-rc.2 是一个"插件行"，不是可 `new` 的类**：它只导出
+   `apply(ctx, config)`，并在**被挂载的 ctx** 上 provide `sessionPersistence`、同时把
+   live 路由 tracker `install` 到那个 ctx。因此内嵌做法是
+   `ctx.isolate('sessionPersistence', LABEL)` 拿一个服务隔离的子 scope，对它
+   `await applyJsonl(scope, { root })`，再用 `scope.get('sessionPersistence')` 取回实例。
+   两个后果：① 隔离只影响服务注册、不影响事件——cordis 的事件分发是全局派发
+   （只有 service 用自己的 filter 时才收窄），所以 tracker 在子 scope 上照样收到
+   root 平面发出的 `session/event`，**不需要**旧版那次手工 `tracker.install(ctx)`；
+   ② 挂载是异步的，`localReady` 必须在每个本地委托前 await（构造里同时挂一个
+   `.catch(() => {})`，避免变成未处理拒绝）。
 
 验证口径：远端 `~/.dsh/remote-server-sessions/<projectKey(远端路径)>/<sessionId>/`，
 本地 `~/.dsh/sessions/` 不应出现该会话。
@@ -291,12 +352,12 @@ shell 会为远端工作区的 **stub 目录**渲染一个官方工作区行，�
 
 ## 会话事件的三条写路径（实测）
 
-**trap：官方 JSONL 后端的 live 路由是在它自己的构造函数里 `install(ctx)` 的**，
-而 routing 用**吸收注册的 stub context** 构造它 —— `on`/`effect` 在 stub 上是空操作，
-所以那次 install 什么都没装上。后果不是"远程会话事件没落盘"这么局部：
-**连本地会话也只剩 seed**（整个进程只有 `appendUnstoredSuffix` 的显式 append 生效）。
-因此 routing 构造函数里必须补一次
-`(this.local as unknown as { tracker: { install(c: Context): void } }).tracker.install(ctx)`。
+**历史 trap（0.2.0-rc.x，已不适用但值得记住成因）**：那时官方 JSONL 后端是个可 `new`
+的类、live 路由在**它自己的构造函数**里 `install(ctx)`，而 routing 用吸收注册的 stub
+context 构造它 —— `on`/`effect` 在 stub 上是空操作，于是那次 install 什么都没装上，
+**连本地会话也只剩 seed**，只能靠手工补一次 `tracker.install(ctx)` 救回来。
+0.2.1-rc.2 改成 `apply(ctx, config)` 之后这条坑消失：tracker 由官方自己装在被挂载的
+scope 上（见上文约束 5）。**别再往 routing 里加 `tracker.install` 补丁。**
 
 远程会话不在那个 backend 的 writer 注册表里（它从没见过远程 handle），所以 routing
 自己对 `session/event` / `session/flush` / `session/disposed` 装同样的三个钩子：
@@ -321,6 +382,160 @@ shell 会为远端工作区的 **stub 目录**渲染一个官方工作区行，�
 更新的自动重部署**）会清空它。`RemoteHandle` 因此对 `unknown remote session handle`
 自愈一次：重新 `persist.open`（服务端从磁盘重读日志，`events` 以权威 artifact 为准，
 重复批次会因为 seq 不连续被拒而不是写坏），再用新 handleId 重试。其它持久化错误不重试。
+
+## 与 harness 的契约面（0.2.1-rc.2 复核，2026-10-17）
+
+升级 DSH 时必须重新核对这四处；都是**运行时**契约，tsc 抓不到（我们对 `ctx.ssh`
+是自己 `declare module` 的，不和官方 `SshConnection` 做结构比对）：
+
+1. **`hello` 形状变了**：`dsh-ssh` 的 `helloSchema` 现在是
+   `{ protocol, hash, kind: 'executable' | 'node-script', platform, nodeVersion, executable, root, workspace, bootstrapHash? }`，
+   旧的 `node` 字段消失。schema 是 `$strict`，所以**发旧形状会在 `.parse` 直接抛**。
+   远端 server（`src/server/controller.ts`）发 `kind: 'node-script'` +
+   `executable: process.execPath`（我们是 `lib/server.js` 由部署的 node 执行）。
+2. **`ctx.ssh` 的服务面**：官方 `SshConnection` 只有 `ready` / `ptcLaunch` / `request` /
+   `connectStream` / `dispose`。旧的 `nodeExecutable` + `bootstrapPath` 两个 getter 被
+   合并成 `ptcLaunch`（`{kind:'embedded',executable}` 或
+   `{kind:'node-script',executable,bootstrapPath}`）。实测 0.2.1-rc.2 安装树里
+   **没有任何消费方读 `ptcLaunch`**（只有 dsh-ssh 自己定义），所以 `RemoteConnection`
+   里仍然以"不支持 PTC"抛错，但成员本身必须存在，别再退回两个旧 getter。
+3. **客户端平台面**：我们只依赖两处外壳标识——DOM 锚点
+   `[data-slot="sidebar.workspaces"]`（区域挂载用 portal，见「区域挂载」一节）和 `main` 槽位
+   注册（`ctx.slots.register` / `layout.selectPanel`）。**`sidebar.panellist` 行
+   已经删掉**（alpha30）：它只是复制了「远程工作区」区域 `+ 新建连接` 的入口，
+   现在唯一的入口是那个 `+`。此外依赖行契约（`data-row-key`、菜单键
+   `delete.workspace` / `actions.newSession`、`blank` 行、归档行的
+   `aria-description`、`--dsh-workspace-indent`）——这些在 0.2.1-rc.2 逐项复核
+   **仍在**。行层本身是我们内置的官方副本，shell 改自己的 `Rows.tsx` 不影响我们的
+   渲染；受影响的是上面这些外部标识。
+4. **桌面安装树仍然不含 SSH 包**：`@deepseek-ai/dsh-ssh` / `dsh-fs-ssh` /
+   `dsh-subprocess-ssh` / `dsh-sandbox-ssh` 在 `app.asar/dsh/node_modules` 里不存在
+   （Desktop 是本地产品）。要在 desktop 的 `dsh web` 里跑本插件，必须把它们装进
+   `web` profile；另外 `dsh plugin --profile web add` **只写 `dependencies`，不会把包
+   加进 `dsh.profile.bundles`**——不加 bundle 层，`cordis.patch.yml` 不生效，启动时会
+   看到 `dsh-remote-workspace … failed to import` + 6 个官方行 pending。
+
+## WSL 目标（仅 Windows，alpha31 起）
+
+WSL 目标 = **本机的一个发行版**当前执行世界：不联网、没有 host key，传输是 spawn 出来的
+`wsl.exe`。所有实测约束都记在这里，改这块之前先读。
+
+**平台闸门（两端各有职责，缺一不可）**：`process.platform === 'win32'` 才允许，判定写在
+`src/targets/methods.ts::methodAvailable`。客户端据此**整个不渲染** WSL 卡片（不是置灰）；
+host 侧 `connect/start` 与 `wsl-distros` 在非 win32 直接 400。两处用同一谓词，避免"藏了但
+没拦"。`/api/state` 新增 `platform` 字段就是为了让浏览器知道宿主 OS。
+
+**发行版探测（`wsl -l -v`）**：
+- 只有 `wsl.exe` 自己的管理输出是 **UTF-16LE**（`-l`/`--version`/`--status`，连错误也是），
+  按 utf8 读会得到夹 NUL 的乱码；`wsl -d X -- cmd` 的输出才是 UTF-8。两种解码别混用。
+- WSL 2.4.13 **不支持** `--format json`（`E_INVALIDARG`），只能解析表格。
+- 发行版名**可能含空格**（Store 装的 `Ubuntu 22.04.3 LTS`），所以行解析从**尾部**取 token
+  （末位数字=VERSION，倒数第二=STATE，其余整段=NAME），不能按列宽切。
+- `Installing` 行没有 VERSION 列，要能容忍。
+- **探测不得启动发行版**：只用 `-l -v`；也**不要**为了预填用户去跑 `whoami`（那会把 Stopped
+  的发行版拉起来）。用户名留空 = 发行版默认用户。
+
+**连接与部署**：
+- 五步流水线与 SSH 完全共用（`provisionOver`），差别只在 `openTransport`：WSL 分支先跑
+  `wsl -d <distro> -- true` 证明可达（这一步会把 Stopped 的发行版拉起来，这就是"连接"的语义）。
+- **没有 host key**：`hostKeyFingerprint` 对 WSL 恒为 `''`，所以 `connectOnce` 的"指纹为空
+  就拒绝"必须 kind-aware；`runConnect` 对 WSL 跳过指纹确认循环，也不存 credential。
+- 记录里 `host` 存发行版名、`port` 恒 22（不参与）、`username` 存 distro 用户或 `'default'`
+  （schema 要求非空），真正的标识是 `wslDistro`/`wslUser`。存储域版本仍是 1（additive）。
+- **上传必须走子进程 stdin**（`writeWslFile` → `cat > path`）。不要复用 ssh 那条 base64
+  heredoc 兜底：node 发行包 25–50 MB，一条命令塞进去会顶爆 `ARG_MAX`。已实测
+  `'hello' | wsl.exe -d Ubuntu-22.04 -- /bin/sh -c 'cat > f'` 可往返。
+- 通道 = `spawn('wsl.exe', ['-d', d, '--user'?, '--', '/bin/sh', '-c', serverCommand])` 的
+  stdio；`exited` 供启动存活窗口（8s）判定，`diagnostics()` 给失败时的 stderr 尾巴。
+  `close()` 结束 stdin 再 kill（`wsl.exe` 只是包装器，发行版内进程由 server 自己的租约兜底）。
+- **`packStage` 不能写死 `/usr/bin/tar`**：WSL 是 Windows-only，它的 server 包也在 Windows
+  上打，而 Windows 10+ 的 `tar.exe` 在 PATH 里。现在先试 `/usr/bin/tar`，否则用 PATH 的 `tar`。
+
+**多行脚本必须走 stdin（`sh -s`），不能走 argv（实测 2026-10-18）**：`wsl.exe` 会重新解析
+Windows 命令行，7 行的 body 经 `-c` 传进去会**丢行**，甚至被发行版的默认 shell（zsh）捡去
+执行（表现为 `zsh:12: unmatched "`）。所以 `wslExec()` 一律 `spawn(…, ['-d', d, '--', '/bin/sh', '-s'])`
+再把脚本写进 stdin；只有**单行**命令（通道启动、`cat > file`）才用 `-c`。区分两种解码与
+两种传参方式是这块最容易翻车的地方。
+
+### Windows 宿主上的交叉暂存（实测跑通，alpha47）
+
+WSL 目标只在 Windows 上存在，所以 **linux 包常常是在 Windows 上打出来的**。这条路上的坑
+（每一个都让部署在远端以完全不同的面貌失败）：
+
+1. **`findHostPnpm`** 要同时认 `pnpm.cjs`/`pnpm.mjs` 与 `node`/`node.exe`（打包的 runtime 用 `.mjs`）。
+2. **launcher 探活用包清单里的 bin JS**（`node_modules/@deepseek-ai/dsh/<bin.dsh>`）：`.bin/dsh`
+   在 Windows 上是 **shell 包装脚本**，`node .bin/dsh` 解析不了；`/usr/bin/env` 在 Windows 上
+   根本不存在。
+3. **打包会丢可执行位**：NTFS 没有 +x，解出来的文件 mode 是 0666，所以安装脚本用
+   `test -e` + `chmod +x`，真正的判据是随后 `--version` 的输出。
+4. **`packageFiles` 的 `path` 是远端路径**：`join('lib', name)` 在 Windows 上是 `lib\server.js`，
+   拿它当远端路径会把文件写成包根的 `libserver.js`，而真正的 `lib/server.js` 保持旧构建 ——
+   症状是远端握手报 `Invalid input: expected 1`（旧 bundle 的协议常量）而不是文件缺失。
+5. **`@deepseek-ai/node-addon-system`（flock）没有 win32 构建**，Windows 上暂存时一个都装不到，
+   直到远端第一次给会话加锁才炸：`Cannot find module '@deepseek-ai/node-addon-system-linux-x64/package.json'`。
+   `fixNativeClosure` 现在按 family 补装：`node-addon-require-builtin-<platform>-<arch>[-<libc>]`
+   与 `@deepseek-ai/node-addon-system-<platform>-<arch>`（**后者没有 libc**，`isForeignBindingDir`
+   必须按 family 取目标 flavour，否则会把刚装上的包当"外来平台"删掉）。
+
+### 每 target 只能有一个远端 server 进程（alpha46 实测）
+
+`persist.create` 返回的是**内存句柄**，日志要 flush 才落盘（那时远端只有 `session.lock`）。
+所以任何 `persist.*` 落在**第二个** server 进程上都会答 `session "…" not found` ——
+浏览会话必须和 realm 共用同一条通道（一个进程），不能各开一条 `wsl.exe`。
+
+这条约束连带三个必须一起守住的不变量：
+
+- **`RemoteClient.close()` 只关自己的 peer**：`mux.close()` 是**传输层拆除**，会 destroy 子进程的
+  stdio；那样下一次 attach 会在 0 ms 内报 `SSH connection lost`（实测 `in.destroyed=true
+  out.destroyed=true`），realm 的会话也跟着死。
+- **`connectOnce` 缓存通道后要立刻 attach 一个心跳客户端**：否则从「连接成功」到「第一次目录/
+  会话操作」之间没有任何心跳，30s 租约一到 server 自己退出。
+- **浏览客户端按 target 缓存**（空闲 120s 回收）：不能一次操作一条通道 —— 每次都要重新
+  provisioning + 在 distro 里起一个 dsh，一次目录导航 40 秒。
+
+**Windows 上的 stub 是 `C:\…`**：`session/open.ts` 的"绝对路径"判定必须用 `isAbsolute`，
+不能写 `startsWith('/')`；`publicTarget` 也要带出 `wslDistro`/`wslUser`，否则列表行只剩 `host`。
+
+### 远端世界的沙箱与执行（alpha48–50 实测）
+
+- **`dsh-sandbox-ssh` 只是把 `request('sandbox', { argv, policy })` 转发到远端**，真正的
+  `confine()` 在**远端 server 里**执行。WSL 的 Ubuntu 既没有 bubblewrap 也没有 Landlock，
+  于是每条 shell 命令都在闸门被拒：
+  `sandbox mode "workspace-write" is requested but no sandbox backend is usable on this host…`。
+- 处置（`src/server/controller.ts`）：远端世界**本身就是隔离边界**，所以 `confine()` 报
+  "no sandbox backend is usable" 时**原样返回 argv**（并在日志里说一次）。这与
+  workspace-write 的本地语义一致（"就是这台机器的这个工作区"），也不再逼用户点
+  danger-full-access 审批。
+- 端到端验证口径（真跑一条命令，拿到字面输出）：
+
+  ```ts
+  const p = await provisionTarget({ target /* kind:'wsl' */, packageRoot, packagePolicy })
+  const c = await openRemoteClient(p.channel, '/home/graydove')
+  await c.request('sandbox', { argv: ['/bin/uname','-s'], policy: { mode:'workspace-write', workspaceRoot:'/home/graydove' } }, z.unknown())
+  // → ["/bin/uname","-s"]（无 wrapper）
+  await c.request('executable', { command: 'uname' }, z.unknown())      // → "/usr/bin/uname"
+  const prep = await c.request('process.prepare', {
+    argv: ['/bin/sh','-c','uname -s; pwd; echo WSL-OK'], cwd: '/home/graydove', graceMs: 5_000,
+    stdio: { stdin: 'ignore', stdout: { maxBytes: 65_536 }, stderr: { maxBytes: 65_536 } },
+  }, z.unknown())
+  await c.request('process.start', { id: prep.id }, z.unknown())
+  await c.request('process.wait', { id: prep.id }, z.unknown())
+  const done = await c.request('process.done', { id: prep.id }, z.unknown())
+  // collected.stdout.tail 是 base64 → "Linux\n/home/graydove\nWSL-OK\n"
+  ```
+- **realm 与浏览共用同一个 `RemoteClient`**（`RemoteWorkspaces.remoteClient()` + `pin()`）：
+  一个字节流只能有一个 mux/peer。之前各自建 peer，谁先收到 `hello` 响应就把对方的请求饿死，
+  表现为"空闲一阵后 `SSH connection lost`"（realm 的心跳因而从未成功）。realm 的
+  `dispose()` 只**解绑并 release pin**，绝不 `mux.close()`（那是传输层拆除）。
+- **`process.done` 的 stdout 是 base64**（`collected.stdout.tail`），不是明文。
+
+### 侧栏行的可点击性
+
+内置行是 `div` + JS 点击，**在无障碍树里没有激活目标**（实测：侧栏清单只有 刷新 / 新建连接），
+自动化与读屏都进不去。`tree.tsx` 现在用 `TreeRow` 包一层
+`role="button"` + `tabIndex=0` + `aria-expanded` + Enter/Space 转发（`display: contents`
+不产生盒子，布局逐字节不变）。连接行由此可点（点一下即展开/连接）；工作区与会话行的
+可点击性仍不完整（展开后其真实按钮会出现，但行本身时有时无），**这是已知缺口**。
 
 ## 版本策略
 

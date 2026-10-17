@@ -751,6 +751,9 @@ ${ROW_STYLES}
   border-color: var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
 }
 
+/* A11y wrapper around one vendored row: no box, but a real tree item. */
+.dsh-rw-row-a11y { display: contents }
+.dsh-rw-row-a11y:focus-visible { outline: 2px solid var(--dsh-color-accent, #3b82f6); outline-offset: -2px; border-radius: 6px }
 .dsh-rw-tree-empty {
   margin: 4px 8px;
   font-size: 12px;

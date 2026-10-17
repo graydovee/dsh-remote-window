@@ -156,7 +156,11 @@ describe('generated scripts', () => {
     expect(lines[0]).toBe('set -eu')
     expect(script).toContain('sha256sum -c -')
     expect(script.indexOf('tar -xzf')).toBeGreaterThan(script.indexOf('sha256sum -c -'))
-    expect(script).toContain(`test -x '/home/u/.dsh/server/staging/dsh-x/node_modules/.bin/dsh'`)
+    // `-e`, not `-x`: a package packed on Windows (NTFS has no execute bit)
+    // arrives with mode 0666, so the script restores the bit instead of
+    // rejecting an otherwise good deployment.
+    expect(script).toContain(`test -e '/home/u/.dsh/server/staging/dsh-x/node_modules/.bin/dsh'`)
+    expect(script).toContain(`command chmod +x '/home/u/.dsh/server/staging/dsh-x/node_modules/.bin/dsh'`)
     const swap = script.indexOf(`command mv -f '/home/u/.dsh/server/staging/dsh-x' '/home/u/.dsh/server/dsh'`)
     const marker = script.indexOf('.components/dsh.json')
     expect(swap).toBeGreaterThan(-1)

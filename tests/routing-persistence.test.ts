@@ -5,8 +5,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
-import type { Context } from '@deepseek-ai/cordis'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import RoutingSessionPersistence from '../src/session-persistence/routing.ts'
 
@@ -20,30 +20,37 @@ function header(id: string, cwd: string): SessionHeader {
   } as never
 }
 
-/** Listeners the routing installed on the host context, by event name. */
-const listeners = new Map<string, Array<(...args: never[]) => unknown>>()
+/**
+ * Real cordis contexts, one per test.
+ *
+ * The routing mounts the official JSONL backend through its plugin entry
+ * (`apply(ctx, config)`, dsh 0.2.1-rc.2) inside a service-isolated scope, so a
+ * hand-rolled context stub can no longer stand in for it: the mount path needs
+ * real `plugin` / `provide` / `isolate` semantics.
+ */
+const contexts: Context[] = []
+let current: Context | undefined
 
 function makeCtx(): Context {
-  listeners.clear()
-  return {
-    reflect: { provide: () => () => {} },
-    logger: { warn() {}, info() {}, error() {}, debug() {} },
-    effect: () => () => {},
-    on: (name: string, callback: (...args: never[]) => unknown) => {
-      const bucket = listeners.get(name) ?? []
-      bucket.push(callback)
-      listeners.set(name, bucket)
-      return { dispose() {} }
-    },
-    get: (name: string) => (name === 'remoteWorkspaces' ? fakeService : undefined),
-  } as unknown as Context
+  const ctx = new Context()
+  ctx.provide('remoteWorkspaces', fakeService)
+  current = ctx
+  contexts.push(ctx)
+  return ctx
 }
 
-/** Dispatch one session-plane event to every listener the routing installed. */
-async function emit(name: string, ...args: unknown[]): Promise<void> {
-  for (const listener of listeners.get(name) ?? []) {
-    await (listener as unknown as (...values: unknown[]) => Promise<void>)(...args)
+afterEach(async () => {
+  current = undefined
+  while (contexts.length > 0) {
+    const ctx = contexts.pop() as Context
+    await ctx.fiber.dispose().catch(() => {})
   }
+})
+
+/** Dispatch one session-plane event the way the agent loop does. */
+async function emit(name: string, ...args: unknown[]): Promise<void> {
+  if (current === undefined) throw new Error('emit() needs a context created by makeCtx()')
+  await (current.parallel as unknown as (event: string, ...rest: unknown[]) => Promise<void>)(name, ...args)
 }
 
 const requests: Array<{ method: string; params: unknown }> = []
@@ -156,11 +163,12 @@ describe('routing session persistence', () => {
     await handle.close()
   })
 
-  it('re-installs the embedded backend so LOCAL live events still persist', async () => {
-    // The embedded JSONL backend installs its live routing in its constructor,
-    // which ran against a registration-absorbing stub context (no-op `on`).
-    // Without the explicit re-install the whole process — local sessions
-    // included — would keep nothing but the seed turn.
+  it('persists LOCAL live events through the embedded backend\'s own tracker', async () => {
+    // dsh 0.2.1-rc.2 mounts the backend through its plugin entry, which installs
+    // the live routing (`session/event` → its write handle, drain on
+    // `session/flush`) on the context it is given. The routing mounts it into an
+    // isolated scope, so this test also proves the isolation does not cut the
+    // tracker off from the events emitted on the host plane.
     const root = await mkdtemp(join(tmpdir(), 'rw-routing-live-'))
     const persistence = new RoutingSessionPersistence(makeCtx(), { root })
     const handle = await persistence.create(header('session-local-live', '/Users/someone/project'))

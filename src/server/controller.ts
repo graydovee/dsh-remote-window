@@ -88,6 +88,16 @@ const readRangeRequest = z.object({
 }).strict()
 const executableRequest = z.object({ command: z.string(), env: environmentSchema.optional() }).strict()
 const sandboxRequest = z.object({ argv: z.array(z.string()).min(1), policy: policySchema }).strict()
+
+/** Modes already reported as unconfined so the log stays one line per mode. */
+const unconfinedReported = new Set<string>()
+
+/** Say once per mode that the remote world cannot confine and runs as-is. */
+function noteUnconfined(mode: string): void {
+  if (unconfinedReported.has(mode)) return
+  unconfinedReported.add(mode)
+  console.error(`[dsh-remote-workspace] no sandbox backend inside the remote world; running \`${mode}\` commands unconfined there`)
+}
 const resizeRequest = z.object({ id: processIdSchema, cols: z.number().int().positive(), rows: z.number().int().positive() }).strict()
 const terminalOperation = z.object({ id: processIdSchema, value: z.string().optional() }).strict()
 const helloRequest = z.object({
@@ -309,9 +319,14 @@ export class RemoteExecutionServer {
       return helloSchema.parse({
         protocol: SSH_PROTOCOL_VERSION,
         hash: this.hostDigest,
+        // This server is `lib/server.js` executed by the deployed Node binary,
+        // so the helper kind is `node-script`; the official schema rejects the
+        // pre-0.2.1 `node` field outright (`$strict`), and providers read
+        // `ptcLaunch` instead of a bare executable path.
+        kind: 'node-script',
         platform: process.platform,
         nodeVersion: process.version,
-        node: process.execPath,
+        executable: process.execPath,
         root: this.root,
         workspace: this.workspace,
         ...(input.bootstrapPath === undefined
@@ -329,7 +344,7 @@ export class RemoteExecutionServer {
         protocol: REMOTE_SESSION_PROTOCOL,
         serverId: this.options.serverId ?? 'ephemeral',
         installationId: this.options.installationId ?? 'stdio',
-        version: this.options.version ?? '0.1.0-alpha28',
+        version: this.options.version ?? '0.1.0-alpha50',
         workspacesRoot: this.workspace,
         // The directory browser's 主目录 shortcut: the server process runs as
         // the remote user, so its home is the user's home.
@@ -450,7 +465,20 @@ export class RemoteExecutionServer {
       const input = sandboxRequest.parse(raw)
       const resolved = await this.resolvePolicy(input.policy, signal)
       if (resolved.mode === 'danger-full-access') throw new Error('unconfined argv does not need a sandbox wrapper')
-      return await ctx.sandbox.confine(input.argv, resolved as Parameters<typeof ctx.sandbox.confine>[1], signal)
+      try {
+        return await ctx.sandbox.confine(input.argv, resolved as Parameters<typeof ctx.sandbox.confine>[1], signal)
+      } catch (error) {
+        // This world *is* the isolation boundary: the caller is a different
+        // machine (SSH host, WSL distribution) reached over its own transport.
+        // A distribution without bubblewrap/Landlock cannot confine at all
+        // (measured: WSL Ubuntu-22.04 ships neither), and refusing here would
+        // block every shell tool in the remote workspace — so the argv runs
+        // unconfined *inside that world*, which is exactly what
+        // workspace-write means locally: this workspace's machine.
+        if (!/no sandbox backend is usable/i.test(String((error as Error).message))) throw error
+        noteUnconfined(resolved.mode)
+        return input.argv
+      }
     }
     if (method === 'fs.resolve' || method === 'fs.lstat') {
       const input = pathRequest.parse(raw)

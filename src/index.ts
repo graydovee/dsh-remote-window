@@ -19,6 +19,8 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import Schema from '@deepseek-ai/schemastery'
 import RoutingSessionPersistence from './session-persistence/routing.ts'
 import { listSshAliases, prefillFromResolution, resolveSshAlias } from './ssh-config.ts'
+import { listWslDistros } from './ssh/wsl.ts'
+import { methodAvailable } from './targets/methods.ts'
 import { TargetStore } from './targets/store.ts'
 import { scrubSecrets , type PackagePolicySettings } from './targets/types.ts'
 import { RemoteWorkspaces, packageRootFrom, type ConnectRequest, type ProvisionEvent } from './provision/service.ts'
@@ -233,7 +235,18 @@ async function dispatchApi(
         workspaces: workspaces.listWorkspaces(),
         pluginVersion: pluginVersion(),
         defaultProfile: 'dsh-remote-server',
+        // The browser does not know the host OS; this is what gates the WSL
+        // connection method (the same `methodAvailable` predicate validates it).
+        platform: process.platform,
       }
+    case 'wsl-distros': {
+      if (!methodAvailable('wsl', process.platform)) {
+        throw new RouteError('unsupported', `WSL targets are only available on Windows (this host is ${process.platform})`, 400)
+      }
+      // Never throws for "no WSL here": the probe reports it inline so the
+      // wizard can show the reason instead of a failed request.
+      return await listWslDistros()
+    }
     case 'ssh-aliases': {
       const { aliases, warnings } = await listSshAliases()
       return { aliases, warnings: warnings.map(scrubSecrets) }
@@ -257,19 +270,45 @@ async function dispatchApi(
       return prefillFromResolution(host, resolution)
     }
     case 'connect/start': {
-      const request: ConnectRequest = {
+      const kindRaw = optionalString(body, 'kind') ?? 'ssh'
+      if (kindRaw !== 'ssh' && kindRaw !== 'wsl') throw new RouteError('bad-request', '"kind" must be "ssh" or "wsl"', 400)
+      if (!methodAvailable(kindRaw, process.platform)) {
+        throw new RouteError('unsupported', `the "${kindRaw}" connection method is not available on ${process.platform}`, 400)
+      }
+      const wslDistro = optionalString(body, 'wslDistro')
+      const wslUser = optionalString(body, 'wslUser')
+      if (kindRaw === 'wsl' && wslDistro === undefined) {
+        throw new RouteError('bad-request', '"wslDistro" is required for a WSL connection', 400)
+      }
+      const shared = {
         label: requireString(body, 'label'),
-        host: requireString(body, 'host'),
-        port: typeof body.port === 'number' ? body.port : Number.parseInt(requireString(body, 'port'), 10),
-        username: requireString(body, 'username'),
-        authKind: (optionalString(body, 'authKind') ?? 'agent') as ConnectRequest['authKind'],
-        ...(optionalString(body, 'secret') === undefined ? {} : { secret: optionalString(body, 'secret') as string }),
-        ...(optionalString(body, 'privateKeyPath') === undefined ? {} : { privateKeyPath: optionalString(body, 'privateKeyPath') as string }),
-        ...(optionalString(body, 'sshConfigAlias') === undefined ? {} : { sshConfigAlias: optionalString(body, 'sshConfigAlias') as string }),
-        ...(optionalString(body, 'hostKeyFingerprint') === undefined ? {} : { hostKeyFingerprint: optionalString(body, 'hostKeyFingerprint') as string }),
         ...(optionalString(body, 'packageSource') === undefined ? {} : { packageSource: optionalString(body, 'packageSource') as ConnectRequest['packageSource'] }),
         ...(body.remote === undefined || typeof body.remote !== 'object' ? {} : { remote: body.remote as ConnectRequest['remote'] }),
       }
+      const request: ConnectRequest = kindRaw === 'wsl'
+        ? {
+            ...shared,
+            kind: 'wsl',
+            // A distro has no host/port/credentials; the transport is local.
+            host: wslDistro as string,
+            port: 22,
+            username: wslUser ?? 'default',
+            authKind: 'agent',
+            wslDistro: wslDistro as string,
+            ...(wslUser === undefined ? {} : { wslUser }),
+          }
+        : {
+            ...shared,
+            kind: 'ssh',
+            host: requireString(body, 'host'),
+            port: typeof body.port === 'number' ? body.port : Number.parseInt(requireString(body, 'port'), 10),
+            username: requireString(body, 'username'),
+            authKind: (optionalString(body, 'authKind') ?? 'agent') as ConnectRequest['authKind'],
+            ...(optionalString(body, 'secret') === undefined ? {} : { secret: optionalString(body, 'secret') as string }),
+            ...(optionalString(body, 'privateKeyPath') === undefined ? {} : { privateKeyPath: optionalString(body, 'privateKeyPath') as string }),
+            ...(optionalString(body, 'sshConfigAlias') === undefined ? {} : { sshConfigAlias: optionalString(body, 'sshConfigAlias') as string }),
+            ...(optionalString(body, 'hostKeyFingerprint') === undefined ? {} : { hostKeyFingerprint: optionalString(body, 'hostKeyFingerprint') as string }),
+          }
       if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65_535) {
         throw new RouteError('bad-request', '"port" must be between 1 and 65535', 400)
       }

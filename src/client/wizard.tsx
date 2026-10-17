@@ -15,20 +15,28 @@ import {
   Pill, SegmentedControl, StateDot, Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry, StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { AuthKind, ConnectStep, DirEntry, SshAlias } from './api.ts'
+import type { AuthKind, ConnectStep, DirEntry, SshAlias, WslDistro } from './api.ts'
 import { EmptyState, ErrorBanner, Field, LoadingLine } from './common.tsx'
 import { t } from './locales.ts'
 import type { AppState, ConnectionMethod, StepState, WizardStep } from './store.ts'
 import { CONNECT_STEPS, sortEntries, store, useAppState } from './store.ts'
+import { methodAvailable } from '../targets/methods.ts'
 
 /** Step order of the wizard. */
 const STEP_ORDER: readonly WizardStep[] = ['method', 'config', 'connecting', 'directory']
 
-/** Method cards; only SSH is selectable in v1. */
-const METHOD_CARDS: readonly { id: ConnectionMethod; disabled: boolean }[] = [
-  { id: 'ssh', disabled: false },
-  { id: 'docker', disabled: true },
-  { id: 'wsl', disabled: true },
+/**
+ * Method cards, in display order.
+ *
+ * Visibility is decided per card: `ssh` is always offered, `docker` stays a
+ * visible teaser everywhere (reserved for a later version), and `wsl` is only
+ * *rendered* where `methodAvailable` says the host can host it — on a
+ * non-Windows harness the card does not exist at all.
+ */
+const METHOD_CARDS: readonly { id: ConnectionMethod; teaser?: boolean }[] = [
+  { id: 'ssh' },
+  { id: 'docker', teaser: true },
+  { id: 'wsl' },
 ]
 
 /** Localized name/description key per method card. */
@@ -150,26 +158,30 @@ function StepPills(props: { state: AppState }): ReactElement | null {
 
 /** Step 1 — connection method. */
 function MethodStep(props: { state: AppState }): ReactElement | null {
+  // A method the host cannot support is not rendered at all (the WSL card is
+  // absent off Windows); the docker teaser stays visible everywhere.
+  const cards = METHOD_CARDS.filter(card => card.teaser === true || methodAvailable(card.id, props.state.platform))
   return (
     <div className="dsh-rw-section">
       <h3 className="dsh-rw-section-title">{t('method.title')}</h3>
       <p className="dsh-rw-hint">{t('method.description')}</p>
       <div className="dsh-rw-methods">
-        {METHOD_CARDS.map((card, index) => {
+        {cards.map((card, index) => {
           const selected = props.state.method === card.id
+          const disabled = card.teaser === true
           return (
             <button
               key={card.id}
               type="button"
               className="dsh-rw-method"
-              data-disabled={card.disabled ? 'true' : undefined}
+              data-disabled={disabled ? 'true' : undefined}
               data-selected={selected ? 'true' : undefined}
-              disabled={card.disabled}
+              disabled={disabled}
               aria-pressed={selected}
-              aria-label={card.id === 'ssh' ? t('method.ssh.aria') : undefined}
-              {...(card.disabled ? {} : { 'data-step-focus': index === 0 ? true : undefined })}
+              aria-label={card.id === 'ssh' ? t('method.ssh.aria') : card.id === 'wsl' ? t('method.wsl.aria') : undefined}
+              {...(disabled ? {} : { 'data-step-focus': index === 0 ? true : undefined })}
               onClick={() => {
-                if (card.disabled) return
+                if (disabled) return
                 store.setMethod(card.id)
                 store.setStep('config')
               }}
@@ -180,7 +192,7 @@ function MethodStep(props: { state: AppState }): ReactElement | null {
                 {selected && <Tag tone="info">{t('method.selected')}</Tag>}
               </span>
               <span className="dsh-rw-method-description">{t(METHOD_DESCRIPTION_KEYS[card.id])}</span>
-              {card.disabled && <span className="dsh-rw-method-state">{t('method.disabledNote')}</span>}
+              {disabled && <span className="dsh-rw-method-state">{t('method.disabledNote')}</span>}
             </button>
           )
         })}
@@ -189,9 +201,119 @@ function MethodStep(props: { state: AppState }): ReactElement | null {
   )
 }
 
+/** Known `wsl.exe` states rendered in the user's language; anything else verbatim. */
+function wslStateLabel(state: string | undefined): string | undefined {
+  if (state === undefined) return undefined
+  const lowered = state.toLowerCase()
+  if (lowered.startsWith('running')) return t('wsl.state.running')
+  if (lowered.startsWith('stopped')) return t('wsl.state.stopped')
+  if (lowered.startsWith('installing')) return t('wsl.state.installing')
+  return state
+}
+
+/**
+ * The WSL fields of step 2: distribution detection, selection and the optional
+ * distro user.
+ *
+ * Detection runs when the step is entered (`store.loadWslDistros`); this
+ * component only renders the outcome and lets the user re-run it. When nothing
+ * is detected the distribution is still typeable, so a WSL install that the
+ * probe cannot enumerate (or a distro the user knows by name) is not a dead end.
+ */
+function WslConfigFields(props: { state: AppState }): ReactElement {
+  const { config, wslProbe, pending } = props.state
+  const [menuOpen, setMenuOpen] = useState(false)
+  const hasList = wslProbe.distros.length > 0
+  const selected = wslProbe.distros.find(distro => distro.name === config.wslDistro)
+  const items: MenuEntry[] = wslProbe.distros.map((distro: WslDistro) => ({
+    id: distro.name,
+    label: [distro.name, wslStateLabel(distro.state), distro.default ? t('wsl.default') : undefined]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join(' · '),
+  }))
+  const trigger = (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={pending || wslProbe.status === 'loading'}
+      aria-haspopup="menu"
+      aria-expanded={menuOpen}
+      aria-label={t('config.wslDistro')}
+      icon={<IconChevronDownOutlineRegular size={12} />}
+      onClick={() => { setMenuOpen(open => !open) }}
+    >
+      {selected === undefined
+        ? (config.wslDistro === '' ? t('config.wslDistro.pick') : config.wslDistro)
+        : [selected.name, wslStateLabel(selected.state)].filter((part): part is string => part !== undefined).join(' · ')}
+    </Button>
+  )
+  return (
+    <>
+      <Field label={t('config.wslDistro')} hint={t('config.wslDistro.hint')}>
+        <div className="dsh-rw-inline">
+          {hasList
+            ? (
+              <Menu
+                open={menuOpen}
+                onClose={() => { setMenuOpen(false) }}
+                items={items}
+                selectedId={config.wslDistro}
+                onSelect={(id) => {
+                  setMenuOpen(false)
+                  store.patchConfig({ wslDistro: id })
+                }}
+                align="start"
+                portal
+                anchor={trigger}
+              />
+            )
+            : (
+              <Input
+                data-step-focus
+                value={config.wslDistro}
+                placeholder={t('config.wslDistro.placeholder')}
+                aria-label={t('config.wslDistro')}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => { store.patchConfig({ wslDistro: event.target.value }) }}
+              />
+            )}
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<IconRefreshOutlineRegular size={12} />}
+            aria-label={t('common.refresh')}
+            disabled={wslProbe.status === 'loading'}
+            onClick={() => { void store.loadWslDistros(true) }}
+          />
+          <span className="dsh-rw-field-hint">
+            {wslProbe.status === 'loading'
+              ? t('wsl.detecting')
+              : wslProbe.status === 'unavailable'
+                ? t('wsl.unavailable', { reason: wslProbe.error ?? '' })
+                : hasList
+                  ? t('wsl.detected', { count: String(wslProbe.distros.length) })
+                  : t('wsl.empty')}
+          </span>
+        </div>
+      </Field>
+
+      <Field label={t('config.wslUser')} hint={t('config.wslUser.hint')}>
+        <Input
+          value={config.wslUser}
+          placeholder={t('config.wslUser.placeholder')}
+          aria-label={t('config.wslUser')}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => { store.patchConfig({ wslUser: event.target.value }) }}
+        />
+      </Field>
+
+      <p className="dsh-rw-hint">{t('config.wsl.note')}</p>
+    </>
+  )
+}
+
 /** Step 2 — connection configuration. */
 function ConfigStep(props: { state: AppState }): ReactElement | null {
   const { config, aliases, aliasesLoading, aliasesLoaded, aliasWarnings, prefilling, pending, secretPending } = props.state
+  const wsl = props.state.method === 'wsl'
   const [menuOpen, setMenuOpen] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
@@ -223,6 +345,9 @@ function ConfigStep(props: { state: AppState }): ReactElement | null {
           />
         </Field>
 
+        {wsl && <WslConfigFields state={props.state} />}
+
+        {!wsl && (<>
         <div className="dsh-rw-inline">
           <Menu
             open={menuOpen}
@@ -338,6 +463,7 @@ function ConfigStep(props: { state: AppState }): ReactElement | null {
         )}
 
         {config.authKind === 'agent' && <p className="dsh-rw-hint">{t('config.secret.agent.note')}</p>}
+        </>)}
 
         <DisclosureRow
           icon={<IconGlobeOutlineRegular size={14} />}
@@ -678,7 +804,7 @@ export function WizardFooter(): ReactElement | null {
           <Button variant="ghost" onClick={store.closeOverlay}>{t('common.cancel')}</Button>
         </span>
         <span className="dsh-rw-footer-group">
-          <Button variant="primary" disabled={state.method !== 'ssh'} onClick={() => { store.setStep('config') }}>
+          <Button variant="primary" disabled={!methodAvailable(state.method, state.platform)} onClick={() => { store.setStep('config') }}>
             {t('step.label.config')}
           </Button>
         </span>

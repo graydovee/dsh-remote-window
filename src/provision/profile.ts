@@ -95,16 +95,25 @@ export function remoteProfileFiles(options: {
   ])
 }
 
-/** The package files the remote needs at run time. */
+/**
+ * The package files the remote needs at run time.
+ *
+ * The returned `path` is the **remote** (POSIX) path, never a host one: on
+ * Windows `join('lib', 'server.js')` is `lib\server.js`, and using that as a
+ * remote path wrote the bundle to a file literally named `libserver.js` in the
+ * package root while the real `lib/server.js` kept an old build — which surfaced
+ * only as a protocol mismatch (`expected 1`) when the stale server answered.
+ */
 export async function packageFiles(packageRoot: string): Promise<RemoteFile[]> {
   const files: RemoteFile[] = []
-  const push = async (relative: string): Promise<void> => {
-    files.push({ path: relative, content: await readFile(join(packageRoot, relative)) })
+  /** Read one file by its host path but record its POSIX remote path. */
+  const push = async (hostRelative: string, remotePath: string = hostRelative): Promise<void> => {
+    files.push({ path: remotePath, content: await readFile(join(packageRoot, hostRelative)) })
   }
   await push('package.json')
   await push('cordis.patch.yml')
   for (const name of await readdir(join(packageRoot, 'lib'))) {
-    if (name.endsWith('.js') || name.endsWith('.mjs') || name.endsWith('.cjs')) await push(join('lib', name))
+    if (name.endsWith('.js') || name.endsWith('.mjs') || name.endsWith('.cjs')) await push(join('lib', name), `lib/${name}`)
   }
   return files
 }

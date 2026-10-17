@@ -194,21 +194,39 @@ export interface HostPnpm {
  *
  * The harness ships one under `~/.dsh/dsh-runtimes/<runtime>/dependencies/pnpm`
  * with a matching Node; a PATH pnpm/node pair is the fallback.
+ *
+ * The probe has to accept **both** layouts: the packaged runtimes ship
+ * `pnpm/bin/pnpm.mjs` and (on Windows) `node/bin/node.exe`, while older/POSIX
+ * trees use `pnpm.cjs` and `node/bin/node`. Matching only the POSIX spelling is
+ * what made every Windows-hosted staging attempt die with "cannot find a host
+ * pnpm" — and staging is unavoidable for WSL targets, which only exist on
+ * Windows.
  */
 export async function findHostPnpm(): Promise<HostPnpm> {
   const env = process.env
   if (env.DSH_HOST_PNPM !== undefined && env.DSH_HOST_NODE !== undefined) {
     return { node: env.DSH_HOST_NODE, pnpm: env.DSH_HOST_PNPM }
   }
+  const isFile = (path: string): Promise<boolean> => stat(path).then(entry => entry.isFile(), () => false)
+  /** First existing candidate, or undefined. */
+  const firstFile = async (candidates: readonly string[]): Promise<string | undefined> => {
+    for (const candidate of candidates) if (await isFile(candidate)) return candidate
+    return undefined
+  }
   const runtimes = join(homedir(), '.dsh', 'dsh-runtimes')
   for (const entry of await readdir(runtimes).catch(() => [])) {
-    const pnpm = join(runtimes, entry, 'dependencies', 'pnpm', 'bin', 'pnpm.cjs')
-    const node = join(runtimes, entry, 'dependencies', 'node', 'bin', 'node')
-    const [pnpmOk, nodeOk] = await Promise.all([
-      stat(pnpm).then(i => i.isFile(), () => false),
-      stat(node).then(i => i.isFile(), () => false),
+    const deps = join(runtimes, entry, 'dependencies')
+    const pnpm = await firstFile([
+      join(deps, 'pnpm', 'bin', 'pnpm.cjs'),
+      join(deps, 'pnpm', 'bin', 'pnpm.mjs'),
+      join(deps, 'pnpm', 'pnpm.cjs'),
     ])
-    if (pnpmOk && nodeOk) return { node, pnpm }
+    const node = await firstFile([
+      join(deps, 'node', 'bin', 'node'),
+      join(deps, 'node', 'bin', 'node.exe'),
+      join(deps, 'node', 'node.exe'),
+    ])
+    if (pnpm !== undefined && node !== undefined) return { node, pnpm }
   }
   throw new Error('cannot find a host pnpm to stage the dsh runtime package')
 }

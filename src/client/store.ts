@@ -18,9 +18,11 @@ import {
 import type {
   AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, DirEntry, ListDirResult,
   PublicTarget, RemoteRegistryWorkspace, RemoteRuntimeInput, RemoteSession, RemoteWorkspace,
-  SshAlias, WireError,
+  SshAlias, WireError, WslDistro,
 } from './api.ts'
 import type { ClientContext } from './context.ts'
+import { methodAvailable } from '../targets/methods.ts'
+import type { ConnectionMethod } from '../targets/methods.ts'
 import { t } from './locales.ts'
 import type { LocaleKey } from './locales.ts'
 
@@ -30,8 +32,11 @@ export type WizardStep = 'method' | 'config' | 'connecting' | 'directory'
 /** Which surface the overlay shows. */
 export type WizardView = 'list' | 'wizard'
 
-/** Connection-method card. Only `ssh` is selectable in v1. */
-export type ConnectionMethod = 'ssh' | 'docker' | 'wsl'
+/**
+ * Connection-method card. Availability is platform-dependent and decided by
+ * {@link methodAvailable} — the same predicate the host validates with.
+ */
+export type { ConnectionMethod }
 
 /** The four progress rows, in server order. */
 export const CONNECT_STEPS: readonly ConnectStep[] = ['connect', 'probe', 'runtime', 'upload', 'start']
@@ -39,6 +44,7 @@ export const CONNECT_STEPS: readonly ConnectStep[] = ['connect', 'probe', 'runti
 /** Editable connection draft (step 2). */
 export interface ConnectDraft {
   label: string
+  /** `ssh` fields; unused (and not rendered) for a `wsl` method. */
   host: string
   port: string
   username: string
@@ -47,12 +53,23 @@ export interface ConnectDraft {
   secret: string
   privateKeyPath: string
   sshConfigAlias?: string
+  /** `wsl` fields: the chosen distribution and its optional user. */
+  wslDistro: string
+  wslUser: string
   nodePath: string
   dshCommand: string
   profile: string
   dshHome: string
   /** Server-package source for this target; '' = follow the global policy. */
   packageSource: '' | 'download' | 'upload'
+}
+
+/** One discovery pass over the installed WSL distributions. */
+export interface WslProbeState {
+  status: 'idle' | 'loading' | 'ready' | 'unavailable'
+  distros: WslDistro[]
+  /** Scrubbed reason from `wsl.exe` (e.g. WSL not enabled); shown inline. */
+  error?: string
 }
 
 /** One progress row's state. */
@@ -152,6 +169,10 @@ export interface AppState {
   aliasesLoading: boolean
   aliasesLoaded: boolean
   prefilling: boolean
+  /** Harness host platform (`process.platform`); gates the WSL method. */
+  platform: string
+  /** WSL distribution discovery, driven by the wizard's WSL config step. */
+  wslProbe: WslProbeState
   targets: PublicTarget[]
   workspaces: RemoteWorkspace[]
   pluginVersion: string
@@ -255,6 +276,8 @@ function emptyDraft(): ConnectDraft {
     authKind: 'password',
     secret: '',
     privateKeyPath: '',
+    wslDistro: '',
+    wslUser: '',
     nodePath: '',
     dshCommand: '',
     profile: '',
@@ -275,6 +298,8 @@ function initialState(): AppState {
     aliasesLoading: false,
     aliasesLoaded: false,
     prefilling: false,
+    platform: '',
+    wslProbe: { status: 'idle', distros: [] },
     targets: [],
     workspaces: [],
     pluginVersion: '',
@@ -389,8 +414,13 @@ function validation(messageKey: LocaleKey): WireError {
 }
 
 /** Validate everything but the secret; the secret is resolved separately. */
-function validateDraft(draft: ConnectDraft): WireError | undefined {
+function validateDraft(draft: ConnectDraft, method: ConnectionMethod): WireError | undefined {
   if (draft.label.trim() === '') return validation('config.alias.required')
+  // A WSL draft has no host/port/user of its own: it names a distribution.
+  if (method === 'wsl') {
+    if (draft.wslDistro.trim() === '') return validation('config.wslDistro.required')
+    return undefined
+  }
   if (draft.host.trim() === '') return validation('config.host.required')
   const port = Number(draft.port.trim())
   if (!Number.isInteger(port) || port < 1 || port > 65535) return validation('config.port.invalid')
@@ -631,6 +661,11 @@ async function refreshState(): Promise<void> {
       workspaces: value.workspaces,
       pluginVersion: value.pluginVersion,
       defaultProfile: value.defaultProfile,
+      // The host platform gates the WSL method; it must ride the *successful*
+      // commit too (the retry branch below is only reached on a first-load
+      // error, so persisting it there alone left `platform` empty on every
+      // normal load and silently filtered the WSL card out).
+      platform: value.platform ?? '',
       stateLoaded: true,
       stateLoading: false,
     })
@@ -657,6 +692,7 @@ async function refreshState(): Promise<void> {
             workspaces: value.workspaces,
             pluginVersion: value.pluginVersion,
             defaultProfile: value.defaultProfile,
+            platform: value.platform ?? '',
             stateLoaded: true,
             stateLoading: false,
           })
@@ -725,7 +761,10 @@ function setStep(step: WizardStep): void {
   // attempt would strand the wizard on a retry button wired to a stale draft.
   if (step === 'connecting' && state.connect.phase !== 'running' && state.connect.phase !== 'awaiting-hostkey') return
   commit({ step, error: undefined })
-  if (step === 'config') void loadAliases()
+  if (step === 'config') {
+    if (state.method === 'wsl') void loadWslDistros()
+    else void loadAliases()
+  }
 }
 
 /** Return to the saved-items list from any wizard step. */
@@ -737,8 +776,48 @@ function showList(): void {
 }
 
 function setMethod(method: ConnectionMethod): void {
-  if (method !== 'ssh') return
+  // Hidden methods cannot be selected even if some stale node still calls this.
+  if (!methodAvailable(method, state.platform)) return
   commit({ method })
+  if (method === 'wsl') void loadWslDistros()
+}
+
+/**
+ * Detect the installed WSL distributions.
+ *
+ * Called when the WSL config step is entered (never at activation: it spawns
+ * `wsl.exe`, and `wsl -l` is the one subcommand that does not start a distro).
+ * The default distribution is preselected so the common case needs no click.
+ * @param force - re-run even when a result is already cached.
+ */
+async function loadWslDistros(force = false): Promise<void> {
+  if (state.wslProbe.status === 'loading') return
+  if (state.wslProbe.status === 'ready' && !force) return
+  const gen = generation
+  commit({ wslProbe: { status: 'loading', distros: state.wslProbe.distros } })
+  try {
+    const value = await api.wslDistros()
+    if (gen !== generation) return
+    if (!value.available) {
+      commit({ wslProbe: { status: 'unavailable', distros: [], ...(value.error === undefined ? {} : { error: value.error }) } })
+      return
+    }
+    commit((previous) => {
+      // Preselect: keep a still-valid choice, else the default distro, else the first.
+      const names = value.distros.map(distro => distro.name)
+      const current = previous.config.wslDistro
+      const keep = names.includes(current) ? current : undefined
+      const preferred = keep ?? value.distros.find(distro => distro.default)?.name ?? value.distros[0]?.name ?? ''
+      return {
+        wslProbe: { status: 'ready', distros: value.distros },
+        config: { ...previous.config, wslDistro: preferred },
+      }
+    })
+  } catch (error) {
+    if (gen !== generation) return
+    const wire = toWireError(error)
+    commit({ wslProbe: { status: 'unavailable', distros: [], error: wire.message } })
+  }
 }
 
 function patchConfig(patch: Partial<ConnectDraft>): void {
@@ -851,33 +930,51 @@ async function chooseAlias(alias: string): Promise<void> {
 async function startConnect(): Promise<void> {
   commit(previous => ({ connect: { ...previous.connect, origin: 'wizard' } }))
   const draft = state.config
-  const invalid = validateDraft(draft)
+  const method = state.method
+  const wsl = method === 'wsl'
+  const invalid = validateDraft(draft, method)
   if (invalid !== undefined) {
     commit({ view: 'wizard', step: 'config', error: invalid })
     return
   }
-  const resolved = resolveSecret(draft)
+  // A WSL target has no credentials at all: the transport is a local process.
+  const resolved = wsl ? { ok: true as const, secret: undefined } : resolveSecret(draft)
   if (!resolved.ok) {
     commit({ view: 'wizard', step: 'config', error: resolved.error })
     return
   }
 
-  const host = draft.host.trim()
-  const port = Number(draft.port.trim())
-  const username = draft.username.trim()
-  const request: ConnectStartRequest = {
-    label: draft.label.trim(),
-    host,
-    port,
-    username,
-    authKind: draft.authKind,
-  }
-  if (resolved.secret !== undefined) request.secret = resolved.secret
-  if (draft.authKind === 'privateKey') request.privateKeyPath = draft.privateKeyPath.trim()
-  if (draft.sshConfigAlias !== undefined && draft.sshConfigAlias !== '') request.sshConfigAlias = draft.sshConfigAlias
-  const trusted = state.trusted
-  if (trusted !== undefined && trusted.host === host && trusted.port === port && trusted.username === username) {
-    request.hostKeyFingerprint = trusted.fingerprint
+  let request: ConnectStartRequest
+  let endpoint: string
+  if (wsl) {
+    const distro = draft.wslDistro.trim()
+    const wslUser = draft.wslUser.trim()
+    request = {
+      kind: 'wsl',
+      label: draft.label.trim(),
+      wslDistro: distro,
+      ...(wslUser === '' ? {} : { wslUser }),
+    }
+    endpoint = `${distro}${wslUser === '' ? '' : ` as ${wslUser}`}`
+  } else {
+    const host = draft.host.trim()
+    const port = Number(draft.port.trim())
+    const username = draft.username.trim()
+    request = {
+      label: draft.label.trim(),
+      host,
+      port,
+      username,
+      authKind: draft.authKind,
+    }
+    if (resolved.secret !== undefined) request.secret = resolved.secret
+    if (draft.authKind === 'privateKey') request.privateKeyPath = draft.privateKeyPath.trim()
+    if (draft.sshConfigAlias !== undefined && draft.sshConfigAlias !== '') request.sshConfigAlias = draft.sshConfigAlias
+    const trusted = state.trusted
+    if (trusted !== undefined && trusted.host === host && trusted.port === port && trusted.username === username) {
+      request.hostKeyFingerprint = trusted.fingerprint
+    }
+    endpoint = `${host}:${port} as ${username}`
   }
   const remote = buildRemote(draft)
   if (remote !== undefined) request.remote = remote
@@ -891,7 +988,7 @@ async function startConnect(): Promise<void> {
     step: 'connecting',
     error: undefined,
     notice: undefined,
-    connect: { ...idleConnect(), phase: 'running', log: [{ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info' as const, text: `connecting to ${host}:${port} as ${username}` }] },
+    connect: { ...idleConnect(), phase: 'running', log: [{ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info' as const, text: `connecting to ${endpoint}` }] },
     config: { ...previous.config, secret: '' },
   }))
 
@@ -1607,6 +1704,7 @@ export const store = {
   notifySuccess,
   notifyError,
   loadAliases,
+  loadWslDistros,
   chooseAlias,
   startConnect,
   confirmHostKey,

@@ -1,17 +1,16 @@
 /**
- * The 远程连接 main panel: the sidebar row under 插件 and the page it opens.
+ * The 远程连接 main panel — the page the wizard and the connection list live in.
  *
- * The row is an ordinary `sidebar.panellist` entry (order 1, right after the
- * plugins panel), so the shell owns the button, label and selection — exactly
- * like 插件 and 任务. Selecting it switches the main column to this page via
- * the `main` slot entry with the same key. The page hosts the whole flow
- * inline: 新建连接 sits at the top-left, and the four-step wizard renders in
- * place instead of a dialog.
+ * It has no sidebar row of its own: the 「远程工作区」 section's `+新建连接`
+ * control opens it with `layout.selectPanel(PANEL_ID)`, and the same id is the
+ * `main` slot key the shell renders the page under. The page hosts the whole
+ * flow inline: 新建连接 sits at the top-left, and the four-step wizard renders
+ * in place instead of a dialog.
  */
 import { useEffect } from 'react'
 import type { ReactElement } from 'react'
 import {
-  Button, IconGlobeOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular,
+  Button, IconPlusOutlineRegular, IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NoticeToastHost } from './common.tsx'
 import { t } from './locales.ts'
@@ -19,13 +18,8 @@ import { ListBody } from './list.tsx'
 import { store, useAppState } from './store.ts'
 import { WizardBody, WizardFooter } from './wizard.tsx'
 
-/** The panel id in the layout's main registry and the `sidebar.panellist` cell. */
+/** The panel id in the layout's main registry (`main` slot key). */
 export const PANEL_ID = 'dsh-remote-workspace'
-
-/** Sidebar row icon; the shell asks for the edge and the selection state. */
-export function RemotePanelIcon(props: { size: number }): ReactElement | null {
-  return <IconGlobeOutlineRegular size={props.size} />
-}
 
 /** Main-column page: actions at the top-left, list or wizard below. */
 export function RemoteWorkspacePanel(): ReactElement | null {

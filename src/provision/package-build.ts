@@ -16,8 +16,9 @@
  * siblings, then assert the result.
  */
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 /** npm registries, tried in order: CN mirror first. */
@@ -40,6 +41,30 @@ export function execLocal(command: string, args: string[], timeoutMs: number): P
       resolve({ code: 0, stdout: stdout.toString(), stderr: stderr.toString() })
     })
   })
+}
+
+/**
+ * The staged dsh package's own bin entry (a JS file).
+ *
+ * Resolved from the package manifest rather than `<stage>/node_modules/.bin/dsh`
+ * because that shim is a **shell** script: `node .bin/dsh` cannot parse it, and
+ * the old POSIX-only probe also hard-coded `/usr/bin/env`, which does not exist
+ * on Windows — a Windows host must be able to stage packages for WSL targets.
+ * @param stage - the staging directory.
+ * @returns the absolute bin script path, or undefined when the package is absent.
+ */
+async function resolveDshBin(stage: string): Promise<string | undefined> {
+  const manifestPath = join(stage, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+  let manifest: { bin?: string | Record<string, string> } | undefined
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { bin?: string | Record<string, string> }
+  } catch {
+    return undefined
+  }
+  const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
+  if (typeof bin !== 'string' || bin === '') return undefined
+  const script = join(dirname(manifestPath), bin)
+  return await stat(script).then(entry => entry.isFile() ? script : undefined, () => undefined)
 }
 
 /** The `<platform>-<arch>[-libc]` artifact tag. */
@@ -84,9 +109,24 @@ export function bindingOf(dirName: string): { family: string; flavour: string } 
 }
 
 /** Whether one `.pnpm` directory name belongs to a foreign-platform binding. */
+/**
+ * The flavour one binding family must carry for one target.
+ *
+ * `node-addon-require-builtin` publishes `-<libc>` flavours
+ * (`linux-x64-gnu`); `node-addon-system` publishes plain `<platform>-<arch>`
+ * (`linux-x64`) and has no win32 build at all. Comparing the system family
+ * against the require-builtin suffix made every freshly installed system sibling
+ * look foreign, so the staging step deleted the binding it had just added.
+ */
+function targetFlavour(family: string, suffix: string): string {
+  return family === 'node-addon-require-builtin' ? suffix : suffix.split('-').slice(0, 2).join('-')
+}
+
+/** Whether one `.pnpm` entry is a native binding for some *other* flavour. */
 export function isForeignBindingDir(dirName: string, suffix: string): boolean {
   const binding = bindingOf(dirName)
-  return binding !== undefined && binding.flavour !== suffix
+  if (binding === undefined) return false
+  return binding.flavour !== targetFlavour(binding.family, suffix)
 }
 
 /**
@@ -121,17 +161,17 @@ export async function stageDshPackage(options: {
     ].join('\n'))
     notify(`staging @deepseek-ai/dsh@${options.version} via pnpm (${registry.replace('https://', '')}, target ${options.platform}-${options.arch}${options.libc === '' ? '' : `-${options.libc}`})`)
     const add = await execLocal(options.nodeBin, [options.pnpmCjs, '-C', options.stage, 'add', `@deepseek-ai/dsh@${options.version}`, '--loglevel=warn'], 600_000)
-    const launcher = join(options.stage, 'node_modules', '.bin', 'dsh')
-    const launcherOk = await stat(launcher).then(i => i.isFile(), () => false)
-    if (!launcherOk) {
+    // Probe the package's own bin entry, not `<stage>/node_modules/.bin/dsh`:
+    // that shim is a POSIX shell script, so `node .bin/dsh` cannot parse it and
+    // `/usr/bin/env` does not exist on Windows at all. Staging must work on a
+    // Windows host because WSL targets are Windows-only.
+    const launcher = await resolveDshBin(options.stage)
+    if (launcher === undefined) {
       failures.push(`${registry}: pnpm produced no dsh launcher: ${(add.stderr || add.stdout || `exit ${add.code}`).trim().slice(-300)}`)
       continue
     }
     await fixNativeClosure({ stage: options.stage, platform: options.platform, arch: options.arch, libc: options.libc, nodeBin: options.nodeBin, pnpmCjs: options.pnpmCjs, onProgress: notify })
-    const probe = await execLocal('/usr/bin/env', [
-      `PATH=/usr/bin:/bin:${join(options.nodeBin, '..')}`,
-      launcher, '--version',
-    ], 120_000)
+    const probe = await execLocal(options.nodeBin, [launcher, '--version'], 120_000)
     const version = probe.stdout.trim().split('\n')[0] ?? ''
     if (probe.code !== 0 || version === '') {
       failures.push(`${registry}: launcher probe failed: ${(probe.stderr || probe.stdout || `exit ${probe.code}`).trim().slice(-300)}`)
@@ -157,24 +197,39 @@ export async function fixNativeClosure(options: {
 }): Promise<void> {
   const notify = options.onProgress ?? (() => {})
   const pnpmDir = join(options.stage, 'node_modules', '.pnpm')
-  const entries = await readdir(pnpmDir).catch(() => [])
-  // The binding family's version comes from whichever sibling (or the main
-  // package) the resolver already pulled in.
-  let bindingVersion = ''
-  for (const entry of entries) {
-    const match = /^node-addon-require-builtin(?:-.+)?@(\d[^/]*)$/.exec(entry)
-    if (match !== null) {
-      bindingVersion = match[1] ?? ''
-      break
-    }
-  }
-  if (bindingVersion === '') return
   const suffix = bindingPackageSuffix(options.platform, options.arch, options.libc)
-  const binding = `node-addon-require-builtin-${suffix}`
-  const needed = entries.some(entry => entry.startsWith(`${binding}@`))
-  if (!needed) {
-    notify(`adding native binding ${binding}@${bindingVersion}`)
-    const add = await execLocal(options.nodeBin, [options.pnpmCjs, '-C', options.stage, 'add', `${binding}@${bindingVersion}`, '--loglevel=warn', '--save-optional=false'], 600_000)
+  const plainSuffix = `${options.platform}-${options.arch}`
+
+  /**
+   * Native packages whose platform sibling must be installed for the *target*.
+   *
+   * `node-addon-require-builtin` is the PTC/`import.meta.main` addon and carries
+   * `-<libc>`; `@deepseek-ai/node-addon-system` is the flock/file-lock addon and
+   * publishes plain `<platform>-<arch>` siblings — and **no win32 build at all**,
+   * so a Windows-hosted staging run installs none of them and the deployed server
+   * dies the first time the session store takes a lock:
+   * `Cannot find module '@deepseek-ai/node-addon-system-linux-x64/package.json'`.
+   */
+  const families: readonly { readonly main: RegExp; readonly target: string }[] = [
+    { main: /^node-addon-require-builtin(?:-.+)?@(\d[^/]*)$/, target: `node-addon-require-builtin-${suffix}` },
+    { main: /^@deepseek-ai\+node-addon-system@(\d[^/]*)$/, target: `@deepseek-ai/node-addon-system-${plainSuffix}` },
+  ]
+
+  for (const family of families) {
+    const entries = await readdir(pnpmDir).catch(() => [])
+    let version = ''
+    for (const entry of entries) {
+      const match = family.main.exec(entry)
+      if (match !== null) {
+        version = match[1] ?? ''
+        break
+      }
+    }
+    if (version === '') continue
+    const flatName = family.target.replace('/', '+')
+    if (entries.some(entry => entry.startsWith(`${flatName}@`))) continue
+    notify(`adding native binding ${family.target}@${version}`)
+    const add = await execLocal(options.nodeBin, [options.pnpmCjs, '-C', options.stage, 'add', `${family.target}@${version}`, '--loglevel=warn', '--save-optional=false'], 600_000)
     if (add.code !== 0 && add.stdout === '' && add.stderr !== '') {
       // pnpm may exit nonzero for lockfile notes; only a missing launcher
       // directory matters — re-checked below by the caller's probe.
@@ -190,12 +245,19 @@ export async function fixNativeClosure(options: {
   }
 }
 
+/** Whether one `.pnpm` entry is a foreign `node-addon-system` platform sibling. */
+function isForeignSystemBinding(entry: string, plainSuffix: string): boolean {
+  const match = /^@deepseek-ai\+node-addon-system-(.+?)@/.exec(entry)
+  return match !== null && match[1] !== plainSuffix
+}
+
 /**
  * Assert the staged tree is target-only: every shipped native binding dir
  * must match the target flavour. Throws with the offending names otherwise.
  */
 export async function assertTargetOnly(stage: string, platform: 'linux' | 'darwin', arch: 'x64' | 'arm64', libc: '' | 'gnu' | 'musl'): Promise<void> {
   const suffix = bindingPackageSuffix(platform, arch, libc)
+  const plainSuffix = `${platform}-${arch}`
   const pnpmDir = join(stage, 'node_modules', '.pnpm')
   const entries = await readdir(pnpmDir).catch(() => [])
   const foreign = entries.filter(entry => isForeignBindingDir(entry, suffix))
@@ -206,6 +268,26 @@ export async function assertTargetOnly(stage: string, platform: 'linux' | 'darwi
   if (!required) {
     throw new Error(`staged package is missing the native binding node-addon-require-builtin-${suffix}`)
   }
+  // The signed session store locks files through this addon; a package staged on
+  // a host that has no sibling for the target (Windows ships none) must fail
+  // here instead of on the remote at the first session write.
+  const hasSystemAddon = entries.some(entry => entry.startsWith('@deepseek-ai+node-addon-system@'))
+  if (hasSystemAddon && !entries.some(entry => entry.startsWith(`@deepseek-ai+node-addon-system-${plainSuffix}@`))) {
+    throw new Error(`staged package is missing the native binding @deepseek-ai/node-addon-system-${plainSuffix}`)
+  }
+}
+
+/**
+ * A usable `tar` for packing the staged tree.
+ *
+ * `/usr/bin/tar` is the POSIX default, but this build also has to run on a
+ * **Windows** host — WSL targets are Windows-only, so their server package is
+ * staged here too. Windows 10+ ships bsdtar as `tar.exe` on PATH, and it accepts
+ * the same `-czf … -C … .` invocation; without this fallback every Windows
+ * build died with ENOENT on `/usr/bin/tar`.
+ */
+function tarExecutable(): string {
+  return existsSync('/usr/bin/tar') ? '/usr/bin/tar' : 'tar'
 }
 
 /** Pack one staged tree into `outFile` (macOS AppleDouble files excluded). */
@@ -213,7 +295,7 @@ export async function packStage(stage: string, outFile: string): Promise<void> {
   await rm(outFile, { force: true })
   const env = { ...process.env, COPYFILE_DISABLE: '1' }
   await new Promise<void>((resolve, reject) => {
-    execFile('/usr/bin/tar', ['-czf', outFile, '-C', stage, '.'], { env, timeout: 300_000, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
+    execFile(tarExecutable(), ['-czf', outFile, '-C', stage, '.'], { env, timeout: 300_000, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
       if (error != null) reject(new Error(`tar failed: ${stderr.toString().trim()}`))
       else resolve()
     })

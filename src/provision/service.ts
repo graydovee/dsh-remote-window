@@ -17,15 +17,26 @@ import { entriesSchema, helloSchema, targetSchema } from '@deepseek-ai/dsh-ssh/s
 import { DEFAULT_MAX_FRAME_BYTES } from '../frame/codec.ts'
 import { FrameMux, streamTransport } from '../frame/mux.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from '../ssh/hostkey.ts'
-import { connectSsh, execRemote } from '../ssh/connect.ts'
 import { normalizeSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { remotePresetDefinition, remotePresetId } from '../preset/world.ts'
 import { openRemoteSession, resumeRemoteSession } from '../session/open.ts'
 import { shellQuote } from './profile.ts'
-import { authFor, provisionTarget, readPrivateKey, type ProvisionEvent, type ProvisionStep } from './channel.ts'
-import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemoteRuntimeRecord, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
+import { openTransport, provisionTarget, readPrivateKey, type ProvisionEvent, type ProvisionStep } from './channel.ts'
+import { methodAvailable } from '../targets/methods.ts'
+import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemoteRuntimeRecord, type RemoteTargetKind, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
 import type { WorkspaceId, RemoteSessionSummary, RemoteSessionTitle, RemoteWorkspaceSummary } from '../protocol.ts'
+
+/**
+ * How long a browsing client may sit idle before it is retired.
+ *
+ * The wizard's directory picker issues several RPCs per navigation, so the
+ * client has to survive between them — but a dedicated in-distro `dsh` process
+ * must not linger after the user stops browsing (a WSL child keeps the
+ * distribution running and holds its own lease). 120s covers a slow browse
+ * session and still returns the target to its idle state.
+ */
+const BROWSE_IDLE_MS = 120_000
 
 /** One browser-facing connection attempt, driven by an SSE stream. */
 export interface ConnectTicket {
@@ -42,6 +53,8 @@ export interface ConnectTicket {
 /** The wizard's step-2 payload. */
 export interface ConnectRequest {
   readonly label: string
+  /** `ssh` (default) or `wsl`; `wsl` is only accepted on a Windows host. */
+  readonly kind?: RemoteTargetKind
   readonly host: string
   readonly port: number
   readonly username: string
@@ -50,6 +63,10 @@ export interface ConnectRequest {
   readonly privateKeyPath?: string
   readonly sshConfigAlias?: string
   readonly hostKeyFingerprint?: string
+  /** `wsl` only: the distribution to enter. */
+  readonly wslDistro?: string
+  /** `wsl` only: the distro user; absent means the distribution's default user. */
+  readonly wslUser?: string
   readonly packageSource?: 'auto' | 'download' | 'upload'
   readonly remote?: Partial<RemoteRuntimeRecord>
 }
@@ -87,6 +104,20 @@ export interface RemoteSessionEntry {
   readonly updatedAt?: number
 }
 
+/**
+ * Build the one RPC client of a channel.
+ *
+ * Exported for the conformance suite, which runs the official SSH providers (and
+ * this plugin's `ctx.ssh` adapter) against an in-memory transport.
+ * @param channel - protocol channel to the remote server.
+ * @param workspace - initial remote workspace for `hello`.
+ * @param leaseMs - lease offered to the remote server.
+ * @returns the attached client.
+ */
+export async function openRemoteClient(channel: import('../targets/types.ts').RemoteChannel, workspace = '/', leaseMs = 30_000): Promise<RemoteClient> {
+  return await RemoteClient.open(channel, workspace, leaseMs)
+}
+
 /** A remote directory fully anchored on this machine, ready for a session. */
 interface MaterializedWorkspace {
   readonly record: RemoteWorkspaceRecord
@@ -96,7 +127,17 @@ interface MaterializedWorkspace {
   readonly now: string
 }
 
-/** A one-shot RPC client over a provisioned channel, used for browsing. */
+/**
+ * The one RPC client a target has.
+ *
+ * Exactly **one** multiplexer/peer pair may own a channel: the remote server is
+ * a single process holding the session handles and the workspace index in
+ * memory, so two peers on one stream would (a) hand `persist.*` calls to a
+ * server that cannot see them and (b) steal each other's responses — the realm's
+ * `hello` answer landing in this peer's decoder is what killed an idle session
+ * (`SSH connection lost` after the lease lapsed). Browsing and the realm both go
+ * through the cached instance below.
+ */
 class RemoteClient {
   private constructor(
     private readonly mux: FrameMux,
@@ -105,9 +146,45 @@ class RemoteClient {
     readonly home: string,
     readonly serverInfo: { serverId: string; installationId: string; version: string } | undefined,
     private readonly heartbeat: NodeJS.Timeout,
+    readonly hello: { readonly hash: string; readonly root: string; readonly workspace: string },
   ) {}
 
+  /**
+   * Pin the client while a realm (a live session) is attached.
+   *
+   * The idle retirement below must not close the peer out from under a running
+   * agent: the heartbeat it owns is what keeps the remote server's lease alive
+   * between turns.
+   */
+  pin(): void {
+    this.held += 1
+  }
+
+  /** Release one pin; idle retirement may resume when the last one is gone. */
+  unpin(): void {
+    if (this.held > 0) this.held -= 1
+  }
+
+  /** Whether an attached realm still needs this client. */
+  get pinned(): boolean {
+    return this.held > 0
+  }
+
+  private held = 0
+
+  /** Attach one authenticated logical stream (official `ctx.ssh.connectStream`). */
+  async openStream(endpoint: { readonly path: string }, signal?: AbortSignal): Promise<import('node:net').Socket> {
+    const remote = endpoint.path
+    if (!remote.startsWith(`${this.hello.root}/`) || /[:\r\n\0]/u.test(remote)) {
+      throw new Error('the remote server returned an invalid stream path')
+    }
+    const stream = await this.mux.open(endpoint as never, signal)
+    return stream as unknown as import('node:net').Socket
+  }
+
   static async open(channel: RemoteChannel, workspace: string, leaseMs = 30_000): Promise<RemoteClient> {
+    const startedAt = Date.now()
+    if (process.env.DSH_RW_DEBUG === '1') console.error(`[dsh-rw] browse attach begin closed=${String((channel as { closed?: boolean }).closed)}`)
     const mux = new FrameMux({
       transport: streamTransport(channel.input, channel.output),
       role: 'client',
@@ -120,15 +197,29 @@ class RemoteClient {
         workspace,
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
-      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha28' }, z.object({
+      if (process.env.DSH_RW_DEBUG === '1') console.error(`[dsh-rw] browse attach hello in +${Date.now() - startedAt}ms`)
+      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha50' }, z.object({
         protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
       }), AbortSignal.timeout(20_000)).catch(() => undefined)
-      const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat())
+      const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat(), {
+        hash: hello.hash,
+        root: hello.root,
+        workspace: hello.workspace,
+      })
       return client
     } catch (error) {
+      // The channel is NOT ours: it is the target's single server process and
+      // the realm (or another browse caller) may be about to use it. Closing it
+      // here used to answer the *next* call with `SSH connection lost` and, on a
+      // WSL target, SIGTERM the in-distro server.
+      console.error(`[dsh-rw] browse client open failed +${Date.now() - startedAt}ms`,
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        `cause=${String((error as { cause?: unknown }).cause)}`,
+        `in:ended=${String((channel.input as { readableEnded?: boolean }).readableEnded)} destroyed=${String(channel.input.destroyed)}`,
+        `out:destroyed=${String(channel.output.destroyed)} ended=${String((channel.output as { writableEnded?: boolean }).writableEnded)}`,
+        String((error as Error).stack).split('\n').slice(1, 4).join(' | '))
       peer.close()
       mux.close()
-      await channel.close().catch(() => {})
       throw error
     }
 
@@ -148,12 +239,23 @@ class RemoteClient {
     return this.peer.request(method, params, schema, signal)
   }
 
+  /**
+   * Release this client's own peer.
+   *
+   * The browsing client deliberately does **not** own the channel: the channel
+   * is the target's single server process (its in-memory handles and workspace
+   * index are the source of truth for `persist.*`, and a second server process
+   * cannot see a session whose log is not flushed yet).
+   *
+   * `mux.close()` is a *transport* teardown — it destroys the child's stdio — so
+   * calling it here killed the very stream the realm and the next browse call
+   * needed. That surfaced as `SSH connection lost` at the next attach; the
+   * failure diagnostics measured `in.destroyed=true out.destroyed=true`. Only the
+   * peer is dropped; the mux dies with the channel.
+   */
   async close(): Promise<void> {
     clearInterval(this.heartbeat)
-    await this.peer.request('close', {}, z.null(), AbortSignal.timeout(5000)).catch(() => {})
     this.peer.close()
-    this.mux.close()
-    await this.channel.close().catch(() => {})
   }
 }
 
@@ -187,7 +289,7 @@ export class RemoteWorkspaces {
   private readonly tickets = new Map<string, ConnectTicket>()
   private readonly channels = new Map<string, RemoteChannel>()
   private readonly connecting = new Map<string, Promise<RemoteChannel>>()
-  private readonly browsers = new Map<string, { client: RemoteClient }>()
+  private readonly browsers = new Map<string, { client: RemoteClient; idle: NodeJS.Timeout }>()
   /** Serializes browsing operations per target; see {@link withBrowser}. */
   private readonly browserQueue = new Map<string, Promise<void>>()
   /** Serializes resumes per session id; see {@link resumeSession}. */
@@ -240,7 +342,10 @@ export class RemoteWorkspaces {
   private async connectOnce(targetId: string, signal?: AbortSignal): Promise<RemoteChannel> {
     const target = this.store.target(targetId)
     if (target === undefined) throw new Error(`unknown remote target "${targetId}"`)
-    if (target.hostKeyFingerprint === '') {
+    // Only an ssh2 session has a host key to confirm. A WSL target is a local
+    // distribution driven by `wsl.exe`, so an empty fingerprint is its normal
+    // state and must not read as "not yet trusted".
+    if (target.kind === 'ssh' && target.hostKeyFingerprint === '') {
       throw new Error(`remote target "${target.label}" has no confirmed host key; connect it from the wizard first`)
     }
     const secret = await this.store.secretOf(target)
@@ -269,6 +374,14 @@ export class RemoteWorkspaces {
       })).catch(() => {})
     }
     this.channels.set(targetId, result.channel)
+    // Attach the browsing client immediately: nothing renews this channel's
+    // lease between 连接 and the first directory/session operation, and the
+    // remote server exits when the lease lapses — which the next operation then
+    // reports as `SSH connection lost` (measured: connect → open-workspace one
+    // second later failed on a channel whose child was already gone). The
+    // client heartbeats every 10 s, so the server now stays up, and the
+    // wizard's first list-dir no longer pays a channel build.
+    await this.browserFor(targetId).catch(() => {})
     await this.store
       .updateTarget(targetId, record => ({ ...record, status: 'ready', lastConnectedAt: new Date().toISOString() }))
       .catch(() => {})
@@ -293,11 +406,7 @@ export class RemoteWorkspaces {
       this.channels.delete(targetId)
       await live.close().catch(() => {})
     }
-    const browser = this.browsers.get(targetId)
-    if (browser !== undefined) {
-      this.browsers.delete(targetId)
-      await browser.client.close().catch(() => {})
-    }
+    await this.retireBrowser(targetId)
     const dispose = this.presetDisposers.get(remotePresetId(targetId))
     if (dispose !== undefined) {
       this.presetDisposers.delete(remotePresetId(targetId))
@@ -322,10 +431,8 @@ export class RemoteWorkspaces {
     // An explicit 停止 must also retire the browse channel; otherwise the next
     // directory operation would silently rebuild (and restart) what the user
     // just stopped.
-    const browser = this.browsers.get(targetId)
-    if (browser !== undefined) {
-      this.browsers.delete(targetId)
-      await browser.client.close().catch(() => {})
+    if (this.browsers.has(targetId)) {
+      await this.retireBrowser(targetId)
       stopped = true
     }
     if (stopped) {
@@ -411,6 +518,15 @@ export class RemoteWorkspaces {
     const ticket = this.tickets.get(id)
     if (ticket === undefined) throw new Error('the connection attempt has expired')
     const request = ticket.request
+    const kind: RemoteTargetKind = request.kind ?? 'ssh'
+    const wsl = kind === 'wsl'
+    // Defence in depth: the route already refuses a `wsl` request off Windows,
+    // and the method predicate is the same answer the client gates its card on.
+    if (!methodAvailable(wsl ? 'wsl' : 'ssh', process.platform)) {
+      throw new Error(`the "${kind}" connection method is not available on ${process.platform}`)
+    }
+    const distro = (request.wslDistro ?? '').trim()
+    if (wsl && distro === '') throw new Error('a WSL target needs a distribution name')
     const existing = this.store.listTargets().find(record => record.label.toLowerCase() === request.label.toLowerCase())
     const remote: RemoteRuntimeRecord = {
       nodePath: request.remote?.nodePath ?? 'node',
@@ -422,27 +538,36 @@ export class RemoteWorkspaces {
     let draft: RemoteTargetRecord = {
       id: existing?.id ?? `rt-${randomUUID().slice(0, 8)}`,
       label: request.label,
-      kind: 'ssh',
-      host: request.host,
-      port: request.port,
-      username: request.username,
-      authKind: request.authKind,
-      ...(request.privateKeyPath === undefined ? {} : { privateKeyPath: request.privateKeyPath }),
-      ...(request.sshConfigAlias === undefined ? {} : { sshConfigAlias: request.sshConfigAlias }),
+      kind,
+      // A WSL target is identified by its distribution; `host` mirrors it so a
+      // row/preview never has to special-case an empty string.
+      host: wsl ? distro : request.host,
+      port: wsl ? 22 : request.port,
+      // `username` is schema-required and unused by the WSL transport; the
+      // distro user (when given) is what the shell runs as.
+      username: wsl ? (request.wslUser ?? 'default') : request.username,
+      authKind: wsl ? 'agent' : request.authKind,
+      ...(wsl
+        ? { wslDistro: distro, ...(request.wslUser === undefined ? {} : { wslUser: request.wslUser }) }
+        : {
+            ...(request.privateKeyPath === undefined ? {} : { privateKeyPath: request.privateKeyPath }),
+            ...(request.sshConfigAlias === undefined ? {} : { sshConfigAlias: request.sshConfigAlias }),
+          }),
       ...(request.packageSource === undefined ? {} : { packageSource: request.packageSource }),
-      hostKeyFingerprint: request.hostKeyFingerprint ?? existing?.hostKeyFingerprint ?? '',
+      // A local distribution has no host key at all; ssh keeps the pinned one.
+      hostKeyFingerprint: wsl ? '' : request.hostKeyFingerprint ?? existing?.hostKeyFingerprint ?? '',
       remote,
       status: 'unknown',
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     }
-    const privateKey = draft.privateKeyPath === undefined ? undefined : await readPrivateKey(draft.privateKeyPath)
+    const privateKey = !wsl && draft.privateKeyPath !== undefined ? await readPrivateKey(draft.privateKeyPath) : undefined
     let fingerprint = draft.hostKeyFingerprint
     let provisioned: Awaited<ReturnType<typeof provisionTarget>> | undefined
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         provisioned = await provisionTarget({
           target: draft,
-          ...(request.secret === undefined ? {} : { secret: request.secret }),
+          ...(wsl || request.secret === undefined ? {} : { secret: request.secret }),
           ...(privateKey === undefined ? {} : { privateKey }),
           packageRoot: this.options.packageRoot,
           packagePolicy: this.store.packagePolicy(),
@@ -454,7 +579,8 @@ export class RemoteWorkspaces {
         })
         break
       } catch (error) {
-        if (error instanceof HostKeyUnknownError && attempt === 0) {
+        // A WSL target has no host key, so only ssh2 can ask for confirmation.
+        if (!wsl && error instanceof HostKeyUnknownError && attempt === 0) {
           ticket.fingerprint = error.fingerprint
           emit({ type: 'host-key', fingerprint: error.fingerprint })
           const confirmed = await new Promise<string>((resolve) => {
@@ -474,15 +600,19 @@ export class RemoteWorkspaces {
       }
     }
     if (provisioned === undefined) throw new Error('the remote server could not be started')
-    // The first successful connection pins the key and stores the secret.
+    // The first successful connection pins the key and stores the secret. A WSL
+    // target keeps an empty fingerprint forever (there is no key to pin) and
+    // never holds a credential.
     draft = {
       ...draft,
-      hostKeyFingerprint: provisioned.fingerprint === '' ? fingerprint : provisioned.fingerprint,
+      ...(wsl ? {} : { hostKeyFingerprint: provisioned.fingerprint === '' ? fingerprint : provisioned.fingerprint }),
       status: 'ready',
       lastConnectedAt: new Date().toISOString(),
     }
-    if (request.secret !== undefined) draft = await this.store.storeSecret(draft, request.secret)
-    else if (existing !== undefined) draft = await this.store.storeSecret(draft, '') as RemoteTargetRecord
+    if (!wsl) {
+      if (request.secret !== undefined) draft = await this.store.storeSecret(draft, request.secret)
+      else if (existing !== undefined) draft = await this.store.storeSecret(draft, '') as RemoteTargetRecord
+    }
     await this.store.putTarget(draft)
     this.channels.set(draft.id, provisioned.channel)
     await this.registerPreset(draft)
@@ -501,17 +631,18 @@ export class RemoteWorkspaces {
     if (target === undefined) throw new Error(`unknown remote target "${targetId}"`)
     const secret = await this.store.secretOf(target)
     const privateKey = target.privateKeyPath === undefined ? undefined : await readPrivateKey(target.privateKeyPath)
-    const client = await connectSsh({
-      host: target.host,
-      port: target.port,
-      username: target.username,
-      auth: authFor(target, secret, privateKey),
-      ...(target.hostKeyFingerprint === '' ? {} : { hostKeyFingerprint: target.hostKeyFingerprint }),
+    // One throwaway transport per admin command, whatever the target kind —
+    // the realm's own channel is not reused for wizard-time browsing.
+    const transport = await openTransport({
+      target,
+      ...(secret === undefined ? {} : { secret }),
+      ...(privateKey === undefined ? {} : { privateKey }),
+      packageRoot: this.options.packageRoot,
     })
     try {
-      return await execRemote(client, command, { maxBytes: 256 * 1024, timeoutMs: 20_000 })
+      return await transport.exec(command, { maxBytes: 256 * 1024, timeoutMs: 20_000 })
     } finally {
-      client.end()
+      await transport.close().catch(() => {})
     }
   }
 
@@ -561,31 +692,40 @@ export class RemoteWorkspaces {
   }
 
   /**
-   * Run one browse operation on the cached session, retrying once on a
-   * channel that died while idle: the remote server's lease outlives nothing,
-   * so a >leaseMs pause can invalidate the cached client between calls. The
-   * retry rebuilds the channel (marker-fast) and the user sees one slow
-   * operation instead of an error toast.
+   * Run one browse operation on a **dedicated, cached** channel.
+   *
+   * One `FrameMux`/`SshRpcPeer` pair owns a byte stream, and the realm's
+   * `RemoteConnection` installs its own pair on the target's cached channel the
+   * moment a session opens. Sharing that channel here therefore put two
+   * independent de-multiplexers on one stream — an RPC id collision either side
+   * corrupts the other, and the old retry closed the *shared* channel, which on
+   * a WSL target kills the in-distro process an agent is using ("SSH connection
+   * lost; remote operation outcome and cleanup are unknown").
+   *
+   * So browsing keeps its **own** client per target: the first operation pays
+   * one marker-fast provisioning pass, every later one is a single RPC. It is
+   * retired after {@link BROWSE_IDLE_MS} of silence (the remote server also has
+   * its own lease), on a failure, on 停止/忘记 and on dispose.
    */
   private async withBrowser<T>(targetId: string, operation: (client: RemoteClient) => Promise<T>): Promise<T> {
-    // One operation at a time per target. The retry below retires the shared
-    // client — closing it while a *second* call is mid-flight on the same
-    // channel fails that call with "SSH connection lost" (observed when the
-    // panel fires two actions at once, and when two resumes race). Serializing
-    // also removes the double `persist.open` that surfaces as
-    // `session "…" is already owned by an active write handle`: the first
-    // resume publishes before the second starts, so the second finds the live
-    // agent instead of claiming the session again.
     const previous = this.browserQueue.get(targetId) ?? Promise.resolve()
     const attempt = previous.then(async (): Promise<T> => {
+      const client = await this.browserFor(targetId)
       try {
-        return await operation(await this.browserFor(targetId))
-      } catch (first) {
-        const entry = this.browsers.get(targetId)
-        if (entry === undefined) throw first
-        this.browsers.delete(targetId)
-        await entry.client.close().catch(() => {})
-        return await operation(await this.browserFor(targetId))
+        return await operation(client)
+      } catch (error) {
+        // A cached client can die under us (server lease, WSL distro stopped);
+        // drop it and retry the operation once on a fresh one.
+        await this.retireBrowser(targetId)
+        const retried = await this.browserFor(targetId)
+        try {
+          return await operation(retried)
+        } catch (second) {
+          await this.retireBrowser(targetId)
+          throw second
+        }
+      } finally {
+        this.touchBrowser(targetId)
       }
     })
     // The queue tail never rejects: a failed call must not poison the next one.
@@ -593,21 +733,87 @@ export class RemoteWorkspaces {
     return await attempt
   }
 
-  /**
-   * Reuse or open the wizard's browsing session for one target.
-   *
-   * Deliberately NO idle teardown (ZCode parity: `windowRemoteConnectionRegistry`
-   * never idle-disposes SSH entries — only its WSL flavour had one). The
-   * channel and its remote server live until 停止/忘记/host exit/channel
-   * failure; the client heartbeat only renews the process lease.
-   */
+  /** Reuse the target's client (browsing and the realm share it). */
   private async browserFor(targetId: string): Promise<RemoteClient> {
     const cached = this.browsers.get(targetId)
-    if (cached !== undefined) return cached.client
-    const channel = await this.connectChannel(targetId)
-    const client = await RemoteClient.open(channel, '/', this.options.leaseMs)
-    this.browsers.set(targetId, { client })
+    if (cached !== undefined) {
+      this.touchBrowser(targetId)
+      return cached.client
+    }
+    const client = await this.openBrowser(targetId)
+    const timer = setTimeout(() => { void this.retireBrowser(targetId) }, BROWSE_IDLE_MS)
+    timer.unref()
+    this.browsers.set(targetId, { client, idle: timer })
     return client
+  }
+
+  /**
+   * The target's shared client, for the realm-scoped `ctx.ssh` adapter.
+   *
+   * Pinned for the caller so idle retirement cannot pull the peer out from under
+   * a live session; the adapter releases it in `dispose()`.
+   * @param targetId - stored target.
+   * @returns the one RPC client of this target.
+   */
+  async remoteClient(targetId: string): Promise<RemoteClient> {
+    const client = await this.browserFor(targetId)
+    client.pin()
+    return client
+  }
+
+  /** Drop one pin taken by {@link remoteClient} and restart the idle clock. */
+  releaseRemoteClient(targetId: string): void {
+    const entry = this.browsers.get(targetId)
+    if (entry === undefined) return
+    entry.client.unpin()
+    this.touchBrowser(targetId)
+  }
+
+  /** Restart the idle countdown for one browsing client. */
+  private touchBrowser(targetId: string): void {
+    const entry = this.browsers.get(targetId)
+    if (entry === undefined) return
+    clearTimeout(entry.idle)
+    const timer = setTimeout(() => { void this.retireBrowser(targetId) }, BROWSE_IDLE_MS)
+    timer.unref()
+    this.browsers.set(targetId, { client: entry.client, idle: timer })
+  }
+
+  /** Close and forget one browsing client; safe when none is cached. */
+  private async retireBrowser(targetId: string): Promise<void> {
+    const entry = this.browsers.get(targetId)
+    if (entry === undefined) return
+    // A pinned client belongs to a live session: closing its peer would stop the
+    // heartbeats that hold the remote server's lease, and the next turn would
+    // answer `SSH connection lost`.
+    if (entry.client.pinned) {
+      this.touchBrowser(targetId)
+      return
+    }
+    this.browsers.delete(targetId)
+    clearTimeout(entry.idle)
+    await entry.client.close().catch(() => {})
+  }
+
+  /**
+   * Attach a browsing client to the target's **single** server channel.
+   *
+   * One remote server process per target is a hard requirement, not a
+   * preference: `persist.create` answers with an in-memory handle and the log
+   * stays off disk until it is flushed (`session.lock` only), so a `persist.*`
+   * call that lands on a *second* server process answers `session "…" not
+   * found`. That is exactly what happened when browsing was given its own
+   * transport — `sessionRequest()` goes through this client, so it must reach
+   * the same process the realm talks to (`connectChannel`).
+   *
+   * Consequence: the browsing client never closes the channel (see
+   * `RemoteClient.close`); 停止/忘记 close it explicitly.
+   * @param targetId - stored target.
+   * @returns an open browsing client; owned by {@link browsers} afterwards.
+   */
+  private async openBrowser(targetId: string): Promise<RemoteClient> {
+    const channel = await this.connectChannel(targetId)
+    return await RemoteClient.open(channel, '/', this.options.leaseMs)
   }
 
   /** stub → remote aliases for every opened workspace of one target. */
@@ -1017,10 +1223,7 @@ export class RemoteWorkspaces {
 
   /** Close every channel and browsing session. */
   async dispose(): Promise<void> {
-    for (const browser of this.browsers.values()) {
-      await browser.client.close().catch(() => {})
-    }
-    this.browsers.clear()
+    for (const targetId of [...this.browsers.keys()]) await this.retireBrowser(targetId)
     for (const channel of this.channels.values()) await channel.close().catch(() => {})
     this.channels.clear()
     for (const ticket of this.tickets.values()) ticket.confirm?.('')
@@ -1041,6 +1244,8 @@ function publicTarget(record: RemoteTargetRecord, store: TargetStore): PublicTar
     hasStoredSecret: store.credentialKeyOf(record) !== undefined,
     hostKeyFingerprint: record.hostKeyFingerprint,
     ...(record.sshConfigAlias === undefined ? {} : { sshConfigAlias: record.sshConfigAlias }),
+    ...(record.wslDistro === undefined ? {} : { wslDistro: record.wslDistro }),
+    ...(record.wslUser === undefined ? {} : { wslUser: record.wslUser }),
     remote: record.remote,
     status: record.status,
     ...(record.lastError === undefined ? {} : { lastError: scrubSecrets(record.lastError) }),

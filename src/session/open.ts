@@ -15,6 +15,7 @@
  * remote server by themselves.
  */
 import { randomUUID } from 'node:crypto'
+import { isAbsolute } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
@@ -118,7 +119,11 @@ function workspaceSeedEvents(): unknown[] {
  * @returns the session identity and the preset it was composed with.
  */
 export async function openRemoteSession(ctx: Context, options: OpenRemoteSessionOptions): Promise<OpenedRemoteSession> {
-  if (!options.path.startsWith('/')) throw new Error(`remote working directory must be absolute, received "${options.path}"`)
+  // The path here is the **local stub** the session is anchored on (the realm's
+  // stub→remote alias translates it at the tool boundary), so it must be
+  // absolute *for this host*: `startsWith('/')` rejected every Windows stub
+  // (`C:\Users\…\.dsh\remote-workspaces\…`) even though it was perfectly valid.
+  if (!isAbsolute(options.path)) throw new Error(`remote working directory must be absolute, received "${options.path}"`)
   const presets = ctx.agentPresets
   const presetId = remotePresetId(options.targetId)
   const resolved = await presets.resolve(presetId)

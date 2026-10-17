@@ -13,8 +13,15 @@ import { z } from 'zod'
 /** Authentication kind; the value never carries a secret. */
 export type RemoteAuthKind = 'password' | 'privateKey' | 'agent'
 
-/** Resource kind. WSL and container targets are reserved for a later version. */
-export type RemoteTargetKind = 'ssh'
+/**
+ * Resource kind.
+ *
+ * `ssh` is a host reached over the network; `wsl` is a *local* Windows
+ * distribution driven through `wsl.exe` (Windows hosts only — the platform gate
+ * lives in `./methods.ts` and is enforced on both the host and the client).
+ * A container target stays reserved for a later version.
+ */
+export type RemoteTargetKind = 'ssh' | 'wsl'
 
 /** Non-secret target record persisted in the profile's storage domain. */
 export interface RemoteTargetRecord {
@@ -22,6 +29,7 @@ export interface RemoteTargetRecord {
   /** The user-visible alias; required, saved on a successful connection. */
   readonly label: string
   readonly kind: RemoteTargetKind
+  /** `ssh`: the network host. `wsl`: the distribution name. */
   readonly host: string
   readonly port: number
   readonly username: string
@@ -34,10 +42,17 @@ export interface RemoteTargetRecord {
    * Accepted remote host key fingerprint (`SHA256:…`), pinned after explicit
    * confirmation. An empty string means the target is a draft that has not
    * completed first contact yet; it can never be used to connect silently.
+   *
+   * A `wsl` target is a local process, so it has no host key at all and keeps
+   * this empty forever — the connect path is kind-aware for exactly that reason.
    */
   readonly hostKeyFingerprint: string
   /** `~/.ssh/config` alias this target was prefilled from, when any. */
   readonly sshConfigAlias?: string
+  /** `wsl` only: the distribution this target runs in (`wsl.exe -l` name). */
+  readonly wslDistro?: string
+  /** `wsl` only: the distro user; absent means the distribution's default user. */
+  readonly wslUser?: string
   /** How to obtain the server package: `auto` follows the global policy. */
   readonly packageSource?: 'auto' | 'download' | 'upload'
   /** Remote runtime coordinates. */
@@ -99,6 +114,15 @@ export interface RemoteWorkspaceRecord {
 export interface RemoteChannel {
   readonly input: Readable
   readonly output: Writable
+  /**
+   * Whether the far side is gone.
+   *
+   * The host plane caches one channel per target; without this flag a channel
+   * whose remote server exited (lease expiry, crash, `wsl.exe` child death)
+   * still looked usable, so the next browsing/agent call wrote into a dead pipe
+   * and failed with a request timeout instead of re-provisioning.
+   */
+  readonly closed?: boolean
   /** Close the underlying channel; safe to call more than once. */
   close(): Promise<void>
 }
@@ -110,9 +134,34 @@ export interface RemoteChannel {
  * a preset row's configuration never contains a secret and the connection file
  * never imports `ssh2`.
  */
+/**
+ * The RPC surface the realm-scoped `ctx.ssh` adapter needs.
+ *
+ * Structurally implemented by the plugin's own `RemoteClient`; declared here so
+ * neither bundle imports the other's value module.
+ */
+export interface RemoteProtocolClient {
+  /** Verified hello of the remote server (digest, root, workspace). */
+  readonly hello: { readonly hash: string; readonly root: string; readonly workspace: string }
+  /** One JSON RPC round-trip. */
+  request<T>(method: string, params: unknown, result: import('zod').ZodType<T>, signal?: AbortSignal): Promise<T>
+  /** Attach one authenticated logical stream. */
+  openStream(endpoint: { readonly path: string }, signal?: AbortSignal): Promise<import('node:net').Socket>
+}
+
 export interface RemoteWorkspaceService {
   /** Open (starting it when necessary) a protocol channel to one target. */
   connectChannel(targetId: string, signal?: AbortSignal): Promise<RemoteChannel>
+  /**
+   * The target's single RPC client, pinned for the caller.
+   *
+   * Browsing and the realm-scoped `ctx.ssh` adapter must share one client: a
+   * second multiplexer on the same stream steals the other peer's responses and
+   * makes the remote server look unreachable.
+   */
+  remoteClient(targetId: string): Promise<RemoteProtocolClient>
+  /** Drop one pin taken by {@link remoteClient}. */
+  releaseRemoteClient(targetId: string): void
   /** SHA-256 of the local server entry, when it can be computed. */
   expectedDigest(targetId: string): Promise<string | undefined>
   /** The plugin-wide package-source policy and release mirror. */
@@ -156,7 +205,10 @@ export const packagePolicySettingsSchema = z.object({
 export const targetRecordSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
-  kind: z.literal('ssh'),
+  // Widened from `z.literal('ssh')` when WSL targets arrived. Records written by
+  // an earlier version still validate unchanged, so the storage domain stays at
+  // version 1 (additive evolution only).
+  kind: z.enum(['ssh', 'wsl']),
   host: z.string().min(1),
   port: z.number().int().min(1).max(65_535),
   username: z.string().min(1),
@@ -165,6 +217,8 @@ export const targetRecordSchema = z.object({
   privateKeyPath: z.string().min(1).optional(),
   hostKeyFingerprint: z.string().regex(/^(?:|SHA256:[A-Za-z0-9+/=]+)$/),
   sshConfigAlias: z.string().min(1).optional(),
+  wslDistro: z.string().min(1).optional(),
+  wslUser: z.string().min(1).optional(),
   packageSource: packageSourceSchema.optional(),
   stubPath: z.string().min(1).optional(),
   officialWorkspaceId: z.string().min(1).optional(),
@@ -230,6 +284,9 @@ export interface PublicTarget {
   readonly hasStoredSecret: boolean
   readonly hostKeyFingerprint: string
   readonly sshConfigAlias?: string
+  /** `wsl` targets: the distribution and its optional user, for the row/labels. */
+  readonly wslDistro?: string
+  readonly wslUser?: string
   readonly packageSource?: 'auto' | 'download' | 'upload'
   readonly remote: RemoteRuntimeRecord
   readonly status: 'unknown' | 'ready' | 'failed' | 'stopped'
@@ -260,6 +317,8 @@ export function toPublicTarget(record: RemoteTargetRecord): PublicTarget {
     hasStoredSecret: record.credentialKey !== undefined,
     hostKeyFingerprint: record.hostKeyFingerprint,
     ...(record.sshConfigAlias === undefined ? {} : { sshConfigAlias: record.sshConfigAlias }),
+    ...(record.wslDistro === undefined ? {} : { wslDistro: record.wslDistro }),
+    ...(record.wslUser === undefined ? {} : { wslUser: record.wslUser }),
     ...(record.packageSource === undefined ? {} : { packageSource: record.packageSource }),
     remote: record.remote,
     status: record.status,

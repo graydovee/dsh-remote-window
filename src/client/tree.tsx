@@ -175,6 +175,43 @@ function sessionSeat(
   }
 }
 
+/**
+ * Tree semantics for one vendored row.
+ *
+ * The vendored rows are plain `div`s whose activation lives in a JS click
+ * handler, so a screen reader — and any browser automation — sees **no target at
+ * all** for a connection or workspace row (measured: the a11y inventory of the
+ * sidebar exposes only 刷新 / 新建连接). Wrapping the row in a `treeitem` with a
+ * tab stop and Enter/Space forwarding makes the same action keyboard-reachable
+ * without touching the vendored component or firing the click twice.
+ */
+function TreeRow(props: {
+  label: string
+  expanded?: boolean
+  onActivate: () => void
+  children: ReactElement
+}): ReactElement {
+  return (
+    <div
+      // `button`, not `treeitem`: a treeitem is focusable but is not offered as
+      // an activation target to assistive tech or to automation bridges, which
+      // is exactly why the rows were unreachable before.
+      role="button"
+      aria-label={props.label}
+      {...(props.expanded === undefined ? {} : { 'aria-expanded': props.expanded })}
+      tabIndex={0}
+      className="dsh-rw-row-a11y"
+      onKeyDown={(event: import('react').KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        props.onActivate()
+      }}
+    >
+      {props.children}
+    </div>
+  )
+}
+
 /** One session row plus the trailing New Session row of an expanded workspace. */
 function SessionRows(props: { workspace: RemoteWorkspace; now: number; flags: SessionFlags }): ReactElement | null {
   const state = useAppState()
@@ -248,6 +285,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
   }
   return (
     <>
+      <TreeRow label={props.workspace.title} expanded={expanded} onActivate={() => { store.toggleNode(key) }}>
       <ProjectRowItem
         group={group}
         onToggle={() => { store.toggleNode(key) }}
@@ -260,6 +298,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         // renders, with the plain dictionary labels.
         t={connected ? translate : ((verb: string, params?: Record<string, unknown>) => rowsTranslate(verb, params))}
       />
+      </TreeRow>
       {expanded && <SessionRows workspace={workspace} now={props.now} flags={flags} />}
     </>
   )
@@ -287,7 +326,10 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
     // replaces the label with 未分组. Any string keeps our own label and the
     // hover card's workspace lines.
     workspaceId: `conn:${target.id}`,
-    cwd: t('list.endpoint', { username: target.username, host: target.host, port: target.port }),
+    // A WSL target has no user@host:port to show, only its distribution.
+    cwd: target.kind === 'wsl'
+      ? t('list.endpoint.wsl', { distro: target.wslDistro ?? target.host })
+      : t('list.endpoint', { username: target.username, host: target.host, port: target.port }),
     createdAt: Number.isNaN(lastConnectedAt) ? undefined : lastConnectedAt,
     label: target.label,
     sessionCount,
@@ -298,6 +340,14 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
   return (
     <>
       <Level state={target.status} className="dsh-rw-conn">
+        <TreeRow
+          label={target.label}
+          expanded={connected && expanded}
+          onActivate={() => {
+            if (connected) store.toggleNode(key)
+            else void store.connectTarget(target)
+          }}
+        >
         <ProjectRowItem
           // Keyed by state: switching between connected/disconnected remounts the
           // row, which resets its (vendored, internal) menu to closed. A menu that
@@ -317,6 +367,7 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
           }}
           t={translate}
         />
+        </TreeRow>
       </Level>
       {/* Children exist only through the channel: a connection that is down shows
           nothing under it, whatever the expanded flag says (the store clears the

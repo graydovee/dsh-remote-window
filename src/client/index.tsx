@@ -1,16 +1,19 @@
 /**
  * Browser half of `dsh-remote-workspace`.
  *
- * Two contributions, both through the shipped client slots so hot reload
- * disposes them with the plugin fiber:
+ * One slot contribution, through the shipped client slots so hot reload
+ * disposes it with the plugin fiber:
  *
- *  1. `sidebar.panellist` — the 「远程连接」 row, directly below 插件 (order 1,
- *     above the schedules panel). The shell owns the row's button chrome;
- *     selecting it switches the main column to this plugin's panel.
- *  2. `main` — the panel page itself: 新建连接 at the top-left, and the whole
- *     flow inline (choose a method → fill the configuration → watch the live
- *     progress stream including the explicit host-key confirmation → pick the
- *     remote directory).
+ *  - `main` — the panel page: 新建连接 at the top-left, and the whole flow
+ *    inline (choose a method → fill the configuration → watch the live
+ *    progress stream including the explicit host-key confirmation → pick the
+ *    remote directory).
+ *
+ * There is deliberately **no `sidebar.panellist` row any more**: the
+ * 「远程工作区」 section in the left sidebar (mounted by {@link mountSidebarSection})
+ * owns the entry points, and its `+新建连接` control selects this panel through
+ * `layout.selectPanel(PANEL_ID)` (`sidebar.tsx` → `store.openConnectionWizard`).
+ * A second, parallel sidebar row only duplicated that entry.
  *
  * The bundle imports only the platform module table (`react`,
  * `react/jsx-runtime`, `@deepseek-ai/dsh-client-ui-primitives`); the stylesheet
@@ -21,7 +24,7 @@ import type { ReactElement, ReactNode } from 'react'
 import type { ClientContext } from './context.ts'
 import { t } from './locales.ts'
 import { ListBody, ListFooter } from './list.tsx'
-import { PANEL_ID, RemotePanelIcon, RemoteWorkspacePanel } from './panel.tsx'
+import { PANEL_ID, RemoteWorkspacePanel } from './panel.tsx'
 import { mountSidebarSection } from './sidebar.tsx'
 import { bindVerbContext } from './session-verbs.ts'
 import { bindClientContext, dispose, store, watchShellRows } from './store.ts'
@@ -57,20 +60,9 @@ export function apply(ctx: ClientContext): void {
   void store.refreshState()
   ctx.effect(() => () => { dispose() }, 'dsh-remote-workspace: store lifetime')
 
-  // The 远程连接 panel row: sits directly below 插件 (order 1, above the
-  // schedules panel's 10) and above the 工作区 region. The shell owns the row's
-  // button chrome; the row is registered before the page so a page-side failure
-  // can never take the row down with it.
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist',
-    id: PANEL_ID,
-    order: 1,
-    label: () => t('button.label'),
-    registrant: 'dsh-remote-workspace',
-  }, RemotePanelIcon))
-
-  // The main-column page itself. Registered defensively: an option mismatch on
-  // this slot must not silently remove the sidebar row.
+  // The main-column page itself. Registered defensively so a slot option
+  // mismatch surfaces in the console instead of aborting activation (the
+  // sidebar section above is what the user actually clicks).
   try {
     ctx.slots.inject('main', () => ctx.slots.register({
       name: 'main',
