@@ -849,8 +849,11 @@ ${ROW_STYLES}
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* ----------------------------------------------------- add-workspace list */
+/* --------------------------------------------- add-workspace (browse only) */
 
+/* One tab since P0: the server list is what the tree renders, so the dialog is
+   just the directory browser in a scrolling box. The per-row picker styles that
+   the old "registered remotely" tab needed are gone with that tab. */
 .dsh-rw-picker {
   display: flex;
   flex-direction: column;
@@ -858,38 +861,6 @@ ${ROW_STYLES}
   min-height: 120px;
   max-height: 52vh;
   overflow: auto;
-}
-
-.dsh-rw-picker-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.dsh-rw-picker-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-1);
-}
-
-.dsh-rw-picker-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.dsh-rw-picker-title {
-  font-size: 13px;
-  color: var(--dsw-alias-label-primary);
 }
 
 /* ------------------------------------------- sidebar section (远程工作区) */

@@ -58,7 +58,7 @@ export function SidebarSection(): ReactElement | null {
             icon={<IconRefreshOutlineRegular size={12} />}
             aria-label={t('common.refresh')}
             disabled={busy}
-            onClick={() => { void store.refreshState() }}
+            onClick={() => { void store.refreshAll() }}
           />
           <Button
             variant="ghost"

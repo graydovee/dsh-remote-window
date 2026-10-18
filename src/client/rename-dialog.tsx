@@ -11,14 +11,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { RemoteWorkspace } from './api.ts'
+import type { WorkspaceRow } from './workspace-join.ts'
 import { useSingleHost } from './common.tsx'
 import { t } from './locales.ts'
 import { store, useAppState } from './store.ts'
 import { rowsTranslate } from './vendor/workspace-rows/translate.ts'
 
 /** One request's form; mounting seeds the draft from the request. */
-function RenameForm(props: { workspace: RemoteWorkspace; sessionId: string; currentTitle: string }): ReactElement | null {
+function RenameForm(props: { workspace: WorkspaceRow; sessionId: string; currentTitle: string }): ReactElement | null {
   const [draft, setDraft] = useState(props.currentTitle)
   const [renaming, setRenaming] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)

@@ -14,7 +14,7 @@
  * failure would read as a dead action.
  */
 import type { ClientContext } from './context.ts'
-import type { RemoteWorkspace } from './api.ts'
+import type { WorkspaceRow } from './workspace-join.ts'
 import { t } from './locales.ts'
 import { store } from './store.ts'
 
@@ -62,7 +62,7 @@ const EMPTY_FLAGS: SessionFlags = { pinned: new Set(), archived: new Set() }
  * @param workspace - the workspace record, or undefined.
  * @returns the pinned and archived sets.
  */
-export function workspaceFlags(workspace: RemoteWorkspace | undefined): SessionFlags {
+export function workspaceFlags(workspace: WorkspaceRow | undefined): SessionFlags {
   if (workspace === undefined) return EMPTY_FLAGS
   return {
     pinned: new Set(workspace.pinnedSessions ?? []),
@@ -89,7 +89,7 @@ function report(action: string, reason: unknown): void {
  * @param pinned - the state to apply.
  * @param action - the verb label, for the failure notice.
  */
-async function setPin(workspace: RemoteWorkspace, sessionId: string, pinned: boolean, action: string): Promise<void> {
+async function setPin(workspace: WorkspaceRow, sessionId: string, pinned: boolean, action: string): Promise<void> {
   try {
     await store.setSessionFlag(workspace, sessionId, 'pinned', pinned)
   } catch (error) {
@@ -98,7 +98,7 @@ async function setPin(workspace: RemoteWorkspace, sessionId: string, pinned: boo
 }
 
 /** Archive or unarchive one session (plugin-owned set, see {@link setPin}). */
-async function setArchived(workspace: RemoteWorkspace, sessionId: string, archived: boolean, action: string): Promise<void> {
+async function setArchived(workspace: WorkspaceRow, sessionId: string, archived: boolean, action: string): Promise<void> {
   try {
     await store.setSessionFlag(workspace, sessionId, 'archived', archived)
   } catch (error) {
@@ -107,7 +107,7 @@ async function setArchived(workspace: RemoteWorkspace, sessionId: string, archiv
 }
 
 /** Fork one session, then open the child it produced. */
-async function forkSession(workspace: RemoteWorkspace, sessionId: string, action: string): Promise<void> {
+async function forkSession(workspace: WorkspaceRow, sessionId: string, action: string): Promise<void> {
   const service = uiWorkspace()
   if (service === undefined) return
   try {

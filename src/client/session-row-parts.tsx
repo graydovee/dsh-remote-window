@@ -13,7 +13,8 @@ import {
   IconPinFillRegular, IconPinOutlineRegular, IconUnarchiveOutlineRegular,
   MenuItemButton, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { RemoteSession, RemoteWorkspace } from './api.ts'
+import type { RemoteSession } from './api.ts'
+import type { WorkspaceRow } from './workspace-join.ts'
 import { store } from './store.ts'
 import { sessionVerbs } from './session-verbs.ts'
 import { rowsCss } from './vendor/workspace-rows/generated/classnames.ts'
@@ -21,7 +22,7 @@ import { rowsTranslate } from './vendor/workspace-rows/translate.ts'
 
 /** Facts one row's verbs need. */
 export interface RowVerbProps {
-  readonly workspace: RemoteWorkspace
+  readonly workspace: WorkspaceRow
   readonly session: RemoteSession
   readonly title: string
   readonly pinned: boolean

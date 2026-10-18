@@ -70,23 +70,50 @@ export interface PublicTarget {
   lastConnectedAt?: string
 }
 
-/** A remote directory remembered as a workspace. */
-export interface RemoteWorkspace {
+/**
+ * **Server-authoritative** workspace list item (`reg.list`, api-contract §14.1).
+ *
+ * `path`/`title`/`createdAt`/`sessionCount` live on the server; this client only
+ * keeps a {@link WorkspaceRef} pointing at one. `createdAt`/`sessionCount` are
+ * optional because a v2 server omits them (and `updatedAt` exists only when the
+ * list was read with `includeActivity`) — a row must still render, with `—`.
+ */
+export interface ServerWorkspace {
+  /** 16 lowercase hex: `sha256(serverId \0 path)[0..16]`. */
+  id: string
+  /** Absolute remote path. */
+  path: string
+  /** Server-authoritative title (`reg.rename` writes it). */
+  title: string
+  createdAt?: string
+  sessionCount?: number
+  /** Latest activity of any session in the workspace; omitted without activity. */
+  updatedAt?: string
+}
+
+/**
+ * The **local** half of a workspace row (api-contract §15.1).
+ *
+ * Only local materialization and view state: no `path`/`title` (the server owns
+ * those). A ref whose `remoteWorkspaceId` is still missing is a record waiting
+ * for the host-side migration and contributes no row.
+ */
+export interface WorkspaceRef {
+  /** Local ref id (`wr-…`): the UI node key and the `workspaceId` of session routes. */
   id: string
   targetId: string
-  path: string
-  title: string
-  createdAt: string
-  lastOpenedAt?: string
-  sessionId?: string
+  /** Server workspace id; absent until the legacy record was migrated. */
   remoteWorkspaceId?: string
-  serverId?: string
-  /** Official shell-workspace entry id (present once the workspace was opened). */
+  /** Local stub directory (non-authoritative, rebuildable). */
+  stubPath?: string
+  /** Official shell-workspace entry id (non-authoritative; what the sweep removes). */
   officialWorkspaceId?: string
   /** Session ids this plugin's user pinned in this workspace, most recent first. */
   pinnedSessions?: string[]
   /** Session ids this plugin's user archived (grayed, not openable). */
   archivedSessions?: string[]
+  lastOpenedAt?: string
+  sessionId?: string
 }
 
 /** One alias read from the local `~/.ssh/config`. */
@@ -97,15 +124,6 @@ export interface SshAlias {
   user?: string
   identityFile?: string
   source: string
-}
-
-/** One workspace the *remote* dsh itself has registered (`reg.list`). */
-export interface RemoteRegistryWorkspace {
-  id: string
-  path: string
-  title: string
-  sessionCount: number
-  createdAt: string
 }
 
 /** One session stored on the remote server for a workspace (`persist.list`). */
@@ -283,10 +301,19 @@ export interface WslProbeResult {
   error?: string
 }
 
-/** Response of `/api/state`. */
+/** Response of `/api/state` (api-contract §15.2). */
 export interface StateResult {
   targets: PublicTarget[]
-  workspaces: RemoteWorkspace[]
+  /** Every target's local refs; the rows are joined with `serverWorkspaces`. */
+  workspaceRefs: WorkspaceRef[]
+  /**
+   * Per-target server workspace lists (`reg.list`), keyed by target id.
+   *
+   * **A missing key is not an empty array**: absent means "this connected
+   * target's list could not be read", while `[]` means "the server says there is
+   * no workspace". The UI words those two states differently.
+   */
+  serverWorkspaces: Record<string, ServerWorkspace[]>
   pluginVersion: string
   defaultProfile: string
   /** The harness host's `process.platform`; the WSL method is gated on it. */
@@ -308,9 +335,15 @@ export interface ListDirResult {
   entries: DirEntry[]
 }
 
-/** Response of `/api/open-workspace`. */
+/**
+ * Response of `/api/open-workspace`.
+ *
+ * After P0 the returned `workspace` is the local ref (the server owns the
+ * `path`/`title`), so only `id`/`targetId` are consumed here — the row itself is
+ * re-joined from `/api/state`.
+ */
 export interface OpenWorkspaceResult {
-  workspace: RemoteWorkspace
+  workspace: WorkspaceRef
   sessionId: string
 }
 
@@ -472,8 +505,8 @@ export const api = {
   },
 
   /** The workspaces the remote dsh has registered (添加工作区 source). */
-  remoteWorkspaces(targetId: string): Promise<{ workspaces: RemoteRegistryWorkspace[] }> {
-    return call<{ workspaces: RemoteRegistryWorkspace[] }>('remote-workspaces', { targetId })
+  remoteWorkspaces(targetId: string): Promise<{ workspaces: ServerWorkspace[] }> {
+    return call<{ workspaces: ServerWorkspace[] }>('remote-workspaces', { targetId })
   },
 
   /** Sessions stored on the remote server for one local workspace record. */
@@ -493,9 +526,45 @@ export const api = {
     return call<DshScanResult>('dsh-scan', request)
   },
 
-  /** Rename one remote workspace (the host changes its own record's title only). */
-  workspaceRename(workspaceId: string, title: string): Promise<{ workspace: RemoteWorkspace }> {
-    return call<{ workspace: RemoteWorkspace }>('workspace-rename', { workspaceId, title })
+  /**
+   * Rename one remote workspace **on the server** (api-contract §4.1).
+   *
+   * The id and the remote directory name never change; the server persists the
+   * title in its own index and the host re-reads `reg.list` afterwards.
+   * @param targetId - the connection owning the workspace.
+   * @param remoteWorkspaceId - server workspace id (16 hex).
+   * @param title - normalized new title.
+   */
+  workspaceRename(targetId: string, remoteWorkspaceId: string, title: string): Promise<{ workspace: ServerWorkspace }> {
+    return call<{ workspace: ServerWorkspace }>('workspace-rename', { targetId, remoteWorkspaceId, title })
+  },
+
+  /**
+   * Delete one workspace **from the server's list** (api-contract §4.1).
+   *
+   * Without `force` a workspace that still has sessions answers HTTP 409
+   * `workspace-not-empty`; the UI then asks again and retries with `force: true`.
+   * Session logs on the remote are never deleted — only the list entry and this
+   * machine's ref.
+   * @param targetId - the connection owning the workspace.
+   * @param remoteWorkspaceId - server workspace id (16 hex).
+   * @param force - delete even when sessions remain.
+   */
+  workspaceDelete(targetId: string, remoteWorkspaceId: string, force?: boolean): Promise<{ removed: boolean; sessionCount: number; refsDropped: string[] }> {
+    return call<{ removed: boolean; sessionCount: number; refsDropped: string[] }>(
+      'workspace-delete',
+      force === undefined ? { targetId, remoteWorkspaceId } : { targetId, remoteWorkspaceId, force },
+    )
+  },
+
+  /**
+   * Sweep this plugin's leftover stub entries out of the **shared** shell
+   * workspace registry (api-contract §4.2). Idempotent.
+   *
+   * `kept` lists entries that still have an active session and therefore stay.
+   */
+  cleanupShellWorkspaces(): Promise<{ removed: string[]; kept: string[] }> {
+    return call<{ removed: string[]; kept: string[] }>('cleanup-shell-workspaces', {})
   },
 
   /** Drop one saved target (and everything derived from it). */
@@ -509,13 +578,8 @@ export const api = {
   },
 
   /** Pin/unpin or archive/unarchive one stored remote session. */
-  sessionFlag(workspaceId: string, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<{ workspace: RemoteWorkspace }> {
-    return call<{ workspace: RemoteWorkspace }>('session-flag', { workspaceId, sessionId, flag, on })
-  },
-
-  /** Drop one saved remote workspace. */
-  forgetWorkspace(workspaceId: string): Promise<{ forgotten: true }> {
-    return call<{ forgotten: true }>('forget-workspace', { workspaceId })
+  sessionFlag(workspaceId: string, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<{ workspace: WorkspaceRef }> {
+    return call<{ workspace: WorkspaceRef }>('session-flag', { workspaceId, sessionId, flag, on })
   },
 
   /** Open (or reuse) the execution channel of a saved host, without a session. */

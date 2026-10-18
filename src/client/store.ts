@@ -13,16 +13,18 @@
  */
 import { useSyncExternalStore } from 'react'
 import {
-  api, openConnectStream, toWireError,
+  api, openConnectStream, toWireError, RemoteApiError,
 } from './api.ts'
 import type {
   AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, ConnectionMode, DirEntry, DshCandidate,
-  DshScanRequest, ListDirResult, PublicTarget, RemoteRegistryWorkspace, RemoteRuntimeInput,
-  RemoteRuntimeProbe, RemoteSession, RemoteWorkspace, ServerPackageState, SshAlias, WireError,
-  WslDistro,
+  DshScanRequest, ListDirResult, PublicTarget, RemoteRuntimeInput,
+  RemoteRuntimeProbe, RemoteSession, ServerPackageState, ServerWorkspace, SshAlias, WireError,
+  WorkspaceRef, WslDistro,
 } from './api.ts'
 import type { ClientContext } from './context.ts'
 import { draftFromAlias } from './alias-prefill.ts'
+import { joinWorkspaces } from './workspace-join.ts'
+import type { WorkspaceRow } from './workspace-join.ts'
 import { methodAvailable } from '../targets/methods.ts'
 import type { ConnectionMethod } from '../targets/methods.ts'
 import { t } from './locales.ts'
@@ -181,30 +183,43 @@ export interface SessionListState {
   error?: WireError
 }
 
-/** The 添加工作区 picker: workspaces the remote dsh itself has registered. */
-/** A destructive row verb waiting for the user's confirmation. */
+/**
+ * A destructive row verb waiting for the user's confirmation.
+ *
+ * `workspace-delete` is the server-authoritative delete; when the server refuses
+ * because sessions remain (HTTP 409 `workspace-not-empty`) the host re-raises the
+ * same dialog as `workspace-delete-force`, which retries with `force: true` and
+ * spells out that the session logs stay on the remote.
+ */
 export interface ConfirmState {
-  readonly kind: 'forget-connection' | 'forget-workspace'
+  readonly kind: 'forget-connection' | 'workspace-delete' | 'workspace-delete-force'
   readonly title: string
   readonly message: string
   readonly confirmLabel: string
   readonly targetId: string
+  /** Local ref id, when the verb acts on one workspace. */
   readonly workspaceId?: string
+  /** Server workspace id — what `workspace-delete` addresses. */
+  readonly remoteWorkspaceId?: string
+  /** Sessions the server reported for that workspace (the 409 body carries it). */
+  readonly sessionCount?: number
 }
 
+/**
+ * The 添加工作区 dialog.
+ *
+ * One tab only (浏览目录): after P0 the tree renders every server workspace (the
+ * host keeps a local ref for each), so a "server has it, this client has not
+ * added it" list would always be empty. Adding one means browsing a directory.
+ */
 export interface AddWorkspaceState {
   targetId: string
   targetLabel: string
-  /** Which tab of the dialog is showing; the browse tab is the default. */
-  tab: 'browse' | 'registry'
-  loading: boolean
-  items: RemoteRegistryWorkspace[]
-  error?: WireError
 }
 
 /** The 重命名工作区 dialog's pending request. */
 export interface WorkspaceRenameState {
-  readonly workspace: RemoteWorkspace
+  readonly workspace: WorkspaceRow
   readonly title: string
 }
 
@@ -227,7 +242,21 @@ export interface AppState {
   /** The step-3 read-only scan: remote architecture, package state, dsh candidates. */
   dshScan: DshScanState
   targets: PublicTarget[]
-  workspaces: RemoteWorkspace[]
+  /** Local refs, straight from `/api/state`; never authored here. */
+  workspaceRefs: WorkspaceRef[]
+  /**
+   * Per-target server lists, straight from `/api/state`.
+   *
+   * A missing key means "could not be read" (offline target / failed `reg.list`),
+   * which the UI must not confuse with an empty list.
+   */
+  serverWorkspaces: Record<string, ServerWorkspace[]>
+  /**
+   * **Derived** rows: `serverWorkspaces` ⋈ `workspaceRefs` (see
+   * `workspace-join.ts`). Recomputed by {@link commit} so no action can put the
+   * tree out of step with its two sources.
+   */
+  workspaces: WorkspaceRow[]
   pluginVersion: string
   defaultProfile: string
   stateLoaded: boolean
@@ -245,7 +274,7 @@ export interface AppState {
   /** The session this device most recently opened (row selection state). */
   currentSessionId?: string
   /** The rename dialog's target, when it is open. */
-  renameTarget?: { workspace: RemoteWorkspace; session: RemoteSession; title: string }
+  renameTarget?: { workspace: WorkspaceRow; session: RemoteSession; title: string }
   /** The 重命名工作区 dialog's target, when it is open. */
   renameWorkspace?: WorkspaceRenameState
   /** A destructive row verb waiting for confirmation, when one is open. */
@@ -369,6 +398,8 @@ function initialState(): AppState {
     wslProbe: { status: 'idle', distros: [] },
     dshScan: emptyDshScan(),
     targets: [],
+    workspaceRefs: [],
+    serverWorkspaces: {},
     workspaces: [],
     pluginVersion: '',
     defaultProfile: '',
@@ -405,7 +436,16 @@ let closeStream: (() => void) | undefined
 function commit(patch: Partial<AppState> | ((previous: AppState) => Partial<AppState>)): void {
   const changes = typeof patch === 'function' ? patch(state) : patch
   if (changes === undefined || Object.keys(changes).length === 0) return
-  state = { ...state, ...changes }
+  const next: AppState = { ...state, ...changes }
+  // The rows are a pure function of their two sources, so they are recomputed
+  // here rather than remembered: no action can leave the tree showing a row the
+  // join would not produce (e.g. a row of a connection that just went down).
+  next.workspaces = joinWorkspaces({
+    targets: next.targets,
+    refs: next.workspaceRefs,
+    serverWorkspaces: next.serverWorkspaces,
+  })
+  state = next
   for (const listener of listeners) listener()
 }
 
@@ -679,10 +719,10 @@ function releaseShellSelection(targetId: string): void {
  * @returns true when the id is one of this target's remote sessions.
  */
 function targetOwnsSession(targetId: string, sessionId: string): boolean {
-  for (const workspace of state.workspaces) {
-    if (workspace.targetId !== targetId) continue
-    if (workspace.sessionId === sessionId) return true
-    if (state.sessions[workspace.id]?.items.some(item => item.id === sessionId) === true) return true
+  for (const ref of state.workspaceRefs) {
+    if (ref.targetId !== targetId) continue
+    if (ref.sessionId === sessionId) return true
+    if (state.sessions[ref.id]?.items.some(item => item.id === sessionId) === true) return true
   }
   return false
 }
@@ -803,7 +843,7 @@ function revealSessionId(sessionId: string, targetId?: string): void {
  * @param flag - which set to change.
  * @param on - add or drop the id.
  */
-async function setSessionFlag(workspace: RemoteWorkspace, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<void> {
+async function setSessionFlag(workspace: WorkspaceRow, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<void> {
   if (state.pending) return
   const gen = generation
   commit({ pending: true, error: undefined })
@@ -833,7 +873,7 @@ async function setSessionFlag(workspace: RemoteWorkspace, sessionId: string, fla
  * session that only appears on the next read).
  * @param workspace - the workspace whose list changed.
  */
-async function refreshSessions(workspace: RemoteWorkspace): Promise<void> {
+async function refreshSessions(workspace: WorkspaceRow): Promise<void> {
   invalidateSessions(workspace.id)
   await loadSessions(workspace, true)
 }
@@ -844,7 +884,7 @@ async function refreshSessions(workspace: RemoteWorkspace): Promise<void> {
  * @param sessionId - the stored remote session id.
  * @param title - the new title.
  */
-async function renameSession(workspace: RemoteWorkspace, sessionId: string, title: string): Promise<void> {
+async function renameSession(workspace: WorkspaceRow, sessionId: string, title: string): Promise<void> {
   const gen = generation
   commit({ pending: true, error: undefined })
   try {
@@ -883,7 +923,7 @@ function requestForgetTarget(target: PublicTarget): void {
     confirm: {
       kind: 'forget-connection',
       title: t('tree.forget.confirm.title'),
-      message: t('tree.forget.confirm.message', { label: target.label, count: state.workspaces.filter(w => w.targetId === target.id).length }),
+      message: t('tree.forget.confirm.message', { label: target.label, count: state.workspaceRefs.filter(ref => ref.targetId === target.id).length }),
       confirmLabel: t('list.forget'),
       targetId: target.id,
     },
@@ -891,18 +931,26 @@ function requestForgetTarget(target: PublicTarget): void {
 }
 
 /**
- * Ask before removing a remote workspace (its record, tree entry and stub).
- * @param workspace - the workspace row's record.
+ * Ask before deleting a remote workspace.
+ *
+ * After P0 the list lives on the **server**, so this deletes the list entry
+ * (`reg.delete`); the remote session logs are never touched, and the copy says
+ * so — "删除工作区" reads like "delete the data" to a user (architecture A35).
+ * When sessions remain the server answers 409 and this dialog comes back once
+ * more as the explicit `force` confirmation ({@link acceptConfirm}).
+ * @param workspace - the joined row.
  */
-function requestForgetWorkspace(workspace: RemoteWorkspace): void {
+function requestDeleteWorkspace(workspace: WorkspaceRow): void {
   commit({
     confirm: {
-      kind: 'forget-workspace',
+      kind: 'workspace-delete',
       title: t('tree.forget.workspace.title'),
       message: t('tree.forget.workspace.message', { title: workspace.title, path: workspace.path }),
       confirmLabel: t('tree.workspace.forget'),
       targetId: workspace.targetId,
       workspaceId: workspace.id,
+      remoteWorkspaceId: workspace.remoteWorkspaceId,
+      ...(workspace.sessionCount === undefined ? {} : { sessionCount: workspace.sessionCount }),
     },
   })
 }
@@ -922,12 +970,99 @@ async function acceptConfirm(): Promise<void> {
     if (target !== undefined) await forgetTarget(target)
     return
   }
-  const workspace = state.workspaces.find(candidate => candidate.id === pending.workspaceId)
-  if (workspace !== undefined) await forgetWorkspace(workspace)
+  if (pending.remoteWorkspaceId === undefined) return
+  await deleteWorkspace(
+    pending.targetId,
+    pending.remoteWorkspaceId,
+    pending.kind === 'workspace-delete-force',
+    pending.title,
+    pending.workspaceId,
+    pending.sessionCount,
+  )
+}
+
+/** The session count the 409 body carries (`workspace-not-empty 5 …`), if any. */
+function sessionCountOf(message: string): number | undefined {
+  const match = /(\d+)/.exec(message)
+  if (match === null) return undefined
+  const parsed = Number.parseInt(match[1] ?? '', 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+/**
+ * Delete one workspace from the server's list, and its local ref.
+ *
+ * `force` is what the user's second confirmation turns on; without it a
+ * workspace that still has sessions answers 409 `workspace-not-empty`, which this
+ * function turns into that second confirmation instead of a dead error.
+ * @param targetId - the connection owning the workspace.
+ * @param remoteWorkspaceId - server workspace id.
+ * @param force - delete even though sessions remain (logs stay on the remote).
+ * @param title - display title for the messages.
+ * @param workspaceId - local ref id, used to drop the cached session list.
+ * @param knownCount - session count already known from the row, for the copy.
+ */
+async function deleteWorkspace(
+  targetId: string,
+  remoteWorkspaceId: string,
+  force: boolean,
+  title: string,
+  workspaceId: string | undefined,
+  knownCount: number | undefined,
+): Promise<void> {
+  if (state.pending) return
+  const gen = generation
+  commit({ pending: true, error: undefined })
+  try {
+    const result = await api.workspaceDelete(targetId, remoteWorkspaceId, force)
+    if (gen !== generation) return
+    if (workspaceId !== undefined) invalidateSessions(workspaceId)
+    commit({
+      pending: false,
+      notice: {
+        kind: 'success',
+        text: force
+          ? t('tree.workspace.deletedWithSessions', { title, count: result.sessionCount })
+          : t('tree.workspace.deleted', { title }),
+      },
+    })
+    await refreshState()
+  } catch (error) {
+    if (gen !== generation) return
+    const wire = toWireError(error)
+    // 409 workspace-not-empty: the server refused because sessions remain. That
+    // is not a failure to report — it is the question "delete the entry anyway?"
+    // and the copy has to say that the logs stay.
+    if (!force && (error instanceof RemoteApiError && error.code === 'workspace-not-empty')) {
+      const count = sessionCountOf(wire.message) ?? knownCount
+      commit({
+        pending: false,
+        confirm: {
+          kind: 'workspace-delete-force',
+          title: t('tree.workspace.delete.force.title'),
+          message: t('tree.workspace.delete.force.message', {
+            title,
+            count: count === undefined ? t('common.unknown') : count,
+          }),
+          confirmLabel: t('tree.workspace.delete.force.confirm'),
+          targetId,
+          remoteWorkspaceId,
+          ...(count === undefined ? {} : { sessionCount: count }),
+          ...(workspaceId === undefined ? {} : { workspaceId }),
+        },
+      })
+      return
+    }
+    commit({
+      pending: false,
+      error: wire,
+      notice: { kind: 'error', text: t('tree.workspace.deleteFailed', { message: wire.message }) },
+    })
+  }
 }
 
 /** Open the rename dialog for one remote session. */
-function requestRename(workspace: RemoteWorkspace, session: RemoteSession): void {
+function requestRename(workspace: WorkspaceRow, session: RemoteSession): void {
   commit({ renameTarget: { workspace, session, title: session.title ?? '' } })
 }
 
@@ -947,10 +1082,11 @@ async function refreshState(): Promise<void> {
   try {
     const value = await api.state()
     if (gen !== generation) return
-    const hasSaved = value.targets.length > 0 || value.workspaces.length > 0
+    const hasSaved = value.targets.length > 0 || value.workspaceRefs.length > 0
     commit({
       targets: value.targets,
-      workspaces: value.workspaces,
+      workspaceRefs: value.workspaceRefs,
+      serverWorkspaces: value.serverWorkspaces,
       pluginVersion: value.pluginVersion,
       defaultProfile: value.defaultProfile,
       // The host platform gates the WSL method; it must ride the *successful*
@@ -987,7 +1123,8 @@ async function refreshState(): Promise<void> {
           if (gen !== generation) return
           commit({
             targets: value.targets,
-            workspaces: value.workspaces,
+            workspaceRefs: value.workspaceRefs,
+            serverWorkspaces: value.serverWorkspaces,
             pluginVersion: value.pluginVersion,
             defaultProfile: value.defaultProfile,
             platform: value.platform ?? '',
@@ -999,6 +1136,36 @@ async function refreshState(): Promise<void> {
       }
     }
     commit({ stateLoading: false, stateLoaded: true, error: toWireError(error) })
+  }
+}
+
+/**
+ * The 刷新 button: re-read `/api/state` and then sweep this plugin's leftovers.
+ *
+ * `/api/state` is what carries the authoritative server lists (the host re-runs
+ * `reg.list` for the connected targets), so the list refresh comes first and the
+ * sweep after it; there is no ordering hazard between them.
+ */
+async function refreshAll(): Promise<void> {
+  await refreshState()
+  await cleanupShellWorkspaces()
+}
+
+/**
+ * Sweep this plugin's stub entries out of the **shared** shell workspace
+ * registry (api-contract §4.2) and report what was removed.
+ *
+ * Failures are deliberately silent: this is housekeeping that rides along with a
+ * refresh, so a failing sweep must not replace the refresh result with an error.
+ * `kept` entries still have an active session and stay until it closes.
+ */
+async function cleanupShellWorkspaces(): Promise<void> {
+  try {
+    const result = await api.cleanupShellWorkspaces()
+    if (result.removed.length === 0) return
+    commit({ notice: { kind: 'success', text: t('tree.cleanup.removed', { count: result.removed.length }) } })
+  } catch (error) {
+    console.warn('[dsh-remote-workspace] cleanup-shell-workspaces failed', error)
   }
 }
 
@@ -1185,12 +1352,12 @@ function dismissNotice(): void {
  */
 export function watchShellRows(apply: (workspaceIds: readonly string[], sessionIds: readonly string[]) => void): () => void {
   const run = (): void => {
-    const workspaceIds = state.workspaces
-      .map(workspace => workspace.officialWorkspaceId ?? '')
+    const workspaceIds = state.workspaceRefs
+      .map(ref => ref.officialWorkspaceId ?? '')
       .filter(id => id !== '')
     const sessionIds = new Set<string>()
-    for (const workspace of state.workspaces) {
-      if (workspace.sessionId !== undefined && workspace.sessionId !== '') sessionIds.add(workspace.sessionId)
+    for (const ref of state.workspaceRefs) {
+      if (ref.sessionId !== undefined && ref.sessionId !== '') sessionIds.add(ref.sessionId)
     }
     for (const list of Object.values(state.sessions)) {
       for (const session of list.items) sessionIds.add(session.id)
@@ -1678,28 +1845,26 @@ async function loadDirectory(targetId: string, path: string): Promise<void> {
 }
 
 /**
- * Open the 添加工作区 dialog on its browse tab, connecting the target first if
- * its channel is down.
+ * Open the 添加工作区 dialog (browse-only), connecting the target first if its
+ * channel is down.
  *
  * `list-dir` runs through the host's cached browser client, which re-provisions
  * a cold target on its own — seconds to tens of seconds. The dialog therefore
  * has to show a 连接中 state while that call is in flight; the wizard used to
  * express this with an entire step, and without it the pane just sits empty.
+ *
+ * There is only one tab: the server list is what the tree shows (the host keeps
+ * a ref for every server workspace), so a "已注册但未添加" list would always be
+ * empty — browsing a directory is the only way to *add* one.
  * @param target - the connection row's target.
  */
 async function openBrowseDirectory(target: PublicTarget): Promise<void> {
   const gen = generation
-  commit(previous => ({
-    addWorkspace: {
-      targetId: target.id,
-      targetLabel: target.label,
-      tab: 'browse',
-      loading: previous.addWorkspace?.loading ?? false,
-      items: previous.addWorkspace?.items ?? [],
-    },
+  commit({
+    addWorkspace: { targetId: target.id, targetLabel: target.label },
     error: undefined,
     directory: { ...emptyDirectory(), open: true, targetId: target.id },
-  }))
+  })
   if (target.status !== 'ready') {
     commit(previous => ({ directory: { ...previous.directory, connecting: true } }))
     try {
@@ -1717,23 +1882,6 @@ async function openBrowseDirectory(target: PublicTarget): Promise<void> {
     commit(previous => ({ directory: { ...previous.directory, connecting: false } }))
   }
   await loadDirectory(target.id, '')
-}
-
-/** Switch the 添加工作区 dialog between its two tabs, loading what the tab needs. */
-function setAddWorkspaceTab(tab: 'browse' | 'registry'): void {
-  const dialog = state.addWorkspace
-  if (dialog === undefined || dialog.tab === tab) return
-  commit(previous => ({
-    addWorkspace: previous.addWorkspace === undefined ? undefined : { ...previous.addWorkspace, tab },
-  }))
-  if (tab === 'registry') {
-    void refreshAddWorkspace()
-    return
-  }
-  const target = state.targets.find(candidate => candidate.id === dialog.targetId)
-  if (target === undefined) return
-  if (state.directory.targetId === target.id && state.directory.listing !== undefined) return
-  void openBrowseDirectory(target)
 }
 
 function setNewDirName(name: string): void {
@@ -1788,7 +1936,7 @@ async function openWorkspace(): Promise<void> {
       addWorkspace: undefined,
       directory: emptyDirectory(),
       connect: idleConnect(),
-      notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
+      notice: { kind: 'success', text: t('directory.opened', { title: trimmed === '' ? basename(listing.path) : trimmed }) },
       // The new workspace row is only visible under an open connection node.
       expanded: { ...previous.expanded, [targetNodeKey(targetId)]: true },
     }))
@@ -1804,12 +1952,13 @@ async function openWorkspace(): Promise<void> {
 /**
  * Ask for a new title for one remote workspace.
  *
- * Only the plugin's own record changes (the host rewrites `title`), never the
- * remote directory: the directory is what every stored session's header points
- * at, and a network `mv` has no rollback (architecture A7).
- * @param workspace - the workspace row's record.
+ * The **server** owns the title now (architecture A34): the host forwards this to
+ * `reg.rename`, which keeps the id and the remote directory name — every stored
+ * session header keeps pointing at the same path, and the pin/archive sets (keyed
+ * by the server id) survive a rename.
+ * @param workspace - the joined row.
  */
-function requestWorkspaceRename(workspace: RemoteWorkspace): void {
+function requestWorkspaceRename(workspace: WorkspaceRow): void {
   commit({ renameWorkspace: { workspace, title: workspace.title } })
 }
 
@@ -1819,7 +1968,7 @@ function settleWorkspaceRename(): void {
 }
 
 /**
- * Apply one workspace rename through the host and refresh the tree.
+ * Rename one workspace **on the server** and re-read the list.
  *
  * Like the session rename, the dialog owns its own lifetime: this action keeps
  * `renameWorkspace` set so the form can show a failure inline, and the caller
@@ -1833,7 +1982,7 @@ async function acceptWorkspaceRename(title: string): Promise<void> {
   const gen = generation
   commit({ pending: true, error: undefined })
   try {
-    await api.workspaceRename(pending.workspace.id, trimmed)
+    await api.workspaceRename(pending.workspace.targetId, pending.workspace.remoteWorkspaceId, trimmed)
     if (gen !== generation) return
     commit({ pending: false, notice: { kind: 'success', text: t('tree.workspace.renamed', { title: trimmed }) } })
     await refreshState()
@@ -1859,21 +2008,6 @@ async function forgetTarget(target: PublicTarget): Promise<void> {
       if (owner === target.id) revealedSessions.delete(sessionId)
     }
     commit({ pending: false, notice: { kind: 'success', text: t('list.forgotTarget', { label: target.label }) } })
-    await refreshState()
-  } catch (error) {
-    if (gen !== generation) return
-    commit({ pending: false, error: toWireError(error) })
-  }
-}
-
-async function forgetWorkspace(workspace: RemoteWorkspace): Promise<void> {
-  if (state.pending) return
-  const gen = generation
-  commit({ pending: true, error: undefined })
-  try {
-    await api.forgetWorkspace(workspace.id)
-    if (gen !== generation) return
-    commit({ pending: false, notice: { kind: 'success', text: t('list.forgotWorkspace', { title: workspace.title }) } })
     await refreshState()
   } catch (error) {
     if (gen !== generation) return
@@ -1914,7 +2048,7 @@ async function stopTarget(target: PublicTarget): Promise<void> {
 }
 
 /** Re-open a saved remote workspace (the host recreates its session). */
-async function reopenWorkspace(workspace: RemoteWorkspace): Promise<void> {
+async function reopenWorkspace(workspace: WorkspaceRow): Promise<void> {
   return await withConnecting(async () => {
   if (state.pending) return
   const gen = generation
@@ -1924,11 +2058,11 @@ async function reopenWorkspace(workspace: RemoteWorkspace): Promise<void> {
     if (gen !== generation) return
     commit({
       pending: false,
-      notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
+      notice: { kind: 'success', text: t('directory.opened', { title: workspace.title }) },
     })
     void revealSession(result.sessionId, workspace.targetId)
     await refreshState()
-    refreshSessionsFor(result.workspace)
+    refreshSessionsById(workspace.id)
   } catch (error) {
     if (gen !== generation) return
     commit({ pending: false, error: toWireError(error) })
@@ -1963,10 +2097,22 @@ function invalidateSessions(workspaceId: string): void {
  * Starting or continuing a session changes that list, so an open node must not
  * keep showing the pre-action contents; a collapsed node simply drops its cache
  * and loads again on the next expand.
+ * @param workspace - the joined row.
  */
-function refreshSessionsFor(workspace: RemoteWorkspace): void {
-  invalidateSessions(workspace.id)
-  if (state.expanded[workspaceNodeKey(workspace.id)] === true) void loadSessions(workspace, true)
+function refreshSessionsFor(workspace: WorkspaceRow): void {
+  refreshSessionsById(workspace.id)
+}
+
+/**
+ * Same, addressed by the local ref id — the shape a freshly opened workspace
+ * gives us before the rows have been re-joined from `/api/state`.
+ * @param workspaceId - the local ref id.
+ */
+function refreshSessionsById(workspaceId: string): void {
+  invalidateSessions(workspaceId)
+  if (state.expanded[workspaceNodeKey(workspaceId)] !== true) return
+  const row = state.workspaces.find(candidate => candidate.id === workspaceId)
+  if (row !== undefined) void loadSessions(row, true)
 }
 
 /** Expand or collapse one tree node; expanding a workspace loads its sessions. */
@@ -1981,7 +2127,7 @@ function toggleNode(key: string): void {
 }
 
 /** Load (or reload) the remote session list of one saved workspace. */
-async function loadSessions(workspace: RemoteWorkspace, force = false): Promise<void> {
+async function loadSessions(workspace: WorkspaceRow, force = false): Promise<void> {
   const cached = state.sessions[workspace.id]
   if (cached !== undefined && (cached.loading || (cached.loaded && !force))) return
   const gen = generation
@@ -2023,7 +2169,7 @@ async function loadSessions(workspace: RemoteWorkspace, force = false): Promise<
  * comes back from the remote log; the shell then adopts the live session like
  * any local one.
  */
-async function openSession(workspace: RemoteWorkspace, session: RemoteSession): Promise<void> {
+async function openSession(workspace: WorkspaceRow, session: RemoteSession): Promise<void> {
   return await withConnecting(async () => {
   if (state.pending) return
   const gen = generation
@@ -2066,9 +2212,8 @@ export function shortSessionId(id: string): string {
 /**
  * Open the 添加工作区 dialog for one connection.
  *
- * The default tab is 浏览目录 (the requirement: adding a workspace means picking
- * a remote directory), so opening the dialog is opening the browser — including
- * its connect-first step when the channel is down.
+ * The dialog has one tab (浏览目录): adding a workspace means picking a remote
+ * directory, and the dialog's own connect-first step handles a cold channel.
  * @param target - the connection row's target.
  */
 async function openAddWorkspace(target: PublicTarget): Promise<void> {
@@ -2077,60 +2222,6 @@ async function openAddWorkspace(target: PublicTarget): Promise<void> {
 
 function closeAddWorkspace(): void {
   commit({ addWorkspace: undefined, directory: emptyDirectory() })
-}
-
-/** (Re)read the remote dsh's own workspace registry for the open picker. */
-async function refreshAddWorkspace(): Promise<void> {
-  const dialog = state.addWorkspace
-  if (dialog === undefined) return
-  const gen = generation
-  commit(previous => ({
-    addWorkspace: previous.addWorkspace === undefined
-      ? undefined
-      : { ...previous.addWorkspace, loading: true, error: undefined },
-  }))
-  try {
-    const value = await api.remoteWorkspaces(dialog.targetId)
-    if (gen !== generation) return
-    commit(previous => ({
-      addWorkspace: previous.addWorkspace === undefined
-        ? undefined
-        : { ...previous.addWorkspace, loading: false, items: value.workspaces },
-    }))
-  } catch (error) {
-    if (gen !== generation) return
-    commit(previous => ({
-      addWorkspace: previous.addWorkspace === undefined
-        ? undefined
-        : { ...previous.addWorkspace, loading: false, error: toWireError(error) },
-    }))
-  }
-}
-
-/** Adopt one workspace the remote dsh has registered (reg.list → open). */
-async function adoptRemoteWorkspace(entry: RemoteRegistryWorkspace): Promise<void> {
-  const dialog = state.addWorkspace
-  if (dialog === undefined || state.pending) return
-  return await withConnecting(async () => {
-    const gen = generation
-    commit({ pending: true, error: undefined })
-    try {
-      const result = await api.openWorkspace(dialog.targetId, entry.path, entry.title)
-      if (gen !== generation) return
-      commit(previous => ({
-        pending: false,
-        addWorkspace: undefined,
-        directory: emptyDirectory(),
-        notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
-        expanded: { ...previous.expanded, [targetNodeKey(dialog.targetId)]: true },
-      }))
-      void revealSession(result.sessionId, dialog.targetId)
-      await refreshState()
-    } catch (error) {
-      if (gen !== generation) return
-      commit({ pending: false, error: toWireError(error) })
-    }
-  })
 }
 
 /** Open one connected host's node, keeping its children visible. */
@@ -2179,7 +2270,7 @@ async function connectTarget(target: PublicTarget): Promise<void> {
  * not a dead end: the workspace falls back to a new session and the reason is
  * reported instead of leaving the user with a stuck row.
  */
-async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
+async function openWorkspaceRecord(workspace: WorkspaceRow): Promise<void> {
   const sessionId = workspace.sessionId
   if (sessionId === undefined || sessionId === '') {
     await reopenWorkspace(workspace)
@@ -2235,8 +2326,8 @@ async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
 function collapseTarget(targetId: string): void {
   const collapsed: string[] = []
   if (state.expanded[targetNodeKey(targetId)] === true) collapsed.push(targetNodeKey(targetId))
-  for (const workspace of state.workspaces.filter(candidate => candidate.targetId === targetId)) {
-    const key = workspaceNodeKey(workspace.id)
+  for (const ref of state.workspaceRefs.filter(candidate => candidate.targetId === targetId)) {
+    const key = workspaceNodeKey(ref.id)
     if (state.expanded[key] === true) collapsed.push(key)
   }
   if (collapsed.length === 0) return
@@ -2275,7 +2366,6 @@ export const store = {
   createDirectory,
   openWorkspace,
   forgetTarget,
-  forgetWorkspace,
   stopTarget,
   reopenWorkspace,
   openWorkspaceRecord,
@@ -2292,20 +2382,19 @@ export const store = {
   requestRename,
   settleRename,
   requestForgetTarget,
-  requestForgetWorkspace,
+  requestDeleteWorkspace,
   settleConfirm,
   acceptConfirm,
   openAddWorkspace,
   closeAddWorkspace,
-  setAddWorkspaceTab,
-  refreshAddWorkspace,
-  adoptRemoteWorkspace,
   openBrowseDirectory,
   requestWorkspaceRename,
   settleWorkspaceRename,
   acceptWorkspaceRename,
   expandTarget,
   connectTarget,
+  refreshAll,
+  cleanupShellWorkspaces,
 } as const
 
 /** The store's actions (the object above), for prop-free components. */

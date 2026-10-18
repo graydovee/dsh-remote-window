@@ -24,10 +24,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { MenuItemButton } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PublicTarget, RemoteSession, RemoteWorkspace } from './api.ts'
+import type { PublicTarget, RemoteSession } from './api.ts'
 import { t } from './locales.ts'
 import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
 import type { AppState } from './store.ts'
+import { serverListState } from './workspace-join.ts'
+import type { WorkspaceRow as WorkspaceRowModel } from './workspace-join.ts'
 import { AddWorkspaceDialog } from './list.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
 import { RenameSessionDialog } from './rename-dialog.tsx'
@@ -90,7 +92,7 @@ function connectionTranslate(target: PublicTarget): VerbTranslate {
 }
 
 /** Row verbs for a remote workspace. */
-function workspaceTranslate(workspace: RemoteWorkspace): VerbTranslate {
+function workspaceTranslate(workspace: WorkspaceRowModel): VerbTranslate {
   return (key, params) => {
     // The official menu has exactly two fixed slots (`rename` / `delete`), so
     // 重命名工作区 takes the first one and 刷新会话列表 is gone (architecture A8:
@@ -160,7 +162,7 @@ function blankSessionNode(): SessionNode {
  * @returns the seat for `SessionNodeItem`.
  */
 function sessionSeat(
-  workspace: RemoteWorkspace,
+  workspace: WorkspaceRowModel,
   session: RemoteSession,
   flags: SessionFlags,
 ): Parameters<typeof rowRenderSlots>[0] {
@@ -217,7 +219,7 @@ function TreeRow(props: {
 }
 
 /** One session row plus the trailing New Session row of an expanded workspace. */
-function SessionRows(props: { workspace: RemoteWorkspace; now: number; flags: SessionFlags }): ReactElement | null {
+function SessionRows(props: { workspace: WorkspaceRowModel; now: number; flags: SessionFlags }): ReactElement | null {
   const state = useAppState()
   const list = state.sessions[props.workspace.id]
   const items = orderSessions(list?.items ?? [], props.flags)
@@ -267,7 +269,7 @@ function SessionRows(props: { workspace: RemoteWorkspace; now: number; flags: Se
 }
 
 /** One remote workspace row plus its session rows. */
-function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget; now: number }): ReactElement | null {
+function WorkspaceRow(props: { workspace: WorkspaceRowModel; target: PublicTarget; now: number }): ReactElement | null {
   const state = useAppState()
   const { workspace } = props
   const key = workspaceNodeKey(workspace.id)
@@ -278,11 +280,15 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
   const translate = useMemo(() => workspaceTranslate(workspace), [workspace.title])
   const group: GroupNode = {
     key: workspace.id,
-    workspaceId: workspace.remoteWorkspaceId ?? workspace.id,
+    workspaceId: workspace.remoteWorkspaceId,
     cwd: workspace.path,
-    createdAt: Date.parse(workspace.createdAt),
+    // A v2 server omits `createdAt`; the hover card then shows no date rather
+    // than `Invalid Date` (contract §14.1: never drop the row over a missing
+    // field).
+    createdAt: workspace.createdAt === undefined ? undefined : Date.parse(workspace.createdAt),
     label: workspace.title,
-    sessionCount: list?.items.length ?? 0,
+    // The server's count is the truth until this device has loaded the list.
+    sessionCount: list?.items.length ?? workspace.sessionCount ?? 0,
     expanded,
     containsCurrent: state.currentSessionId !== undefined && workspace.sessionId === state.currentSessionId,
     sessions: [],
@@ -296,7 +302,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         onCreate={() => { void store.reopenWorkspace(workspace) }}
         actions={{
           rename: () => { store.requestWorkspaceRename(workspace) },
-          delete: () => { store.requestForgetWorkspace(workspace) },
+          delete: () => { store.requestDeleteWorkspace(workspace) },
         }}
         // A disconnected connection cannot start sessions; the row still
         // renders, with the plain dictionary labels.
@@ -309,7 +315,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
 }
 
 /** One connection row (the level the shell's own tree does not have) plus its workspaces. */
-function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspace[]; now: number }): ReactElement | null {
+function ConnectionRow(props: { target: PublicTarget; workspaces: WorkspaceRowModel[]; now: number }): ReactElement | null {
   const state = useAppState()
   const { target } = props
   const key = targetNodeKey(target.id)
@@ -379,7 +385,16 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: RemoteWorkspac
       {connected && expanded && (
         <>
           {props.workspaces.length === 0
-            ? <p className="dsh-rw-tree-empty">{t('tree.conn.noWorkspace')}</p>
+            ? (
+              // "The server has no workspace" and "the list could not be read"
+              // are different facts (a missing `serverWorkspaces` key is not an
+              // empty array), so they read differently.
+              <p className="dsh-rw-tree-empty">
+                {serverListState(state.serverWorkspaces, target.id) === 'unavailable'
+                  ? t('tree.conn.noWorkspace.unavailable')
+                  : t('tree.conn.noWorkspace')}
+              </p>
+            )
             : props.workspaces.map(workspace => (
               <WorkspaceRow key={workspace.id} workspace={workspace} target={target} now={props.now} />
             ))}

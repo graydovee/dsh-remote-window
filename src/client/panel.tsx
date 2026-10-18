@@ -45,7 +45,7 @@ export function RemoteWorkspacePanel(): ReactElement | null {
           variant="ghost"
           icon={<IconRefreshOutlineRegular size={12} />}
           disabled={state.stateLoading}
-          onClick={() => { void store.refreshState() }}
+          onClick={() => { void store.refreshAll() }}
         >
           {t('common.refresh')}
         </Button>
