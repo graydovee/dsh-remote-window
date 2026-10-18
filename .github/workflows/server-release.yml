@@ -113,3 +113,26 @@ jobs:
             dist-server/*.tar.gz
             dist-server/*.tar.gz.sha256
             dist-server/*.manifest.json
+
+      # The plugin looks the packages up under `server-v<dsh version>` first
+      # (that is the version the tree was built against) and only then under
+      # `v<plugin version>`. Publishing both names from the same job means a
+      # human-facing tag such as v0.1.0-alpha1 is enough to make the download
+      # path work, whatever the plugin version happens to be.
+      - uses: softprops/action-gh-release@v2
+        if: ${{ github.ref_name != format('server-v{0}', env.DSH_VERSION) }}
+        with:
+          tag_name: server-v${{ env.DSH_VERSION }}
+          name: server packages for dsh ${{ env.DSH_VERSION }}
+          body: |
+            Staged `@deepseek-ai/dsh@${{ env.DSH_VERSION }}` runtime packages for
+            the remote execution world, identical to the assets published under
+            `${{ github.ref_name }}`.
+
+            The plugin resolves this tag first (`server-v<dsh version>`), so this
+            release is the one a connection actually downloads.
+          fail_on_unmatched_files: true
+          files: |
+            dist-server/*.tar.gz
+            dist-server/*.tar.gz.sha256
+            dist-server/*.manifest.json
