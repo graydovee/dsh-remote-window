@@ -58,25 +58,31 @@
 
 | 路由 | 状态 | 说明 |
 |---|---|---|
-| `state` | 不变 | `targets` / `workspaces` / `pluginVersion` / `defaultProfile` / `platform` |
+| `state` | **变更（P0）** | 响应改为 `targets` / **`workspaceRefs`** / **`serverWorkspaces`** / `pluginVersion` / `defaultProfile` / `platform`（§15） |
 | `wsl-distros` | 不变 | 非 win32 = `400 unsupported` |
 | `ssh-aliases` / `alias-prefill` | 不变 | `~/.ssh/config` |
-| `dsh-scan` | **新增** | 连接前只读扫描：架构探测 + 远端已装 dsh 候选 + 本地包缓存状态（§2） |
-| `connect/start` | **变更（additive）** | body 增 `packageSource: 'reuse'` 与 `reuseLauncherPath`（§3） |
+| `dsh-scan` | 新增 | 连接前只读扫描：架构探测 + 远端已装 dsh 候选 + 本地包缓存状态（§2） |
+| `connect/start` | 变更（additive） | body 增 `packageSource: 'reuse'` 与 `reuseLauncherPath`（§3） |
 | `hostkey-confirm` | 不变 | |
 | `connect` / `stop-target` | 不变 | 树里「连接 / 断开」 |
 | `list-dir` / `mkdir` | 不变 | 目录浏览 |
-| `open-workspace` / `open-session` | 不变 | 目录→工作区、续聊 |
-| `remote-workspaces` / `sessions` | 不变 | 远端注册表列表 / 会话列表（含 `persist.titles`） |
-| `session-rename` / `session-flag` | 不变 | 会话重命名 / 置顶归档 |
-| `forget-workspace` | 不变 | 「移除工作区」 |
-| `forget-target` | **不变（只改 UI 措辞）** | 语义 = 「删除连接」；**路由名不改**，避免无谓的契约漂移 |
-| `workspace-rename` | **新增** | 重命名远端工作区（只改本地记录 `title`，§4） |
+| `open-workspace` / `open-session` | 不变 | 目录→工作区、续聊（内部改为先读/登记 server 清单） |
+| `remote-workspaces` | **变更（P0）** | 服务端权威清单 `reg.list`，项内补 `updatedAt?`（§14.1）；`/api/state` 也会带回同一份 |
+| `sessions` | 不变 | 会话列表（含 `persist.titles`） |
+| `session-rename` / `session-flag` | 不变 | 会话重命名 / 置顶归档（视图状态） |
+| `workspace-rename` | **语义变更（P0）** | 改为 server `reg.rename`；body 变 `{ targetId, remoteWorkspaceId, title }`（§4） |
+| `workspace-delete` | **新增（P0）** | server `reg.delete`；有会话默认 409，`force: true` 才删清单（§4.1） |
+| `forget-workspace` | **退役（P0）** | 被 `workspace-delete` 取代：清单在 server，没有「只在本机忘记」这种东西 |
+| `forget-target` | 不变（只改 UI 措辞） | 语义 = 「删除连接」；**不动 server 清单**（架构 A41） |
+| `cleanup-shell-workspaces` | **新增（P0）** | 清扫共享 registry 里本插件的 stub 条目（§4.2） |
 | `package-policy-get` / `package-policy-set` | 不变 | 全局策略（`auto｜download｜upload｜ask`，**不含 reuse**） |
 | `stream/connect`（SSE） | 不变 | 帧 `step｜host-key｜done｜error` |
 
-**本轮明确不新增**（因为要动 `src/server/**`，与兄弟仓库同步）：`reg.delete`、`reg.rename`、任何 scan RPC。
-扫描与探测都在 **host 侧**通过 `transport.exec()` 跑只读 shell 脚本完成。
+**P0 新增的远端 RPC**（不是 HTTP 路由，走协议通道）：
+`reg.rename`、`reg.delete`，以及 `reg.list` 的字段扩展 —— 逐字契约见 **§14**。
+它们要求改 `src/protocol.ts` 与 `src/server/**`，**必须两仓同步**（架构 §7.2）。
+
+> 上一版写的「本轮明确不新增 `reg.delete`/`reg.rename`」**已作废**（P0 明确要它们）。
 
 ---
 

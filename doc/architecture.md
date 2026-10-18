@@ -1,12 +1,16 @@
 # dsh-remote-workspace 架构（含本轮需求变更）
 
-> 状态：**架构基线 v2**（本轮「新建连接三步 + 连接方式三选一 + 行级添加工作区」需求）。
+> 状态：**架构基线 v3 / 阶段 P0**（在「新建连接三步 + 连接方式三选一 + 行级添加工作区」之上，
+> 追加 **server 权威 + 本地只留引用** 的重构）。
 > 权威性：本文件与 `doc/api-contract.md`、`doc/acceptance-gap.md` 一起是实现的唯一权威；
 > 代码与文档不一致时，先走变更确认（架构师改文档并通知 Leader 与 Developer）。
 > 现有实现事实以 `AGENTS.md` 为准（那份文件记录的是实测约束，本文件不推翻任何一条）。
+>
+> **阶段 P0 的全部内容在 §7**（权威归属表 / 协议 v3 / `WorkspaceRef` / stub 生命周期 / 客户端视图）。
+> 它与 §2–§3 的旧描述冲突时，**§7 优先**；§2–§3 保留为历史实现说明。
 
-- 本轮需求（验收标准 1–8）见 `doc/acceptance-gap.md`。
-- 接口契约（路由 / 类型 / 脚本 / 缓存命名）见 `doc/api-contract.md`。
+- 本轮需求（验收标准 1–8）见 `doc/acceptance-gap.md`；P0 的验收口径见其 **F 节**。
+- 接口契约（路由 / 类型 / 脚本 / 缓存命名 / 协议 v3）见 `doc/api-contract.md`。
 
 ---
 
@@ -490,6 +494,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | v3 | 2026-10-18 | Developer A/B 契约偏差裁决回写 | 决策 A19–A26；§5 SSH 资源改真实主机（sshd 夹具作废）；§2.2 增 `common.tsx` / `useSingleHost` 职责；配套 api-contract §2.2/§2.3/§6/§8/§9.2/§12/§13 与 acceptance-gap 4.1、E 节 |
 | v4 | 2026-10-18 | D-1 裁决 (b)：撤销 origin 降权；路由层 `reuse-launcher-missing` 口径 | 决策 A27–A28；api-contract §2.3/§3.1/§10/§12/§13 同步，acceptance-gap 新增 2a.9（路由必须透传 `reuseLauncherPath`） |
 | v5 | 2026-10-18 | 冻结前最后一批实现回写 | 决策 A29–A32；新增 §2.8（远端 sandbox facts 契约）、§3.9（`realm-unavailable` 三守卫）；§3.3/§1 方式卡改「只有 ssh/wsl，docker 整卡移除」；§3.6 已知缺口补「`uiSession.bindingSource` 抛错 + 无 error boundary ⇒ 白屏根因，已用 `clearMain()` 回避」；§2.2 增 `method-cards.ts`；api-contract §10/§11 与 acceptance-gap 1.2/C 节同步 |
+| v6 | 2026-10-18 | **阶段 P0：server 权威 + 本地只留引用**（用户批准的重构） | 决策 A33–A42；新增 **§7**（7.1 权威归属表 / 7.2 协议 v3 与握手矩阵 / 7.3 `WorkspaceRef` 与迁移 / 7.4 Gate 0 A/B/C + 清扫 + `cleanup-shell-workspaces` / 7.5 客户端视图与断线 / 7.6 旧结论关闭表）；A7/A17 标注被推翻；api-contract 新增 §14（协议 v3 逐字契约）、§15（`WorkspaceRef`/`state` 形状）、§10 错误码、§1 路由表；acceptance-gap 新增 F 节（P0 验收口径） |
 
 ### 附：本轮决策清单（ADR 摘要）
 
@@ -501,7 +506,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A4 | 架构探测折进 `dsh-scan` 的返回里，流水线仍自己 probe | 一次传输拿全事实；记录里的 probe 只作提示 |
 | A5 | 目录浏览变成 `AddWorkspaceDialog` 的默认页签 | 需求 5 要「行上点添加工作区再浏览」；对话框挂树上（踩过两次） |
 | A6 | 删除连接 = 只删本地 + 凭据 + stub + shell 条目；远端部署物与会话日志保留 | 远端是共享安装与用户数据，删了不可恢复 |
-| A7 | 工作区重命名 = 本地 `title`，绝不 `mv` 远端目录 | 远端是权威、`mv` 不可回滚、官方 shell 也只改标题 |
+| A7 | 工作区重命名 = 本地 `title`，绝不 `mv` 远端目录 | 远端是权威、`mv` 不可回滚、官方 shell 也只改标题。（**P0 推翻其「只改本地」部分，见 A34**；「绝不 `mv` 目录」仍成立） |
 | A8 | `刷新会话列表` 退出工作区行菜单 | 官方行菜单只有两个固定 key，而重命名是需求 |
 | A9 | `RemoteFile` 移到 `targets/types.ts` | 消掉 ssh→provision 的类型回边 |
 | A10 | 记录只加 4 个 optional 字段，域版本仍 1 | 单文件布局无迁移，bump 即砖 |
@@ -511,7 +516,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A14 | 接受 `刷新会话列表` 退出工作区行菜单 | 官方行菜单固定两项，重命名是验收项；列表会自读 |
 | A15 | 删除连接的确认正文**逐项**写「删什么/不删什么」 | 用户必须能预期远端不会被清理 |
 | A16 | reuse 失败给「改用上传 server 包并重试」按钮，但不自动回退 | 把选择权交给用户，同时不放行静默大文件传输 |
-| A17 | 工作区重命名不同步远端 registry 标题（进已知缺口） | 需要 `reg.rename` → 触碰 server 代码与两仓库同步 |
+| A17 | 工作区重命名不同步远端 registry 标题（进已知缺口） | 需要 `reg.rename` → 触碰 server 代码与两仓库同步。（**P0 已做：A34 加 `reg.rename`，本缺口关闭**） |
 | A18 | 复用候选的 `nodePath` 必须认 `$DSHHOME/server/node/bin/node`，扫描 PATH 前缀必须含它 | 实测：部署实例是 `/bin/sh` 包装脚本 + 内部 `exec node`，不带这个前缀会 `exit 127` 被误判不兼容 |
 | A19 | 复用启动命令一律 `DSH_HOME=… PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> --profile <p>`，**不用** `node <launcher>`；`selfContained` 时省略 PATH 前缀 | 实测部署 launcher 是 `/bin/sh` 包装脚本（末行 `exec node`），`node <launcher>` 跑不起来；PATH 前缀同时覆盖两种形状 |
 | A20 | 插件 marker **两处并存**：`<profileDir>/.dsh-rw-plugin.json`（两条路径都写）+ `.components/plugin.json`（仅上传路径写，**`decidePlugin` 的权威**） | 复用路径没有 `.components/` 树；上传路径的「要不要重传」必须仍由原判据决定 |
@@ -527,3 +532,167 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A30 | 新增 `realm-unavailable` 三守卫（`assertRemoteRealm` / `assertLiveSessionInRealm` / `assertRealmComposed`），接线在 `openWorkspace`/`resumeSessionOnce` 的任何副作用之前 | alpha54 安全事故：realm 没挂时静默用本地执行世界跑命令（只有 pwsh、cwd 是 stub、本机写出 proof 文件）。宁可报错也不能假远端 |
 | A31 | 第 1 步方式卡**只有 ssh / wsl**，docker 整卡移除；`ConnectionMethod` 保留 `'docker'` 作保留值 | 卡片由 `offeredMethods(platform)` 用 host 同一谓词过滤，杜绝「藏了但没拦」；保留类型值是为了将来加回不动协议面 |
 | A32 | `serverPackage` 由 `provisionedHints()` **唯一生产**，`publicTarget` 带出且不含凭据 | 三个新增记录字段里只有它需要「谁写」的约束：多个写入点会让「上次部署的包」与「上次 probe」互相覆盖 |
+| A33 | **P0：远端工作区清单权威 = server**（`reg.list`）；本地不再持有 `path`/`title`/`createdAt` | 两个客户端连同一 server 必须同源；旧模型每端各自 `reg.create`，互相看不见 |
+| A34 | **P0：工作区重命名 = server `reg.rename`**（**推翻 A7/A17** 的「只改本地 `title`」） | server 权威后本地 title 无意义；id 是 `sha256(serverId\0path)[0..16]`，重命名不改 id、不动目录 |
+| A35 | **P0：工作区删除 = server `reg.delete`**；默认拒绝仍有会话者（`workspace-not-empty <n>`），`force:true` **只删清单条目**，**绝不删会话日志** | 清单可重建（`reg.create` 幂等），会话日志是用户数据、删了不可恢复；QA 用「删除后重建，sessionCount 回来」证明数据没丢 |
+| A36 | **P0：协议 v3**（`REMOTE_SESSION_PROTOCOL = 3`），两仓同步；握手协议不符必须给可读错误 `server-protocol-mismatch`，**不静默降级** | 新增 `reg.rename`/`reg.delete` + `reg.list` 字段扩展；静默降级会让新客户端以为改名成功 |
+| A37 | **P0：`RemoteWorkspaceRecord` → `WorkspaceRef`**（去掉 path/title/createdAt），存储域版本仍 1；旧记录启动时幂等 `reg.create` 迁移，失败只记日志 | 单文件布局无迁移；幂等登记让老用户无损（会话按 `header.cwd` 匹配，重建清单即恢复） |
+| A38 | **P0：断线不渲染工作区行**，不做「本地最后已知清单」持久化缓存 | 避免出现第二份权威；树本来就要求 `connected && expanded` |
+| A39 | **P0：stub 目录 = 本地临时材料**（非权威，可删可重建）；官方 shell 条目按 Gate 0 的 A/B/C 判定，本轮落地 **C + 清扫**（见 §7.4） | 共享 `~/.dsh/storages/workspace.json` 的污染来自「为了挂靠会话而注册 stub」；上游未改前只能减少+清扫 |
+| A40 | **P0：置顶/归档 = 每客户端视图状态**，按 `remoteWorkspaceId` 存在 `WorkspaceRef` 上，不进 server | 设备偏好不该跨端同步，server 也没有该 RPC |
+| A41 | **P0：删除连接不删 server 清单条目**（其他客户端还在用），只删本地 ref/凭据/stub/shell 条目 | 一个客户端退出不该改变别人看到的世界 |
+| A42 | **P0：新增 `POST /api/cleanup-shell-workspaces`**，并在启动与 `dispose()` 自动清扫 | 共享 registry 里历史残留必须能一键回收，且要有可验证入口 |
+
+---
+
+## 7. 阶段 P0：server 权威 + 本地只留引用（本节优先于 §2–§3）
+
+> 用户提出的问题（原文要点）：远端工作区应以 **server 为权威**；现在两个客户端连同一台 server
+> 各自建本地工作区、互相看不到，而且为了给会话挂靠而在共享的 `~/.dsh/storages/workspace.json`
+> 里留下 stub 条目，导致**没装插件的 desktop 也能看到远程工作区行**。
+>
+> 已核实的事实（本轮不再重查）：会话层**已经**是 server 权威（`persist.*` + 远端
+> `~/.dsh/remote-server-sessions/…`）；server 侧**已有**工作区注册表
+> （`src/server/session-store.ts:99-125`：`records()` → 远端 profile 的 `workspaceRegistry.list()`，
+> 否则用 `workspaceId = sha256(serverId\0path)[0..16]` 的本地索引；`listWorkspaces()` / `createWorkspace()`）；
+> 但左栏读的是**本地**权威（`service.ts:514 listWorkspaces()` → `/api/state.workspaces`），
+> `materializeWorkspace`（`service.ts:1263-1306`）会 `registry.create(stub)` 并把
+> `stubPath`/`officialWorkspaceId` 写进本地记录，`dispose()`（`service.ts:1438`）不清这些官方条目。
+
+### 7.1 权威归属表（新的核心表）
+
+| 数据 | 权威 | 落盘位置 | 本地的角色 |
+|---|---|---|---|
+| 会话事件日志 | **server** | 远端 `~/.dsh/remote-server-sessions/<projectKey>/<sessionId>/` | 无副本（routing 直读） |
+| 会话标题 / 最后活动 | **server**（fold 日志，`persist.titles`） | 同一日志 | 无副本（server 侧按 `sizeBytes` 记忆化） |
+| 会话列表 | **server**（`persist.list`） | 远端 | `client/store.ts` 的 `state.sessions` 只是 UI 缓存，展开时重读 |
+| **远端工作区清单**（`path`/`title`/`createdAt`/`sessionCount`/`updatedAt`） | **server**（`reg.list`） | 远端 profile 的 `workspaceRegistry`，否则 server 本地索引 `workspaces.json` | **只在连接期存在**（内存 `serverWorkspaces[targetId]`），不持久化（A38） |
+| 连接目标 / 认证方式 | **本地** | plugin 存储域 `targets` | 权威 |
+| SSH 密码 / 私钥口令 / 模型 key | **本地** | `ctx.credentials`（记录里只有 `credentialKey` 引用） | 权威，**绝不过线** |
+| 包来源策略 / 平台探测 / 复用启动器 | **本地** | `targets` 记录（`packageSource`/`platformProbe`/`reuseDsh`/`serverPackage`） | 权威（本机事实） |
+| stub 目录 | **本地临时材料** | `~/.dsh/remote-workspaces/<targetId>/<sha1>` | **非权威**，可随时删除重建 |
+| 官方 shell 工作区条目 | **本地 shell**（`workspaceRegistry`，落在共享 `~/.dsh/storages/workspace.json`） | 共享存储（所有 profile/客户端共用） | **非权威**，目标是**零写入或写完即清扫**（§7.4） |
+| 置顶 / 归档 | **每客户端视图** | plugin 存储域 `workspaceRefs`（按 `remoteWorkspaceId` 存） | 视图状态，不上 server（A40） |
+| 本地 ref（`stubPath`/`officialWorkspaceId`/`sessionId`/`lastOpenedAt`） | **本地** | plugin 存储域 `workspaceRefs` | 本地材料化缓存 + UI 状态 |
+
+由此得到的三条可验证结论：
+
+1. **跨客户端同源**：A 端建的工作区，B 端连同一 server 后 `reg.list` 里就有（id 相同）。
+2. **desktop 零污染**：清单在 server，stub 只是本地临时目录，不再需要往共享 `workspace.json`
+   写条目；历史残留由 §7.4 的清扫收掉。
+3. **删除不动会话**：`reg.delete` 只动清单；会话日志留在远端，重新 `reg.create` 即恢复可见（§7.2）。
+
+### 7.2 协议 v3（`REMOTE_SESSION_PROTOCOL` 2 → 3）
+
+契约逐字版（请求/响应/错误串/可选性）在 **`doc/api-contract.md` §14**；这里只记架构结论：
+
+- 新增两个 RPC：**`reg.rename { id, title }`**、**`reg.delete { id, force? }`**；
+  **`reg.list`** 的每项补 `updatedAt?`（`createdAt`/`sessionCount` 已有）。
+- **id 不变性**：`id = sha256(serverId \0 path)[0..16]`，重命名只改 `title`，**路径与 id 都不动**
+  （所以 `pinnedSessions`/`archivedSessions` 这类按 id 存的视图状态在改名后仍然有效）。
+- **`reg.delete` 的连带语义（A35，本轮落地）**：
+  - `force` 省略/false 且 `sessionCount > 0` → 错误串 `workspace-not-empty <count>`（客户端转成 409）。
+  - `force: true` → 删除**清单条目**；**不删除** `~/.dsh/remote-server-sessions/**`。
+  - 删除后同路径再 `reg.create`，`sessionCount` **立刻恢复**（会话按 `header.cwd` 归属）——
+    这是「清单可重建、数据没丢」的可验证证据，QA 按它判。
+  - 本轮**不提供** `purgeSessions`：真要回收磁盘必须另加显式二次确认的 RPC。
+- **握手矩阵**（`server.hello`）：
+
+  | 客户端 \ server | v3 server | v2 server（旧部署） |
+  |---|---|---|
+  | **v3 client** | 正常 | server 拒：`unsupported remote session protocol 3` → 客户端报 `server-protocol-mismatch`，提示「远端 server 插件过旧，请重连（会自动重部署）或改用上传 server 包」 |
+  | **v2 client** | server 拒：`unsupported remote session protocol 2; this server speaks 3` → 旧客户端看到该消息 | 正常 |
+
+  - 实践上 v3 client 连上时会先跑 provisioner（marker/sha 门禁）**替换远端插件字节再 start**，
+    所以「v3 client + v2 server」只在部署失败/被跳过时出现；这条错误文案就是为了那种情况。
+  - 反向（旧 desktop 客户端连已被别人升级过的 server）**必须**得到可读错误，**不许**静默降级：
+    服务端在 zod `literal(3)` 之前先做一次「读 protocol 数字 + 比对」，抛出带两端版本号的句子。
+- **两仓同步**：`src/protocol.ts`、`src/server/**`（`session-store.ts` 增 `renameWorkspace`/`removeWorkspace`，
+  `controller.ts` 增两个方法分支）都属同步集。**任一处改动必须两边同步并复核 8 文件逐字节相同**
+  （`protocol.ts` + 4 server + 3 frame）。这是本轮唯一允许改 `src/server/**` 的工作项。
+
+### 7.3 本地数据模型：`WorkspaceRef` 与迁移
+
+`RemoteWorkspaceRecord`（带 `path`/`title`/`createdAt`）→ **`WorkspaceRef`**：
+
+```ts
+export interface WorkspaceRef {
+  readonly id: string                 // 本地 ref id，仍为 `wr-xxxxxxxx`（UI 的节点 key）
+  readonly targetId: string
+  readonly remoteWorkspaceId?: string // server 权威 id（16 hex）；旧记录迁移前可缺
+  readonly stubPath?: string          // 本地材料化：stub 目录（非权威）
+  readonly officialWorkspaceId?: string // 本地 shell 条目 id（非权威，供清扫）
+  readonly pinnedSessions?: string[]
+  readonly archivedSessions?: string[]
+  readonly lastOpenedAt?: string
+  readonly sessionId?: string
+}
+```
+
+- **存储域版本仍为 1**（单文件布局无迁移，bump 即砖）。schema 只能是「旧字段全部 optional 保留 +
+  新字段 optional 增加」的**并集**：`path`/`title`/`createdAt`/`serverId` 仍可出现在旧文档里，
+  读出来后由迁移清空（`WorkspaceRef` 不再写它们）。
+- **迁移算法（启动时，`store.open()` 之后、`ensureWorlds()` 之内）**：
+  1. 对每条 `workspaceRef`：若 `remoteWorkspaceId === undefined` 且 `path !== undefined`，等该 target
+     的连接可用后（**不在启动时强行连**），调 `reg.create(path, title)`；
+  2. 成功 → 写入 `remoteWorkspaceId`，清掉 `path`/`title`/`createdAt`，保留 `stubPath`/`officialWorkspaceId`；
+  3. 失败（未连接 / 目录已不存在 / 旧 server 不支持）→ **只记日志**，记录原样保留，下次连上再试；
+     同一 ref 每个进程最多尝试一次。
+- **未连接就打开工作区**：`serverWorkspaces` 为空 → 客户端只显示连接行（现状如此），
+  不假装有清单（A38）。
+- `pinnedSessions`/`archivedSessions` 的键从「本地 record id」改成 **`remoteWorkspaceId`**
+  （改名不失效），迁移时把旧集合搬过去（旧集合本来就是远端 sessionId）。
+
+### 7.4 stub / 官方 shell 条目生命周期（Gate 0）
+
+**问题**：会话要能在 shell 里被挂靠，需要一个「官方工作区」；而官方工作区是**共享**
+`~/.dsh/storages/workspace.json` 里的行，于是没装插件的 desktop 也看得见。
+Gate 0 = 判定**我们到底需不需要这条官方行**。三个分支：
+
+| 分支 | 形态 | 共享 registry 泄漏 | 代价 / 前置 |
+|---|---|---|---|
+| **A** | 完全不需要注册：会话直接以远端 `header.cwd` 被 shell 识别，不建 stub 行 | **零** | 需要证明 `uiWorkspace.openSession` / 会话树在没有官方工作区行时也能工作；未验证 |
+| **B** | 建立会话时**瞬态注册**（`registry.create(stub)` → `attachSession` → **立即 `registry.delete`**） | 只在窗口期 | 需要证明删掉官方行后会话仍可用、不被 shell 判为孤儿（`bindingSource` 路径，alpha54 白屏同源风险） |
+| **C** | 注册必须**贯穿会话生命周期**（现状）：官方行在，会话才能被挂靠 | 有 | 唯一能消除泄漏的路径是**上游改动**（shell 支持插件提供的分组 / absent projection） |
+
+**本轮落地（A39）**：**C + 清扫**，因为 A/B 都还没有证据，而改上游不在本仓库范围。无论最终落哪个分支，
+下面三项**必须**同时存在（它们与分支无关）：
+
+1. **最小化写入**：只有真正「打开/新建会话」时才 `registry.create(stub)`；
+   单纯展开、看列表、只读 `reg.list` **不写**共享 registry。
+2. **生命周期回收**：该工作区的最后一个本地会话关闭（`session/disposed` 观察到）或
+   target 断开/删除时，删掉官方条目与 stub 目录；`dispose()`（插件卸载）清扫本进程造出的全部条目。
+3. **启动 + 手动清扫（两条入口）**：
+   - 启动时扫官方 registry，删掉 `path` 落在 `~/.dsh/remote-workspaces/` 下、且**没有活跃会话**的条目；
+   - `POST /api/cleanup-shell-workspaces`（A42）：手动触发同一次清扫，响应列出删掉/保留的 id
+     （保留 = 有活跃会话）。这是 QA 证明「desktop 零污染」的操作入口。
+
+**Gate 0 的验收实验**（给 A/B 的升级判据，不作为本轮阻塞项）：在 C 落地后做三组实验——
+① 注册后不删的基线；② 删行后立刻 `openSession`；③ 删行后 resume 一个旧会话。
+②③ 都成功（且无 `bindingSource` 报错、无白屏）→ 可把 B 作为下一版默认并删掉「贯穿」需求；
+任一失败 → 保持 C，并记录失败现象作为上游需求依据。
+
+### 7.5 客户端视图与断线行为
+
+- `client/store.ts` 的树数据来源改为两段式：
+  - `serverWorkspaces[targetId]`：连接期由 `POST /api/state` 的 `serverWorkspaces`（= 各在线 target 的
+    `reg.list` 结果）填充；提供 `path`/`title`/`createdAt`/`sessionCount`/`updatedAt`。
+  - `workspaceRefs`：本地引用（stub/official id/`sessionId`/置顶归档/lastOpenedAt），按
+    `(targetId, remoteWorkspaceId)` 与 server 列表**join** 出可渲染的行。
+- 排序：工作区按 `updatedAt ?? createdAt` 倒序；置顶/归档规则不变（视图层）。
+- 断开 → 不渲染工作区行（`connected && expanded`，且没有 server 列表）——与现状一致，
+  但**不再**回落到本地记录（本地已经没有人可显示的 `path`/`title`）。
+- 删除连接：删本地 ref + 凭据 + stub + 官方条目；**不动** server 清单（A41）。
+- 「移除工作区」改为 server 语义：`workspace-delete` → `reg.delete`；有会话时先弹
+  `workspace-not-empty` 提示，二次确认后 `force: true`（并明确写「会话日志会保留」）。
+- 「重命名工作区」改为 server 语义：`workspace-rename` → `reg.rename`；成功后重读 `reg.list`。
+
+### 7.6 P0 对既有结论的关闭清单
+
+| 旧结论 | 状态 |
+|---|---|
+| A7「重命名只改本地 `title`」/ A17「不同步远端 registry」 | **被 A34 推翻**：server `reg.rename` 是权威 |
+| §3.6 已知缺口「远端 registry 标题与本地 `title` 不一致」 | **关闭**（只剩一个 title，在 server） |
+| §3.6 已知缺口「删除连接不清理远端 workspace 索引」 | **部分关闭**：能力有了（`reg.delete`），但删除连接**有意不用**它（A41）；单条工作区删除可用 |
+| §2.5「远端工作区在本地 shell 树里靠 stub 占位」 | 仍成立，但 stub 降级为**非权威临时材料**（§7.1） |
+| §2.6「path 来自本地记录」 | 改为「path 来自 server 列表（内存）」，routing 只用 stub 做 cwd 映射 |
