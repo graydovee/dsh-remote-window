@@ -590,7 +590,7 @@ release 里那份 `.sha256`。
 未正式发版前一律 `0.1.0-alphaN`（不要 `0.x.y`）。**每次部署必须 bump**
 （插件批量 URL 带 `&rev=<hash>`，不 bump 浏览器吃旧缓存）；版本同时出现在
 `package.json`、`/api/state` 的 `pluginVersion` 与远端 `server.hello.version`。
-发布后再打 tag / release，目前两个仓库都**没有** tag（也没建 release）。
+已打 tag/release：client 仓库 `v0.1.0-alpha1`（首个带 release 的 tag，release 里是 server 包）；server 包另有一份 `server-v<dshVersion>` 的 release（客户端优先按它查找）。
 
 ## 已知缺口（alpha）
 
