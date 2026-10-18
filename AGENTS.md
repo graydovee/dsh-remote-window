@@ -93,8 +93,8 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
 `lib/server.js`（来自 `src/server/` 副本），而 conformance 测试也用副本在内存里
 跑；server 项目是这段代码的正式归宿与发行包来源。
 
-协议版本 2（`REMOTE_SESSION_PROTOCOL = 2`；官方执行世界 RPC 仍是 v1）。方法集：
-`server.hello`、`reg.list|create`、`persist.list|titles|rename|create|open|append|flush|close|locate`。
+协议版本 3（`REMOTE_SESSION_PROTOCOL = 3`；官方执行世界 RPC 仍是 v1）。方法集：
+`server.hello`、`reg.list|create|rename|delete`、`persist.list|titles|rename|create|open|append|flush|close|locate`。v2 客户端连 v3 server（或反过来）会得到一条可读的 `unsupported remote session protocol …`，**不静默降级**。
 
 ## 架构：tsdown 三个 target（`tsdown.config.mjs`）
 
