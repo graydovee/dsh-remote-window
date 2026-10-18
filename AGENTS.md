@@ -618,3 +618,9 @@ release 里那份 `.sha256`。
   用官方 `uiWorkspace.clearMain()` 取消选中来回避；但若右栏仍留着该会话的 dock 页签
   （`SidebarSessionViews.prune()` 会保留 `hasRetainedTabs`），仍可能触发同一路径。彻底修复
   需要 shell 侧回落到 absent projection + error boundary。
+- **新连接首帧可能显示一次错误的空态**：`/api/state` 的 `serverWorkspaces` 还没就绪时，
+  侧栏会短暂出现「该 server 上还没有工作区」，点一次刷新即恢复（alpha63 实测）。观感问题，
+  未修：正确做法是在首帧也把「未知」与「空」区分开（契约 §15.2 的缺键语义只覆盖了稳定态）。
+- **下载路径不落 `.manifest.json`**：只有本机构建会写 `…manifest.json`；从 release 下载的缓存
+  只有 `tar.gz` + `.ready`（摘要写在 `.ready` 里，不保留 `.sha256` 伴随文件）。依赖 manifest
+  做版本核对的场景需要自己从 release 取。
