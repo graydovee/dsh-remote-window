@@ -156,6 +156,46 @@ describe('reconcileWorkspaceRefs', () => {
     expect(rows.size).toBe(1)
   })
 
+  it('clears legacy fields on a ref that ALREADY has a server id (alpha59 leftover)', async () => {
+    const stub = join(dir, 'stub-halfmigrated')
+    await mkdir(stub, { recursive: true })
+    const { store, rows, registry } = fakeStore([
+      {
+        id: 'rw-9708eee7',
+        targetId: 'rt-1',
+        remoteWorkspaceId: '0123456789abcdef',
+        // The three leftovers the QA run found on one row: adopted id, stale copies.
+        path: '/home/graydove',
+        title: 'WSL home',
+        createdAt: '2026-10-18T00:00:00.000Z',
+        serverId: 'server-1',
+        stubPath: stub,
+        sessionId: 'session-7',
+        pinnedSessions: ['session-7'],
+        archivedSessions: ['session-8'],
+        lastOpenedAt: '2026-10-18T01:00:00.000Z',
+      },
+    ])
+    const subject = new RemoteWorkspaces(fakeCtx(registry), store, { packageRoot: process.cwd(), leaseMs: 30_000, maxProcesses: 4 })
+    await subject.reconcileWorkspaceRefs('rt-1', [serverItem('0123456789abcdef', '/home/graydove')])
+    const [ref] = [...rows.values()]
+    // The server owns these now: no local copy may survive, even though the id
+    // was already present (that was the gap).
+    expect(ref?.path).toBeUndefined()
+    expect(ref?.title).toBeUndefined()
+    expect(ref?.createdAt).toBeUndefined()
+    expect(ref?.serverId).toBeUndefined()
+    // Materialization + view state stay.
+    expect(ref).toMatchObject({
+      id: 'rw-9708eee7',
+      remoteWorkspaceId: '0123456789abcdef',
+      stubPath: stub,
+      sessionId: 'session-7',
+      pinnedSessions: ['session-7'],
+      archivedSessions: ['session-8'],
+      lastOpenedAt: '2026-10-18T01:00:00.000Z',
+    })
+  })
   it('drops a ref that has neither a server id nor a path (unresolvable)', async () => {
     const { store, rows, registry } = fakeStore([{ id: 'wr-empty', targetId: 'rt-1' }])
     const subject = new RemoteWorkspaces(fakeCtx(registry), store, { packageRoot: process.cwd(), leaseMs: 30_000, maxProcesses: 4 })

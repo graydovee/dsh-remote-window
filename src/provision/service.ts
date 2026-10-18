@@ -666,32 +666,36 @@ export class RemoteWorkspaces {
     const idByPath = new Map(items.map(item => [item.path, String(item.id)] as const))
     const serverIds = new Set(items.map(item => String(item.id)))
     for (const ref of refs) {
-      if (ref.remoteWorkspaceId === undefined) {
-        // Legacy ref: adopt the server id (or register the path once).
-        let id = ref.path === undefined ? undefined : idByPath.get(ref.path)
-        if (id === undefined && ref.path !== undefined) {
+      // Resolve the server id first: adopted from the list, or registered once.
+      let remoteWorkspaceId = ref.remoteWorkspaceId
+      if (remoteWorkspaceId === undefined && ref.path !== undefined) {
+        let id = idByPath.get(ref.path)
+        if (id === undefined) {
           const created = await this.ensureRemoteWorkspace(targetId, ref.path, ref.title)
           id = String(created.id)
           idByPath.set(ref.path, id)
           serverIds.add(id)
           this.workspacePaths.set(`${targetId}\u0000${id}`, ref.path)
         }
-        if (id === undefined) {
-          // Neither an id nor a path: nothing can ever resolve this ref.
-          await this.store.deleteWorkspace(ref.id)
-          continue
-        }
-        const { path: _legacyPath, title: _legacyTitle, createdAt: _legacyCreatedAt, serverId: _legacyServer, ...rest } = ref
-        await this.store.putWorkspace({ ...rest, remoteWorkspaceId: id })
+        remoteWorkspaceId = id
+      }
+      if (remoteWorkspaceId === undefined) {
+        // Neither an id nor a path: nothing can ever resolve this ref.
+        await this.store.deleteWorkspace(ref.id)
         continue
       }
-      if (serverIds.has(String(ref.remoteWorkspaceId))) continue
-      // 2: deleted on the server (possibly by another client).
+      // A ref with a server id must not keep the pre-P0 copies of what the server
+      // now owns. This runs for EVERY such ref, not only freshly migrated ones —
+      // one leftover row (alpha59, `rw-9708eee7`) kept showing a stale `path`.
+      const cleaned = stripLegacyRefFields(ref, remoteWorkspaceId)
+      if (cleaned !== undefined) await this.store.putWorkspace(cleaned)
+      if (serverIds.has(String(remoteWorkspaceId))) continue
+      // Deleted on the server (possibly by another client).
       await this.store.deleteWorkspace(ref.id)
-      this.workspacePaths.delete(`${targetId}\u0000${String(ref.remoteWorkspaceId)}`)
+      this.workspacePaths.delete(`${targetId}\u0000${String(remoteWorkspaceId)}`)
       if (ref.stubPath !== undefined) await rm(ref.stubPath, { recursive: true, force: true }).catch(() => {})
     }
-    // 1: workspaces this client has never seen.
+    // Workspaces this client has never seen.
     const known = new Set(this.store.listWorkspaces(targetId).map(ref => String(ref.remoteWorkspaceId ?? '')))
     for (const item of items) {
       if (known.has(String(item.id))) continue
@@ -2015,6 +2019,32 @@ export async function scrubShellWorkspaces(
 
 /** The scan's overall budget (api-contract §2.4: `scan-timeout` past 60 s). */
 const SCAN_TIMEOUT_MS = 60_000
+
+/**
+ * Drop the pre-P0 copies of server-owned fields from one ref.
+ *
+ * `path`/`title`/`createdAt`/`serverId` are legacy: as soon as a ref carries a
+ * `remoteWorkspaceId`, the server owns those values and a stale local copy is
+ * worse than none — one migrated row (`rw-9708eee7`) kept reporting
+ * `path: "/home/graydove"` in `/api/state` (alpha59). Materialization and view
+ * state (`stubPath`, `officialWorkspaceId`, `sessionId`, pins, `lastOpenedAt`)
+ * are kept.
+ * @param ref - the stored ref.
+ * @param remoteWorkspaceId - the server id it must carry.
+ * @returns the cleaned record, or undefined when there was nothing to clean (so
+ *   the caller does not rewrite an untouched row on every refresh).
+ */
+export function stripLegacyRefFields(ref: RemoteWorkspaceRecord, remoteWorkspaceId: string): RemoteWorkspaceRecord | undefined {
+  const hasLegacy =
+    ref.path !== undefined ||
+    ref.title !== undefined ||
+    ref.createdAt !== undefined ||
+    ref.serverId !== undefined ||
+    ref.remoteWorkspaceId !== remoteWorkspaceId
+  if (!hasLegacy) return undefined
+  const { path: _path, title: _title, createdAt: _createdAt, serverId: _serverId, ...rest } = ref
+  return { ...rest, remoteWorkspaceId }
+}
 
 /**
  * Whether this process may register official **shell** workspace rows for remote
