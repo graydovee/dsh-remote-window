@@ -496,6 +496,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | v5 | 2026-10-18 | 冻结前最后一批实现回写 | 决策 A29–A32；新增 §2.8（远端 sandbox facts 契约）、§3.9（`realm-unavailable` 三守卫）；§3.3/§1 方式卡改「只有 ssh/wsl，docker 整卡移除」；§3.6 已知缺口补「`uiSession.bindingSource` 抛错 + 无 error boundary ⇒ 白屏根因，已用 `clearMain()` 回避」；§2.2 增 `method-cards.ts`；api-contract §10/§11 与 acceptance-gap 1.2/C 节同步 |
 | v6 | 2026-10-18 | **阶段 P0：server 权威 + 本地只留引用**（用户批准的重构） | 决策 A33–A42；新增 **§7**（7.1 权威归属表 / 7.2 协议 v3 与握手矩阵 / 7.3 `WorkspaceRef` 与迁移 / 7.4 Gate 0 A/B/C + 清扫 + `cleanup-shell-workspaces` / 7.5 客户端视图与断线 / 7.6 旧结论关闭表）；A7/A17 标注被推翻；api-contract 新增 §14（协议 v3 逐字契约）、§15（`WorkspaceRef`/`state` 形状）、§10 错误码、§1 路由表；acceptance-gap 新增 F 节（P0 验收口径） |
 | v7 | 2026-10-18 | **P0 契约修订：join 改为 server 清单驱动**（Leader 裁决 A43/A44） | §7.1 增加「ref 集合是 server 清单的投影」+ 自动登记/回收规则 + 不变量 `workspaceRefs ⊇ serverWorkspaces`；§7.3 迁移并入自动登记流程；§7.5 行来源改 server 清单驱动、弹窗回单页签（删 `unaddedServerWorkspaces()`）、移除=删 server 登记、新增两条已知缺口；§3.4 单页签；§3.6 registry 标题缺口标关闭；api-contract §15.2/§15.3 语义与新不变量；acceptance-gap F.1 判定改为「无需手动操作即出现」 |
+| v8 | 2026-10-18 | **Gate 0 改判：默认 A（零写入）+ 逃生口 + 清扫**（Leader 裁决） | §7.4 重写落地段：`shouldRegisterShellWorkspaces()` 默认 `false`、`DSH_RW_FORCE_SHELL_WORKSPACES=1` 回退 C、清扫（`scrubShellWorkspaces` + 启动 + `dispose` + `POST /api/cleanup-shell-workspaces`）无条件做；保留 A→B→C 升级判据（QA 在 alpha57 判红则翻 B）；A39 与 §7.1 权威表同步 |
 
 ### 附：本轮决策清单（ADR 摘要）
 
@@ -539,7 +540,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A36 | **P0：协议 v3**（`REMOTE_SESSION_PROTOCOL = 3`），两仓同步；握手协议不符必须给可读错误 `server-protocol-mismatch`，**不静默降级** | 新增 `reg.rename`/`reg.delete` + `reg.list` 字段扩展；静默降级会让新客户端以为改名成功 |
 | A37 | **P0：`RemoteWorkspaceRecord` → `WorkspaceRef`**（去掉 path/title/createdAt），存储域版本仍 1；旧记录启动时幂等 `reg.create` 迁移，失败只记日志 | 单文件布局无迁移；幂等登记让老用户无损（会话按 `header.cwd` 匹配，重建清单即恢复） |
 | A38 | **P0：断线不渲染工作区行**，不做「本地最后已知清单」持久化缓存 | 避免出现第二份权威；树本来就要求 `connected && expanded` |
-| A39 | **P0：stub 目录 = 本地临时材料**（非权威，可删可重建）；官方 shell 条目按 Gate 0 的 A/B/C 判定，本轮落地 **C + 清扫**（见 §7.4） | 共享 `~/.dsh/storages/workspace.json` 的污染来自「为了挂靠会话而注册 stub」；上游未改前只能减少+清扫 |
+| A39 | **P0：stub 目录 = 本地临时材料**（非权威，可删可重建）；官方 shell 条目按 Gate 0 判定，**本轮默认 A（零写入共享 registry）**，逃生口 `DSH_RW_FORCE_SHELL_WORKSPACES=1` 回退 C 行为；**清扫无条件做**（见 §7.4） | 实测：`attachSession` 缺条目会跳过、registry membership 只是 filter 非 enforcement、`dsh-agent` 里 `workspaceRegistry` 出现 0 次；唯一未验是浏览器侧 `uiWorkspace.openSession`，QA 在 alpha57 判红则翻 B |
 | A40 | **P0：置顶/归档 = 每客户端视图状态**，按 `remoteWorkspaceId` 存在 `WorkspaceRef` 上，不进 server | 设备偏好不该跨端同步，server 也没有该 RPC |
 | A41 | **P0：删除连接不删 server 清单条目**（其他客户端还在用），只删本地 ref/凭据/stub/shell 条目 | 一个客户端退出不该改变别人看到的世界 |
 | A42 | **P0：新增 `POST /api/cleanup-shell-workspaces`**，并在启动与 `dispose()` 自动清扫 | 共享 registry 里历史残留必须能一键回收，且要有可验证入口 |
@@ -574,7 +575,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | SSH 密码 / 私钥口令 / 模型 key | **本地** | `ctx.credentials`（记录里只有 `credentialKey` 引用） | 权威，**绝不过线** |
 | 包来源策略 / 平台探测 / 复用启动器 | **本地** | `targets` 记录（`packageSource`/`platformProbe`/`reuseDsh`/`serverPackage`） | 权威（本机事实） |
 | stub 目录 | **本地临时材料** | `~/.dsh/remote-workspaces/<targetId>/<sha1>` | **非权威**，可随时删除重建 |
-| 官方 shell 工作区条目 | **本地 shell**（`workspaceRegistry`，落在共享 `~/.dsh/storages/workspace.json`） | 共享存储（所有 profile/客户端共用） | **非权威**，目标是**零写入或写完即清扫**（§7.4） |
+| **官方 shell 工作区条目** | **本地 shell**（`workspaceRegistry`，落在共享 `~/.dsh/storages/workspace.json`） | 共享存储（所有 profile/客户端共用） | **默认零写入**（Gate 0 分支 A，A39）；逃生口下才写；历史遗留由清扫无条件收掉（§7.4） |
 | 置顶 / 归档 | **每客户端视图** | plugin 存储域 `workspaceRefs`（按 `remoteWorkspaceId` 存） | 视图状态，不上 server（A40） |
 | 本地 ref（`stubPath`/`officialWorkspaceId`/`sessionId`/`lastOpenedAt`） | **本地** | plugin 存储域 `workspaceRefs` | 材料化 + UI 状态；**不决定「有没有这一行」**（见下） |
 
@@ -668,26 +669,43 @@ Gate 0 = 判定**我们到底需不需要这条官方行**。三个分支：
 
 | 分支 | 形态 | 共享 registry 泄漏 | 代价 / 前置 |
 |---|---|---|---|
-| **A** | 完全不需要注册：会话直接以远端 `header.cwd` 被 shell 识别，不建 stub 行 | **零** | 需要证明 `uiWorkspace.openSession` / 会话树在没有官方工作区行时也能工作；未验证 |
+| **A** | 完全不需要注册：不建官方行，会话直接以远端 `header.cwd` 被 shell 识别 | **零** | 依赖「registry membership 只是 filter、`attachSession` 缺条目会跳过」这几条实测（见下） |
 | **B** | 建立会话时**瞬态注册**（`registry.create(stub)` → `attachSession` → **立即 `registry.delete`**） | 只在窗口期 | 需要证明删掉官方行后会话仍可用、不被 shell 判为孤儿（`bindingSource` 路径，alpha54 白屏同源风险） |
-| **C** | 注册必须**贯穿会话生命周期**（现状）：官方行在，会话才能被挂靠 | 有 | 唯一能消除泄漏的路径是**上游改动**（shell 支持插件提供的分组 / absent projection） |
+| **C** | 注册必须**贯穿会话生命周期**（P0 之前的行为） | 有 | 唯一能消除泄漏的路径是**上游改动**（shell 支持插件提供的分组 / absent projection） |
 
-**本轮落地（A39）**：**C + 清扫**，因为 A/B 都还没有证据，而改上游不在本仓库范围。无论最终落哪个分支，
-下面三项**必须**同时存在（它们与分支无关）：
+**本轮落地（A39，Leader 裁决 2026-10-18 改判为 A）**：**默认走 A —— 不往共享
+`~/.dsh/storages/workspace.json` 写任何东西**。
 
-1. **最小化写入**：只有真正「打开/新建会话」时才 `registry.create(stub)`；
-   单纯展开、看列表、只读 `reg.list` **不写**共享 registry。
-2. **生命周期回收**：该工作区的最后一个本地会话关闭（`session/disposed` 观察到）或
-   target 断开/删除时，删掉官方条目与 stub 目录；`dispose()`（插件卸载）清扫本进程造出的全部条目。
-3. **启动 + 手动清扫（两条入口）**：
-   - 启动时扫官方 registry，删掉 `path` 落在 `~/.dsh/remote-workspaces/` 下、且**没有活跃会话**的条目；
-   - `POST /api/cleanup-shell-workspaces`（A42）：手动触发同一次清扫，响应列出删掉/保留的 id
-     （保留 = 有活跃会话）。这是 QA 证明「desktop 零污染」的操作入口。
+- 开关：`shouldRegisterShellWorkspaces()` 默认 **`false`**；逃生口
+  **`DSH_RW_FORCE_SHELL_WORKSPACES=1`** 强制回到 C 的行为（注册贯穿生命周期）。
+  用途：上游将来若把 registry membership 变成 **enforcement**（而不是现在的 filter），
+  运维**一次重启**即可回退，不需要改代码重新发版。
+- 依据（Developer-A 的实测 / 静态证据，已在代码注释与测试里钉住）：
+  1. `attachSession` 是**唯一**官方调用，且**缺条目时跳过**（warn 而不是抛错）；
+  2. registry membership 只影响 **filter**（warn + 丢弃），**不是 enforcement**；
+  3. 全 asar 统计 `dsh-agent` 里 `workspaceRegistry` 出现 **0 次**；我们的
+     `ctx.agents.create/resume` **不经过** `dsh-api-session-controller`。
+- **唯一未验**：浏览器侧 `uiWorkspace.openSession` 是否仍能把会话接到主区 → **归 QA 在 alpha57 上验**；
+  若判红（会话点不开 / 白屏 / `bindingSource` 报错），**翻 B**（瞬态注册后立即删除），
+  再不行才回 C。
+- **清扫无条件做**（与落哪个分支无关）：`scrubShellWorkspaces()` + **启动** + **`dispose()`** +
+  `POST /api/cleanup-shell-workspaces`（A42）。它的作用从「回收我们自己刚写的」变成
+  「**清历史遗留**」——用户在 P0 之前的版本里已经写进共享 registry 的 stub 条目必须能收干净。
+- 无论哪个分支，下面三项都成立：
+  1. **最小化写入**：默认 A 下**零写入**；逃生口/翻 B 时只有真正「打开/新建会话」才注册，
+     单纯展开、看列表、只读 `reg.list` **不写**共享 registry。
+  2. **生命周期回收**：注册过的话，最后一个本地会话关闭（`session/disposed`）或 target 断开/删除时，
+     删掉官方条目与 stub 目录；`dispose()`（插件卸载）清扫本进程造出的全部条目。
+  3. **启动 + 手动清扫（两条入口）**：
+     - 启动时扫官方 registry，删掉 `path` 落在 `~/.dsh/remote-workspaces/` 下、且**没有活跃会话**的条目；
+     - `POST /api/cleanup-shell-workspaces`：手动触发同一次清扫，响应列出删掉/保留的 id
+       （保留 = 有活跃会话）。这是 QA 证明「desktop 零污染」的操作入口。
 
-**Gate 0 的验收实验**（给 A/B 的升级判据，不作为本轮阻塞项）：在 C 落地后做三组实验——
-① 注册后不删的基线；② 删行后立刻 `openSession`；③ 删行后 resume 一个旧会话。
-②③ 都成功（且无 `bindingSource` 报错、无白屏）→ 可把 B 作为下一版默认并删掉「贯穿」需求；
-任一失败 → 保持 C，并记录失败现象作为上游需求依据。
+**Gate 0 的升级判据**（保留，供 QA 判红时决策）：
+① 基线：A 下开会话并 resume，主区能否显示（`uiWorkspace.openSession` 的返回与 DOM）；
+② 若 ① 失败 → 翻 B：注册 → `attachSession` → 立即删条目，再测开会话与 resume 旧会话；
+③ 若 ② 仍失败 → 回 C（= 逃生口常开），并记录失败现象作为上游需求依据。
+判据红线：出现 `bindingSource` 报错或白屏即视为该分支失败。
 
 ### 7.5 客户端视图与断线行为
 

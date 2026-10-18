@@ -376,6 +376,9 @@ data: {"type":"done","target":{ …PublicTarget… }}
 
 - 清扫**共享** `~/.dsh/storages/workspace.json` 里本插件的残留：官方 registry 中 `path` 落在
   `~/.dsh/remote-workspaces/`（stub 根）下的条目。
+- **默认（Gate 0 分支 A）我们不写共享 registry**，所以这条路由的日常用途是**清历史遗留**
+  （P0 之前版本留下的条目）；只有设了逃生口 `DSH_RW_FORCE_SHELL_WORKSPACES=1` 时才会清到
+  「我们自己刚写的」。见 architecture §7.4。
 - `removed` = 已删；`kept` = 因为有活跃会话/正在使用而保留（架构 §7.4 第 2 条）。
 - 同时删除对应 stub 目录（空目录也删）。
 - 失败（registry 不可用）→ `500 cleanup-failed`，message 过 `scrubSecrets`。
