@@ -1,64 +1,94 @@
 /**
- * The four-step remote-connection wizard: choose a method → fill the
- * configuration → watch the live progress stream → pick the remote directory.
+ * The **three**-step remote-connection wizard:
+ *   ① choose a method → ② fill the configuration → ③ choose how the remote side
+ *   is provisioned, connect, and watch it happen.
+ *
+ * Step 3 is deliberately one surface: the connection-method cards (reuse the
+ * machine's dsh / upload the server package / download remotely-disabled), the
+ * scan results that back the first two, the five progress rows, the live log and
+ * the host-key confirmation all belong to the same decision. The remote-directory
+ * browser that used to be step 4 is now the default tab of the 添加工作区 dialog
+ * (`directory-picker.tsx`) — browsing a directory is a workspace action, not a
+ * step of connecting.
  *
  * All state comes from the module store (`./store.ts`), so the wizard and the
  * sidebar-footer button share it without React context across separately
  * registered slot entries.
  */
 import { useEffect, useRef, useState } from 'react'
-import type { ReactElement, ChangeEvent, KeyboardEvent, ReactNode } from 'react'
+import type { ReactElement, ChangeEvent } from 'react'
 import {
   Button, DisclosureRow, IconChevronDownOutlineRegular, IconChevronLeftOutlineRegular,
-  IconCheckCircleFillRegular, IconFolderCloseRegular, IconDeliverDocRegular, IconGlobeOutlineRegular,
-  IconPlusOutlineRegular, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular, Input, Menu,
+  IconGlobeOutlineRegular, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular, Input, Menu,
   Pill, SegmentedControl, StateDot, Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { MenuEntry, StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { AuthKind, ConnectStep, DirEntry, SshAlias, WslDistro } from './api.ts'
+import type { MenuEntry, StateDotState, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { AuthKind, ConnectionMode, ConnectStep, DshCandidate, SshAlias, WslDistro } from './api.ts'
 import { EmptyState, ErrorBanner, Field, LoadingLine } from './common.tsx'
 import { t } from './locales.ts'
-import type { AppState, ConnectionMethod, StepState, WizardStep } from './store.ts'
-import { CONNECT_STEPS, sortEntries, store, useAppState } from './store.ts'
+import { offeredMethods } from './method-cards.ts'
+import type { AppState, StepState, WizardStep } from './store.ts'
+import { CONNECT_STEPS, store, useAppState } from './store.ts'
 import { methodAvailable } from '../targets/methods.ts'
 
 /** Step order of the wizard. */
-const STEP_ORDER: readonly WizardStep[] = ['method', 'config', 'connecting', 'directory']
+const STEP_ORDER: readonly WizardStep[] = ['method', 'config', 'connect']
 
 /**
  * Method cards, in display order.
  *
- * Visibility is decided per card: `ssh` is always offered, `docker` stays a
- * visible teaser everywhere (reserved for a later version), and `wsl` is only
- * *rendered* where `methodAvailable` says the host can host it — on a
- * non-Windows harness the card does not exist at all.
+ * The list itself lives in `method-cards.ts` (pure, unit-tested): step 1 offers
+ * ssh everywhere and wsl on a Windows host, and a card is *rendered* only when
+ * `methodAvailable` — the predicate the host validates too — says the platform
+ * can host it, so off Windows the WSL card does not exist at all (not greyed
+ * out — absent).
  */
-const METHOD_CARDS: readonly { id: ConnectionMethod; teaser?: boolean }[] = [
-  { id: 'ssh' },
-  { id: 'docker', teaser: true },
-  { id: 'wsl' },
-]
 
 /** Localized name/description key per method card. */
 const METHOD_NAME_KEYS = {
   ssh: 'method.ssh.name',
-  docker: 'method.docker.name',
   wsl: 'method.wsl.name',
 } as const
 
 /** Localized description key per method card. */
 const METHOD_DESCRIPTION_KEYS = {
   ssh: 'method.ssh.description',
-  docker: 'method.docker.description',
   wsl: 'method.wsl.description',
+} as const
+
+/**
+ * Step 3's three cards.
+ *
+ * `download` is rendered but never selectable: it would fetch a released server
+ * package, and there is no release yet (its copy says exactly that). Only the
+ * *card* is unavailable — `assets.downloadServerPackage` still serves the
+ * `auto` policy of pre-existing targets.
+ */
+const MODE_CARDS: readonly { id: ConnectionMode; disabled?: boolean }[] = [
+  { id: 'reuse' },
+  { id: 'upload' },
+  { id: 'download', disabled: true },
+]
+
+/** Localized name/description key per connection-method card. */
+const MODE_NAME_KEYS = {
+  reuse: 'connect.mode.reuse.name',
+  upload: 'connect.mode.upload.name',
+  download: 'connect.mode.download.name',
+} as const
+
+/** Localized description key per connection-method card. */
+const MODE_DESCRIPTION_KEYS = {
+  reuse: 'connect.mode.reuse.description',
+  upload: 'connect.mode.upload.description',
+  download: 'connect.mode.download.description',
 } as const
 
 /** Step label key per wizard step. */
 const STEP_LABELS = {
   method: 'step.label.method',
   config: 'step.label.config',
-  connecting: 'step.label.connecting',
-  directory: 'step.label.directory',
+  connect: 'step.label.connect',
 } as const
 
 /** Progress-row label key per server step. */
@@ -96,39 +126,10 @@ function aliasLabel(alias: SshAlias): string {
   return `${alias.alias} — ${user}${alias.hostName}${port}`
 }
 
-/** Breadcrumb segments (each with its absolute path) for one remote path. */
-function crumbs(path: string): Array<{ label: string; path: string }> {
-  const root = { label: t('directory.root'), path: '/' }
-  if (path === '' || path === '/') return [root]
-  const segments: Array<{ label: string; path: string }> = [root]
-  let cumulative = ''
-  for (const part of path.split('/')) {
-    if (part === '') continue
-    cumulative += `/${part}`
-    segments.push({ label: part, path: cumulative })
-  }
-  return segments
-}
-
-/** Row for one remote directory entry. */
-function EntryRow(props: { entry: DirEntry; onOpen: (entry: DirEntry) => void }): ReactElement | null {
-  const isDirectory = props.entry.type === 'directory'
-  return (
-    <button
-      type="button"
-      className="dsh-rw-entry"
-      data-type={props.entry.type}
-      disabled={!isDirectory}
-      onClick={() => { if (isDirectory) props.onOpen(props.entry) }}
-      title={props.entry.path}
-    >
-      {isDirectory ? <IconFolderCloseRegular size={14} /> : <IconDeliverDocRegular size={14} />}
-      <span className="dsh-rw-entry-name">{props.entry.name}</span>
-      <span className="dsh-rw-entry-kind">
-        {isDirectory ? t('common.directory') : props.entry.type === 'file' ? t('common.file') : props.entry.type}
-      </span>
-    </button>
-  )
+/** Human-readable package size for the "already cached" line. */
+function formatSize(bytes: number | undefined): string {
+  if (bytes === undefined || bytes <= 0) return '—'
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 /** Step indicator: one pill per step, earlier steps are jump targets. */
@@ -158,41 +159,37 @@ function StepPills(props: { state: AppState }): ReactElement | null {
 
 /** Step 1 — connection method. */
 function MethodStep(props: { state: AppState }): ReactElement | null {
-  // A method the host cannot support is not rendered at all (the WSL card is
-  // absent off Windows); the docker teaser stays visible everywhere.
-  const cards = METHOD_CARDS.filter(card => card.teaser === true || methodAvailable(card.id, props.state.platform))
+  // A method the host cannot support is not rendered at all: the WSL card is
+  // absent off Windows (`offeredMethods` asks the same `methodAvailable` the
+  // host validates `connect/start` with).
+  const cards = offeredMethods(props.state.platform)
   return (
     <div className="dsh-rw-section">
       <h3 className="dsh-rw-section-title">{t('method.title')}</h3>
       <p className="dsh-rw-hint">{t('method.description')}</p>
       <div className="dsh-rw-methods">
-        {cards.map((card, index) => {
-          const selected = props.state.method === card.id
-          const disabled = card.teaser === true
+        {cards.map((method, index) => {
+          const selected = props.state.method === method
           return (
             <button
-              key={card.id}
+              key={method}
               type="button"
               className="dsh-rw-method"
-              data-disabled={disabled ? 'true' : undefined}
               data-selected={selected ? 'true' : undefined}
-              disabled={disabled}
               aria-pressed={selected}
-              aria-label={card.id === 'ssh' ? t('method.ssh.aria') : card.id === 'wsl' ? t('method.wsl.aria') : undefined}
-              {...(disabled ? {} : { 'data-step-focus': index === 0 ? true : undefined })}
+              aria-label={method === 'ssh' ? t('method.ssh.aria') : t('method.wsl.aria')}
+              {...(index === 0 ? { 'data-step-focus': true } : {})}
               onClick={() => {
-                if (disabled) return
-                store.setMethod(card.id)
+                store.setMethod(method)
                 store.setStep('config')
               }}
             >
               <span className="dsh-rw-method-name">
-                {card.id === 'ssh' && <IconGlobeOutlineRegular size={16} />}
-                {t(METHOD_NAME_KEYS[card.id])}
+                {method === 'ssh' && <IconGlobeOutlineRegular size={16} />}
+                {t(METHOD_NAME_KEYS[method])}
                 {selected && <Tag tone="info">{t('method.selected')}</Tag>}
               </span>
-              <span className="dsh-rw-method-description">{t(METHOD_DESCRIPTION_KEYS[card.id])}</span>
-              {disabled && <span className="dsh-rw-method-state">{t('method.disabledNote')}</span>}
+              <span className="dsh-rw-method-description">{t(METHOD_DESCRIPTION_KEYS[method])}</span>
             </button>
           )
         })}
@@ -508,20 +505,6 @@ function ConfigStep(props: { state: AppState }): ReactElement | null {
                 />
               </Field>
             </div>
-            <Field label={t('config.packageSource')} hint={t('config.packageSource.hint')}>
-              <SegmentedControl<'' | 'download' | 'upload'>
-                id="dsh-rw-package-source"
-                value={config.packageSource}
-                disabled={prefilling || pending}
-                label={t('config.packageSource.label')}
-                options={[
-                  { value: '', label: t('config.packageSource.auto') },
-                  { value: 'download', label: t('config.packageSource.download') },
-                  { value: 'upload', label: t('config.packageSource.upload') },
-                ]}
-                onChange={(next) => { store.patchConfig({ packageSource: next }) }}
-              />
-            </Field>
           </div>
         </DisclosureRow>
       </div>
@@ -529,20 +512,298 @@ function ConfigStep(props: { state: AppState }): ReactElement | null {
   )
 }
 
-/** Step 3 — live progress, the connection log, and host-key confirmation. */
-function ConnectingStep(props: { state: AppState }): ReactElement | null {
-  const { connect } = props.state
+/**
+ * The host-key confirmation panel.
+ *
+ * ONE component for both flows that can stop on an unknown fingerprint: the
+ * connection attempt (frame `host-key`) and the read-only scan
+ * (`stage: 'host-key'`). The requirement is that they are literally the same
+ * panel — same copy, same explicit confirmation, never automatic.
+ */
+function HostKeyPanel(props: {
+  fingerprint: string
+  algorithm?: string | undefined
+  /** The confirm request is in flight. */
+  answering: boolean
+  /** This fingerprint has already been accepted in this flow. */
+  confirmed: boolean
+  confirmLabel: string
+  answeringLabel: string
+  confirmedLabel: string
+  cancelLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+}): ReactElement {
+  return (
+    <div className="dsh-rw-hostkey">
+      <span className="dsh-rw-hostkey-title">
+        <IconWarningTriangleOutlineRegular size={14} />
+        {t('connect.hostKey.title')}
+      </span>
+      <p className="dsh-rw-hint">{t('connect.hostKey.description')}</p>
+      <div>
+        <div className="dsh-rw-field-label">{t('connect.hostKey.fingerprint')}</div>
+        <div className="dsh-rw-mono">{props.fingerprint}</div>
+      </div>
+      {props.algorithm !== undefined && props.algorithm !== '' && (
+        <div>
+          <div className="dsh-rw-field-label">{t('connect.hostKey.algorithm')}</div>
+          <div className="dsh-rw-mono">{props.algorithm}</div>
+        </div>
+      )}
+      <div className="dsh-rw-inline">
+        <Button
+          variant="primary"
+          data-step-focus
+          disabled={props.answering || props.confirmed}
+          onClick={props.onConfirm}
+        >
+          {props.confirmed ? props.confirmedLabel : props.answering ? props.answeringLabel : props.confirmLabel}
+        </Button>
+        <Button variant="ghost" disabled={props.answering} onClick={props.onCancel}>
+          {props.cancelLabel}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** One candidate row of the reuse list. */
+function CandidateRow(props: { candidate: DshCandidate; selected: boolean }): ReactElement | null {
+  const { candidate } = props
+  const usable = candidate.compatible && candidate.executable
+  const profile = candidate.profile
+  const pluginText = profile === undefined
+    ? t('dsh.plugin.none')
+    : profile.upToDate
+      ? t('dsh.plugin.installed', { version: profile.pluginVersion ?? t('dsh.version.unknown') })
+      : t('dsh.plugin.outdated', { version: profile.pluginVersion ?? t('dsh.version.unknown') })
+  const versionTone: TagTone = candidate.compatible ? 'success' : 'danger'
+  return (
+    <button
+      type="button"
+      className="dsh-rw-candidate"
+      data-selected={props.selected ? 'true' : undefined}
+      data-compatible={candidate.compatible ? 'true' : 'false'}
+      aria-pressed={props.selected}
+      aria-disabled={usable ? undefined : 'true'}
+      disabled={!usable}
+      title={candidate.path}
+      onClick={() => { if (usable) store.selectDshCandidate(candidate.path) }}
+    >
+      <span className="dsh-rw-candidate-main">
+        <span className="dsh-rw-candidate-path">{candidate.path}</span>
+        <span className="dsh-rw-candidate-meta">
+          <Tag tone="neutral">{candidate.version === '' ? t('dsh.version.unknown') : candidate.version}</Tag>
+          <Tag tone={versionTone}>{candidate.compatible ? t('dsh.compatible') : t('dsh.incompatible')}</Tag>
+          {!candidate.executable && <Tag tone="warning">{t('dsh.notExecutable')}</Tag>}
+          {candidate.selfContained && <Tag tone="quiet">{t('dsh.selfContained')}</Tag>}
+          <span className="dsh-rw-candidate-note">{pluginText}</span>
+          {candidate.nodePath !== undefined && candidate.nodePath !== '' && (
+            <span className="dsh-rw-candidate-note">{t('dsh.nodePath', { path: candidate.nodePath })}</span>
+          )}
+        </span>
+        {candidate.reason !== undefined && candidate.reason !== '' && (
+          <span className="dsh-rw-candidate-reason">{candidate.reason}</span>
+        )}
+      </span>
+      <span className="dsh-rw-candidate-action">{props.selected ? t('dsh.selected') : t('dsh.select')}</span>
+    </button>
+  )
+}
+
+/**
+ * Step 3's reuse panel: the scan's four states, all with text.
+ *
+ *   scanning          → 扫描中
+ *   host-key pending  → the shared confirmation panel; confirming re-scans with
+ *                       the fingerprint (a scan pins and stores nothing)
+ *   ready, no rows    → 无候选
+ *   ready, rows       → the candidate list (path / version / compatibility /
+ *                       whether the server plugin is already there)
+ */
+function ReusePanel(props: { state: AppState }): ReactElement | null {
+  const { dshScan, config } = props.state
+  const scanning = dshScan.status === 'scanning'
+  return (
+    <div className="dsh-rw-scan">
+      <div className="dsh-rw-inline">
+        <span className="dsh-rw-field-hint">
+          {scanning
+            ? t('connect.scan.scanning')
+            : dshScan.status === 'ready'
+              ? t('connect.scan.ready', { count: dshScan.candidates.length })
+              : ''}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<IconRefreshOutlineRegular size={12} />}
+          disabled={scanning}
+          onClick={() => { void store.scanDsh(true) }}
+        >
+          {t('connect.scan.retry')}
+        </Button>
+      </div>
+
+      {dshScan.fingerprint !== undefined && (
+        <>
+          <p className="dsh-rw-hint">{t('connect.scan.hostKey.pending')}</p>
+          <HostKeyPanel
+            fingerprint={dshScan.fingerprint}
+            answering={scanning}
+            confirmed={false}
+            confirmLabel={t('connect.hostKey.trust')}
+            answeringLabel={t('connect.hostKey.trusting')}
+            confirmedLabel={t('connect.hostKey.trusted')}
+            cancelLabel={t('common.back')}
+            onConfirm={() => { void store.scanDsh(true) }}
+            onCancel={() => { store.setStep('config') }}
+          />
+        </>
+      )}
+
+      {scanning && dshScan.fingerprint === undefined && <LoadingLine text={t('connect.scan.scanning')} />}
+
+      {dshScan.status === 'unavailable' && (
+        <ErrorBanner error={{ code: 'scan-failed', message: t('connect.scan.failed', { message: dshScan.error ?? '' }) }} />
+      )}
+
+      {dshScan.status === 'ready' && dshScan.candidates.length === 0 && (
+        <EmptyState text={t('connect.scan.empty')} />
+      )}
+
+      {/* Rows exist but none of them can be reused: say so instead of showing a
+          list whose every entry is disabled with no explanation of the way out. */}
+      {dshScan.status === 'ready'
+        && dshScan.candidates.length > 0
+        && !dshScan.candidates.some(candidate => candidate.compatible && candidate.executable) && (
+          <p className="dsh-rw-hint">{t('connect.scan.empty')}</p>
+        )}
+
+      {dshScan.status === 'ready' && dshScan.candidates.length > 0 && (
+        <div className="dsh-rw-candidates">
+          {dshScan.candidates.map(candidate => (
+            <CandidateRow
+              key={candidate.realPath === '' ? candidate.path : candidate.realPath}
+              candidate={candidate}
+              selected={config.reuseLauncherPath !== '' && config.reuseLauncherPath === candidate.path}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Step 3's upload panel: which package the remote architecture needs and whether
+ * it is already cached locally (then it is uploaded as is) or has to be built
+ * here (minutes). The facts come from the same `dsh-scan` the reuse list uses.
+ */
+function UploadPanel(props: { state: AppState }): ReactElement | null {
+  const { dshScan } = props.state
+  const scanning = dshScan.status === 'scanning'
+  const probe = dshScan.probe
+  const pkg = dshScan.package
+  return (
+    <div className="dsh-rw-scan">
+      <div className="dsh-rw-inline">
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<IconRefreshOutlineRegular size={12} />}
+          disabled={scanning}
+          onClick={() => { void store.scanDsh(true) }}
+        >
+          {t('connect.scan.retry')}
+        </Button>
+      </div>
+      {scanning && <LoadingLine text={t('connect.upload.checking')} />}
+      {dshScan.status === 'unavailable' && (
+        <ErrorBanner error={{ code: 'scan-failed', message: t('connect.scan.failed', { message: dshScan.error ?? '' }) }} />
+      )}
+      {!scanning && probe === undefined && dshScan.status !== 'unavailable' && (
+        <p className="dsh-rw-hint">{t('connect.upload.unknown')}</p>
+      )}
+      {probe !== undefined && (
+        <>
+          <p className="dsh-rw-hint">{t('connect.upload.probe', { tag: probe.tag })}</p>
+          {pkg !== undefined && <p className="dsh-rw-hint">{t('connect.upload.artifact', { artifact: pkg.artifact })}</p>}
+          <p className="dsh-rw-hint">
+            {pkg?.cached === true
+              ? t('connect.upload.cached', { size: formatSize(pkg.sizeBytes) })
+              : t('connect.upload.build')}
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Step 3 — the provisioned-through choice, the live progress, the connection log
+ * and the host-key confirmation.
+ */
+function ConnectStep(props: { state: AppState }): ReactElement | null {
+  const { connect, config, dshScan } = props.state
   const prompt = connect.hostKey
   const logRef = useRef<HTMLDivElement>(null)
+  const busy = connect.phase === 'running' || connect.phase === 'awaiting-hostkey'
   // Terminal behaviour: the tail stays in view as lines arrive.
   useEffect(() => {
     const node = logRef.current
     if (node !== null) node.scrollTop = node.scrollHeight
   }, [connect.log.length])
+  // Reuse never falls back to uploading on its own (that would push 25–50 MB
+  // without asking). The way out is an explicit button, and only this flow gets
+  // one: an upload failure is just a retry.
+  const reuseFailed = connect.phase === 'failed' && config.connectionMode === 'reuse'
   return (
     <div className="dsh-rw-section">
+      <h3 className="dsh-rw-section-title">{t('connect.mode.title')}</h3>
+      <p className="dsh-rw-hint">{t('connect.mode.description')}</p>
+
+      <div className="dsh-rw-methods" role="radiogroup" aria-label={t('connect.mode.title')}>
+        {MODE_CARDS.map((card, index) => {
+          const selected = config.connectionMode === card.id
+          const disabled = card.disabled === true || busy
+          return (
+            <button
+              key={card.id}
+              type="button"
+              className="dsh-rw-method"
+              data-disabled={disabled ? 'true' : undefined}
+              data-selected={selected ? 'true' : undefined}
+              data-mode={card.id}
+              disabled={disabled}
+              aria-pressed={selected}
+              {...(disabled ? {} : { 'data-step-focus': index === 0 ? true : undefined })}
+              onClick={() => {
+                if (disabled) return
+                store.setConnectionMode(card.id)
+              }}
+            >
+              <span className="dsh-rw-method-name">
+                {t(MODE_NAME_KEYS[card.id])}
+                {selected && <Tag tone="info">{t('connect.mode.selected')}</Tag>}
+              </span>
+              <span className="dsh-rw-method-description">{t(MODE_DESCRIPTION_KEYS[card.id])}</span>
+              {card.disabled === true && <span className="dsh-rw-method-state">{t('connect.mode.download.disabled')}</span>}
+            </button>
+          )
+        })}
+      </div>
+
+      {config.connectionMode === 'reuse' && <ReusePanel state={props.state} />}
+      {config.connectionMode === 'upload' && <UploadPanel state={props.state} />}
+
       <h3 className="dsh-rw-section-title">{t('connect.title')}</h3>
-      <p className="dsh-rw-hint">{t('connect.description')}</p>
+      <p className="dsh-rw-hint">
+        {dshScan.status === 'ready' && dshScan.probe !== undefined
+          ? t('connect.upload.probe', { tag: dshScan.probe.tag })
+          : t('connect.description')}
+      </p>
 
       <div className="dsh-rw-progress">
         {CONNECT_STEPS.map((step: ConnectStep) => {
@@ -582,184 +843,36 @@ function ConnectingStep(props: { state: AppState }): ReactElement | null {
       </div>
 
       {prompt !== undefined && (
-        <div className="dsh-rw-hostkey">
-          <span className="dsh-rw-hostkey-title">
-            <IconWarningTriangleOutlineRegular size={14} />
-            {t('connect.hostKey.title')}
-          </span>
-          <p className="dsh-rw-hint">{t('connect.hostKey.description')}</p>
-          <div>
-            <div className="dsh-rw-field-label">{t('connect.hostKey.fingerprint')}</div>
-            <div className="dsh-rw-mono">{prompt.fingerprint}</div>
-          </div>
-          {prompt.algorithm !== undefined && prompt.algorithm !== '' && (
-            <div>
-              <div className="dsh-rw-field-label">{t('connect.hostKey.algorithm')}</div>
-              <div className="dsh-rw-mono">{prompt.algorithm}</div>
-            </div>
-          )}
-          <div className="dsh-rw-inline">
-            <Button
-              variant="primary"
-              data-step-focus
-              disabled={prompt.answering || prompt.trusted}
-              onClick={() => { void store.confirmHostKey() }}
-            >
-              {prompt.trusted
-                ? t('connect.hostKey.trusted')
-                : prompt.answering ? t('connect.hostKey.trusting') : t('connect.hostKey.trust')}
-            </Button>
-            <Button variant="ghost" disabled={prompt.answering} onClick={() => { store.cancelConnect() }}>
-              {t('connect.hostKey.cancel')}
-            </Button>
-          </div>
-        </div>
+        <HostKeyPanel
+          fingerprint={prompt.fingerprint}
+          algorithm={prompt.algorithm}
+          answering={prompt.answering}
+          confirmed={prompt.trusted}
+          confirmLabel={t('connect.hostKey.trust')}
+          answeringLabel={t('connect.hostKey.trusting')}
+          confirmedLabel={t('connect.hostKey.trusted')}
+          cancelLabel={t('connect.hostKey.cancel')}
+          onConfirm={() => { void store.confirmHostKey() }}
+          onCancel={() => { store.cancelConnect() }}
+        />
       )}
 
-      {connect.phase === 'succeeded' && (
-        <p className="dsh-rw-hint">
-          <IconCheckCircleFillRegular size={12} />
-          {` ${t('connect.succeeded')}`}
-        </p>
-      )}
       {connect.phase === 'failed' && <p className="dsh-rw-hint">{t('connect.retryHint')}</p>}
       {connect.error !== undefined && <ErrorBanner error={connect.error} />}
-    </div>
-  )
-}
-
-/** Step 4 — remote directory browser. */
-function DirectoryStep(props: { state: AppState }): ReactElement | null {
-  const { directory } = props.state
-  const targetId = directory.targetId
-  const listing = directory.listing
-  const open = (path: string): void => {
-    if (targetId === undefined) return
-    void store.loadDirectory(targetId, path)
-  }
-
-  if (targetId === undefined) {
-    return (
-      <div className="dsh-rw-section">
-        <EmptyState text={t('directory.noTarget')} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="dsh-rw-section">
-      <div className="dsh-rw-inline">
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<IconChevronLeftOutlineRegular size={12} />}
-          disabled={listing?.parent === undefined || directory.loading}
-          onClick={() => { if (listing?.parent !== undefined) open(listing.parent) }}
-        >
-          {t('directory.parent')}
-        </Button>
-        {listing !== undefined && listing.home !== '' && (
-          <Button variant="ghost" size="sm" disabled={directory.loading} onClick={() => { open(listing.home) }}>
-            {t('directory.home')}
+      {reuseFailed && (
+        <div className="dsh-rw-inline">
+          <Button
+            variant="outline"
+            onClick={() => {
+              // Explicit switch, never an automatic fallback (architecture A11).
+              store.setConnectionMode('upload')
+              void store.startConnect()
+            }}
+          >
+            {t('connect.reuse.switchUpload')}
           </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<IconRefreshOutlineRegular size={12} />}
-          aria-label={t('common.refresh')}
-          disabled={directory.loading}
-          onClick={() => { open(listing?.path ?? '') }}
-        />
-        <Input
-          className="dsh-rw-grow"
-          data-step-focus
-          value={directory.pathInput}
-          aria-label={t('directory.crumbs.aria')}
-          placeholder={t('directory.path.placeholder')}
-          onChange={(event: ChangeEvent<HTMLInputElement>) => { store.setPathInput(event.target.value) }}
-          onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-            if (event.key !== 'Enter') return
-            event.preventDefault()
-            open(event.currentTarget.value.trim())
-          }}
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={directory.loading}
-          onClick={() => { open(directory.pathInput.trim()) }}
-        >
-          {t('directory.path.goto')}
-        </Button>
-      </div>
-
-      {listing !== undefined && (
-        <nav className="dsh-rw-crumbs" aria-label={t('directory.crumbs.aria')}>
-          {crumbs(listing.path).map((crumb, index) => (
-            <span key={crumb.path}>
-              {index > 0 && <span className="dsh-rw-crumb-separator">/</span>}
-              <button
-                type="button"
-                className="dsh-rw-crumb"
-                aria-current={crumb.path === listing.path ? 'true' : undefined}
-                disabled={directory.loading}
-                onClick={() => { open(crumb.path) }}
-              >
-                {crumb.label}
-              </button>
-            </span>
-          ))}
-        </nav>
+        </div>
       )}
-
-      {directory.connecting && <LoadingLine text={t('directory.connecting')} />}
-      {directory.loading && !directory.connecting && <LoadingLine text={t('directory.loading')} />}
-      {listing !== undefined && !directory.loading && (
-        listing.entries.length === 0
-          ? <EmptyState text={t('directory.empty')} />
-          : (
-            <div className="dsh-rw-entries">
-              {sortEntries(listing.entries).map(entry => (
-                <EntryRow key={entry.path} entry={entry} onOpen={() => { open(entry.path) }} />
-              ))}
-            </div>
-          )
-      )}
-
-      <div className="dsh-rw-inline">
-        <Input
-          className="dsh-rw-grow"
-          value={directory.newDirName}
-          aria-label={t('directory.newDir')}
-          placeholder={t('directory.newDir.placeholder')}
-          onChange={(event: ChangeEvent<HTMLInputElement>) => { store.setNewDirName(event.target.value) }}
-          onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-            if (event.key !== 'Enter') return
-            event.preventDefault()
-            void store.createDirectory()
-          }}
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          icon={<IconPlusOutlineRegular size={12} />}
-          disabled={directory.creating || directory.newDirName.trim() === ''}
-          onClick={() => { void store.createDirectory() }}
-        >
-          {t('directory.newDir.create')}
-        </Button>
-      </div>
-
-      <Field label={t('directory.titleField')} hint={t('directory.titleField.placeholder')}>
-        <Input
-          value={directory.title}
-          aria-label={t('directory.titleField')}
-          onChange={(event: ChangeEvent<HTMLInputElement>) => { store.setDirectoryTitle(event.target.value) }}
-        />
-      </Field>
-
-      {directory.error !== undefined && <ErrorBanner error={directory.error} />}
     </div>
   )
 }
@@ -769,13 +882,15 @@ export function WizardBody(): ReactElement | null {
   const state = useAppState()
   const bodyRef = useRef<HTMLDivElement>(null)
   const fingerprint = state.connect.hostKey?.fingerprint
+  const scanFingerprint = state.dshScan.fingerprint
 
-  // "Focus the first field when a step opens" — also when the host-key panel
-  // appears mid-step, so its explicit confirmation button takes the keyboard.
+  // "Focus the first field when a step opens" — also when a host-key panel
+  // appears mid-step (connect or scan), so its explicit confirmation button
+  // takes the keyboard.
   useEffect(() => {
     const node = bodyRef.current?.querySelector<HTMLElement>('[data-step-focus]')
     node?.focus()
-  }, [state.step, state.view, fingerprint])
+  }, [state.step, state.view, fingerprint, scanFingerprint])
 
   return (
     <div className="dsh-rw-stack">
@@ -784,8 +899,7 @@ export function WizardBody(): ReactElement | null {
       <div className="dsh-rw-scroll" ref={bodyRef}>
         {state.step === 'method' && <MethodStep state={state} />}
         {state.step === 'config' && <ConfigStep state={state} />}
-        {state.step === 'connecting' && <ConnectingStep state={state} />}
-        {state.step === 'directory' && <DirectoryStep state={state} />}
+        {state.step === 'connect' && <ConnectStep state={state} />}
       </div>
     </div>
   )
@@ -794,7 +908,7 @@ export function WizardBody(): ReactElement | null {
 /** Wizard actions, rendered inside the dialog footer. */
 export function WizardFooter(): ReactElement | null {
   const state = useAppState()
-  const { pending, connect, directory } = state
+  const { pending, connect, config } = state
   const busy = connect.phase === 'running' || connect.phase === 'awaiting-hostkey'
 
   if (state.step === 'method') {
@@ -822,62 +936,47 @@ export function WizardFooter(): ReactElement | null {
         </span>
         <span className="dsh-rw-footer-group">
           <Button variant="ghost" onClick={store.closeOverlay}>{t('common.cancel')}</Button>
-          <Button variant="primary" disabled={pending || state.prefilling} onClick={() => { void store.startConnect() }}>
-            {t('config.connect')}
+          <Button variant="primary" disabled={pending || state.prefilling} onClick={() => { store.setStep('connect') }}>
+            {t('step.label.connect')}
           </Button>
         </span>
       </div>
     )
   }
 
-  if (state.step === 'connecting') {
-    return (
-      <div className="dsh-rw-footer-actions">
-        <span className="dsh-rw-footer-group">
-          <Button
-            variant="ghost"
-            disabled={busy}
-            onClick={() => { if (connect.origin === 'directory') store.showList(); else store.setStep('config') }}
-          >
-            {t('common.back')}
-          </Button>
-        </span>
-        <span className="dsh-rw-footer-group">
-          <Button variant="ghost" disabled={connect.phase === 'succeeded'} onClick={() => { store.cancelConnect() }}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            variant="primary"
-            disabled={pending || busy}
-            onClick={() => {
-              // A reconnect opened from the directory flow must retry that flow,
-              // not a wizard connect whose draft may be empty.
-              if (connect.origin === 'directory') store.retryDirectoryConnect()
-              else void store.startConnect()
-            }}
-          >
-            {t('common.retry')}
-          </Button>
-        </span>
-      </div>
-    )
-  }
-
+  // Step 3: starting and retrying are the same call; the primary is disabled
+  // until the choice is complete (a mode is picked, and reuse has a launcher).
+  const chosen = config.connectionMode === 'reuse'
+    ? config.reuseLauncherPath !== ''
+    : config.connectionMode === 'upload'
   return (
     <div className="dsh-rw-footer-actions">
       <span className="dsh-rw-footer-group">
-        <Button variant="ghost" icon={<IconChevronLeftOutlineRegular size={12} />} onClick={() => { store.showList() }}>
-          {t('directory.backToList')}
+        <Button variant="ghost" icon={<IconChevronLeftOutlineRegular size={12} />} disabled={busy} onClick={() => { store.setStep('config') }}>
+          {t('common.back')}
         </Button>
       </span>
       <span className="dsh-rw-footer-group">
-        <Button variant="ghost" onClick={store.closeOverlay}>{t('common.close')}</Button>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            // Nothing in flight: 取消 leaves the wizard like it does on the
+            // earlier steps. Mid-attempt it aborts the attempt and stays here,
+            // which is where the retry / another mode lives.
+            const phase = connect.phase
+            if (phase === 'idle' || phase === 'succeeded') store.closeOverlay()
+            else store.cancelConnect()
+          }}
+        >
+          {t('common.cancel')}
+        </Button>
         <Button
           variant="primary"
-          disabled={pending || directory.loading || directory.listing === undefined}
-          onClick={() => { void store.openWorkspace() }}
+          disabled={pending || busy || !chosen}
+          onClick={() => { void store.startConnect() }}
         >
-          {pending ? t('directory.opening') : t('directory.open')}
+          {connect.phase === 'failed' ? t('common.retry') : t('config.connect')}
         </Button>
       </span>
     </div>

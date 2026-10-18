@@ -15,7 +15,7 @@
  * target-platform sibling at the same version and strip foreign-platform
  * siblings, then assert the result.
  */
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { join, dirname } from 'node:path'
@@ -290,16 +290,105 @@ function tarExecutable(): string {
   return existsSync('/usr/bin/tar') ? '/usr/bin/tar' : 'tar'
 }
 
-/** Pack one staged tree into `outFile` (macOS AppleDouble files excluded). */
-export async function packStage(stage: string, outFile: string): Promise<void> {
-  await rm(outFile, { force: true })
-  const env = { ...process.env, COPYFILE_DISABLE: '1' }
-  await new Promise<void>((resolve, reject) => {
-    execFile(tarExecutable(), ['-czf', outFile, '-C', stage, '.'], { env, timeout: 300_000, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
-      if (error != null) reject(new Error(`tar failed: ${stderr.toString().trim()}`))
-      else resolve()
+/**
+ * How long one `tar` pass may take.
+ *
+ * Measured on a Windows host (bsdtar, alpha51): packing the staged dsh tree —
+ * ~31k entries, ~144 MB — needs **5–6 minutes**, and the old 300 s cap killed
+ * tar mid-stream. Because the archive used to be written *in place*, the result
+ * was a 135,659,520-byte `.tar.gz` that looked like an artifact but answered
+ * `tar -tzf: Truncated input file`, with empty stderr and no `.sha256` /
+ * `.manifest.json` next to it. 15 minutes keeps headroom for a slow disk while
+ * still bounding a hang.
+ */
+export const PACK_TIMEOUT_MS = 900_000
+
+/** One finished `tar` run, as {@link packStage} needs to see it. */
+export interface TarRunResult {
+  readonly code: number | null
+  readonly signal: NodeJS.Signals | null
+  readonly stderr: string
+}
+
+/**
+ * How one `tar` invocation is executed.
+ *
+ * Injectable so {@link packStage}'s guarantees — pack into `.partial`, publish by
+ * rename, never leave a half-written archive at the final name — are unit-tested
+ * without a real `tar` and without waiting out a timeout.
+ */
+export type TarRunner = (options: {
+  readonly executable: string
+  readonly args: readonly string[]
+  readonly timeoutMs: number
+  readonly env: NodeJS.ProcessEnv
+}) => Promise<TarRunResult>
+
+/** The production runner: `execFile` with {@link PACK_TIMEOUT_MS}. */
+function runTar(options: { executable: string; args: readonly string[]; timeoutMs: number; env: NodeJS.ProcessEnv }): Promise<TarRunResult> {
+  type ExecFailure = Error & { code?: number | string; signal?: NodeJS.Signals | null }
+  return new Promise<TarRunResult>((resolve) => {
+    execFile(options.executable, [...options.args], { env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
+      const failure = error as ExecFailure | null
+      resolve({
+        // A timeout kills tar, so `code` stays null and `signal` is what tells the
+        // reason apart from a plain non-zero exit.
+        code: failure === null ? 0 : typeof failure.code === 'number' ? failure.code : null,
+        signal: failure?.signal ?? null,
+        stderr: stderr?.toString() ?? '',
+      })
     })
   })
+}
+
+/**
+ * Pack one staged tree into `outFile` (macOS AppleDouble files excluded).
+ *
+ * Two measured constraints:
+ *
+ * 1. **Pack into a per-run `<outFile>.<pid>-<rand>.partial`, publish with
+ *    `rename`.** A killed tar must not leave bytes at the final name:
+ *    `assets.cachedAssetIfReady` trusts file-size + the `.ready` digest and a
+ *    release upload trusts the file name, so a truncated archive at the final
+ *    path is a *silent* bad deployment. A failed run therefore leaves the
+ *    previous artifact untouched and removes only its own partial. The suffix is
+ *    unique per run because two connects can resolve the same artifact at the
+ *    same time (`assets.resolveServerPackage`): with a fixed `.partial` name each
+ *    would delete the other's in-progress archive. A crashed run can leave one
+ *    such file behind; it is never published, and `assets.pruneCache` reaps it.
+ * 2. **Name the reason on failure.** A timeout kills tar with empty stderr,
+ *    which is why the alpha51 failure read `tar failed: ` and had to be
+ *    diagnosed by measuring the output file. The signal and the pack budget are
+ *    now part of the message.
+ * @param stage - absolute path of the staged package tree.
+ * @param outFile - absolute path of the final archive.
+ * @param runner - tar invoker; tests inject a scripted one.
+ */
+export async function packStage(stage: string, outFile: string, runner: TarRunner = runTar): Promise<void> {
+  const partial = `${outFile}.${process.pid}-${randomUUID().slice(0, 8)}.partial`
+  let result: TarRunResult
+  try {
+    result = await runner({
+      executable: tarExecutable(),
+      args: ['-czf', partial, '-C', stage, '.'],
+      timeoutMs: PACK_TIMEOUT_MS,
+      env: { ...process.env, COPYFILE_DISABLE: '1' },
+    })
+  } catch (error) {
+    await rm(partial, { force: true }).catch(() => {})
+    throw error
+  }
+  if (result.code !== 0) {
+    await rm(partial, { force: true }).catch(() => {})
+    const detail = result.stderr.trim()
+    const cause = result.signal === null
+      ? `exit ${result.code === null ? 'unknown' : String(result.code)}`
+      : `signal ${result.signal}`
+    throw new Error(`tar failed (${cause}; pack budget ${PACK_TIMEOUT_MS} ms): ${detail !== '' ? detail : 'no stderr output'}`)
+  }
+  // `rename` replaces an existing artifact atomically on POSIX and on Windows
+  // (Node maps it to MoveFileEx with MOVEFILE_REPLACE_EXISTING).
+  await rename(partial, outFile)
 }
 
 /** CLI entry for the release build script (see scripts/build-server-package.mjs). */

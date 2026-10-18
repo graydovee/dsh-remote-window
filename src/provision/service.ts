@@ -21,9 +21,13 @@ import { normalizeSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { remotePresetDefinition, remotePresetId } from '../preset/world.ts'
 import { openRemoteSession, resumeRemoteSession } from '../session/open.ts'
 import { shellQuote } from './profile.ts'
-import { openTransport, provisionTarget, readPrivateKey, type ProvisionEvent, type ProvisionStep } from './channel.ts'
+import { dshReleaseVersion, expandRemoteHome, openTransport, profileDirFor, profileFileSet, provisionTarget, readPrivateKey, type ProvisionEvent, type ProvisionResult, type ProvisionStep } from './channel.ts'
+import { artifactTag, describeLocalPackage, platformArch as platformArchOf, sha256OfFiles } from './assets.ts'
+import { assembleCandidates, parseDshScanOutput, scanDshScript, scanTools, type DshScanResult } from './dsh-scan.ts'
+import { probeFactsFrom, sh } from './deploy.ts'
+import type { RemoteTransport } from './transport.ts'
 import { methodAvailable } from '../targets/methods.ts'
-import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemoteRuntimeRecord, type RemoteTargetKind, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
+import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemotePackageSource, type RemoteRuntimeRecord, type RemoteTargetKind, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
 import type { WorkspaceId, RemoteSessionSummary, RemoteSessionTitle, RemoteWorkspaceSummary } from '../protocol.ts'
 
@@ -67,8 +71,42 @@ export interface ConnectRequest {
   readonly wslDistro?: string
   /** `wsl` only: the distro user; absent means the distribution's default user. */
   readonly wslUser?: string
-  readonly packageSource?: 'auto' | 'download' | 'upload'
+  /**
+   * How the server package is obtained. `'reuse'` is not a package source: it
+   * names the dsh the host already has (`reuseLauncherPath`), so nothing is
+   * uploaded for the runtime at all.
+   */
+  readonly packageSource?: RemotePackageSource
+  /** Required when `packageSource` is `'reuse'`. */
+  readonly reuseLauncherPath?: string
   readonly remote?: Partial<RemoteRuntimeRecord>
+}
+
+/**
+ * The wizard's `dsh-scan` request: one host (or distro) plus optional
+ * credentials, *before* any target record exists.
+ *
+ * Everything here is transient. `secret` lives only in this object for the
+ * length of the request — it is never stored, never logged, and scrubbed from
+ * every error the route returns.
+ */
+export interface DshScanRequest {
+  readonly kind?: RemoteTargetKind
+  readonly host?: string
+  readonly port?: number
+  readonly username?: string
+  readonly authKind?: RemoteAuthKind
+  /** Password or key passphrase; absent for agent auth / an already-trusted host. */
+  readonly secret?: string
+  readonly privateKeyPath?: string
+  readonly sshConfigAlias?: string
+  readonly hostKeyFingerprint?: string
+  readonly wslDistro?: string
+  readonly wslUser?: string
+  /** Profile to inspect for this plugin; defaults to the remote profile name. */
+  readonly profile?: string
+  /** Remote `DSH_HOME` (`~/.dsh` by default), expanded on the far side. */
+  readonly dshHome?: string
 }
 
 /** One directory listing entry as the browser needs it. */
@@ -283,6 +321,13 @@ interface WorkspaceRegistryLike {
   create(path: string, title?: string): Promise<OfficialWorkspace>
   resolveByPath(path: string): OfficialWorkspace | undefined
   delete(id: string): Promise<void>
+  /**
+   * Optional: the official registry may expose a rename. It only changes the
+   * *display title* of the shell row (the stub directory keeps its name), which
+   * is exactly what `workspace-rename` wants — hence the `try/catch` and the
+   * optionality rather than a hard dependency.
+   */
+  rename?(id: string, title: string): Promise<void> | void
 }
 
 export class RemoteWorkspaces {
@@ -350,26 +395,36 @@ export class RemoteWorkspaces {
     }
     const secret = await this.store.secretOf(target)
     const privateKey = target.privateKeyPath === undefined ? undefined : await readPrivateKey(target.privateKeyPath)
+    // A tree 连接 of a reuse target has no wizard payload: the remembered
+    // launcher is the whole selection.
+    const reuseLauncherPath = target.packageSource === 'reuse' ? target.reuseDsh?.path : undefined
     const result = await provisionTarget({
       target,
       ...(secret === undefined ? {} : { secret }),
       ...(privateKey === undefined ? {} : { privateKey }),
       packageRoot: this.options.packageRoot,
       packagePolicy: this.store.packagePolicy(),
+      ...(reuseLauncherPath === undefined ? {} : { reuseLauncherPath }),
       ...(signal === undefined ? {} : { signal }),
     })
+    // Keep the record's hints current (they are display/next-time values only —
+    // every connect measures the architecture again).
+    const provisionedAt = new Date().toISOString()
+    const hints = provisionedHints(result, provisionedAt)
     if (result.fingerprint !== target.hostKeyFingerprint) {
       await this.store.updateTarget(targetId, current => ({
         ...current,
         hostKeyFingerprint: result.fingerprint,
         status: 'ready',
-        lastConnectedAt: new Date().toISOString(),
+        lastConnectedAt: provisionedAt,
+        ...hints,
       }))
     } else {
       await this.store.updateTarget(targetId, current => ({
         ...current,
         status: 'ready',
-        lastConnectedAt: new Date().toISOString(),
+        lastConnectedAt: provisionedAt,
+        ...hints,
         ...(current.lastError === undefined ? {} : { lastError: undefined as unknown as string }),
       })).catch(() => {})
     }
@@ -528,38 +583,7 @@ export class RemoteWorkspaces {
     const distro = (request.wslDistro ?? '').trim()
     if (wsl && distro === '') throw new Error('a WSL target needs a distribution name')
     const existing = this.store.listTargets().find(record => record.label.toLowerCase() === request.label.toLowerCase())
-    const remote: RemoteRuntimeRecord = {
-      nodePath: request.remote?.nodePath ?? 'node',
-      dshCommand: request.remote?.dshCommand ?? 'dsh',
-      profile: request.remote?.profile ?? 'dsh-remote-server',
-      dshHome: request.remote?.dshHome ?? '~/.dsh',
-      plugins: request.remote?.plugins ?? [],
-    }
-    let draft: RemoteTargetRecord = {
-      id: existing?.id ?? `rt-${randomUUID().slice(0, 8)}`,
-      label: request.label,
-      kind,
-      // A WSL target is identified by its distribution; `host` mirrors it so a
-      // row/preview never has to special-case an empty string.
-      host: wsl ? distro : request.host,
-      port: wsl ? 22 : request.port,
-      // `username` is schema-required and unused by the WSL transport; the
-      // distro user (when given) is what the shell runs as.
-      username: wsl ? (request.wslUser ?? 'default') : request.username,
-      authKind: wsl ? 'agent' : request.authKind,
-      ...(wsl
-        ? { wslDistro: distro, ...(request.wslUser === undefined ? {} : { wslUser: request.wslUser }) }
-        : {
-            ...(request.privateKeyPath === undefined ? {} : { privateKeyPath: request.privateKeyPath }),
-            ...(request.sshConfigAlias === undefined ? {} : { sshConfigAlias: request.sshConfigAlias }),
-          }),
-      ...(request.packageSource === undefined ? {} : { packageSource: request.packageSource }),
-      // A local distribution has no host key at all; ssh keeps the pinned one.
-      hostKeyFingerprint: wsl ? '' : request.hostKeyFingerprint ?? existing?.hostKeyFingerprint ?? '',
-      remote,
-      status: 'unknown',
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-    }
+    let draft: RemoteTargetRecord = targetDraftFrom({ request, existing })
     const privateKey = !wsl && draft.privateKeyPath !== undefined ? await readPrivateKey(draft.privateKeyPath) : undefined
     let fingerprint = draft.hostKeyFingerprint
     let provisioned: Awaited<ReturnType<typeof provisionTarget>> | undefined
@@ -572,6 +596,11 @@ export class RemoteWorkspaces {
           packageRoot: this.options.packageRoot,
           packagePolicy: this.store.packagePolicy(),
           ...(fingerprint === '' ? {} : { hostKeyFingerprint: fingerprint }),
+          // Reuse selections travel only here; they are never inferred on the
+          // remote side (a wrong guess would start a dsh the user did not pick).
+          ...(request.reuseLauncherPath === undefined || request.reuseLauncherPath.trim() === ''
+            ? {}
+            : { reuseLauncherPath: request.reuseLauncherPath.trim() }),
           onEvent: (event: ProvisionEvent) => {
             ticket.events.push(event)
             emit(event)
@@ -603,11 +632,15 @@ export class RemoteWorkspaces {
     // The first successful connection pins the key and stores the secret. A WSL
     // target keeps an empty fingerprint forever (there is no key to pin) and
     // never holds a credential.
+    const provisionedAt = new Date().toISOString()
     draft = {
       ...draft,
       ...(wsl ? {} : { hostKeyFingerprint: provisioned.fingerprint === '' ? fingerprint : provisioned.fingerprint }),
       status: 'ready',
-      lastConnectedAt: new Date().toISOString(),
+      lastConnectedAt: provisionedAt,
+      // Hints for the wizard/UI only: correctness never reads them back (every
+      // connect probes the architecture and re-checks the launcher itself).
+      ...provisionedHints(provisioned, provisionedAt),
     }
     if (!wsl) {
       if (request.secret !== undefined) draft = await this.store.storeSecret(draft, request.secret)
@@ -644,6 +677,168 @@ export class RemoteWorkspaces {
     } finally {
       await transport.close().catch(() => {})
     }
+  }
+
+  /**
+   * The stored target that already stands for the host a scan was asked about.
+   *
+   * Only used to reuse its pinned host-key fingerprint, so rescanning a known
+   * host does not ask the user to trust it again. `undefined` = first contact
+   * with this host, and the scan answers `stage: 'host-key'`.
+   */
+  private storedTargetFor(kind: RemoteTargetKind, request: DshScanRequest): RemoteTargetRecord | undefined {
+    const targets = this.store.listTargets()
+    if (kind === 'wsl') {
+      const distro = (request.wslDistro ?? '').trim()
+      return targets.find(record => record.kind === 'wsl' && record.wslDistro === distro)
+    }
+    const host = (request.host ?? '').trim().toLowerCase()
+    const port = request.port ?? 22
+    const username = (request.username ?? '').trim()
+    return targets.find(record =>
+      record.kind === 'ssh' &&
+      record.host.toLowerCase() === host &&
+      record.port === port &&
+      record.username === username,
+    )
+  }
+
+  /**
+   * Scan one host/distro **before** connecting (api-contract §2).
+   *
+   * Answer two wizard questions with one throwaway transport and one read-only
+   * script: which architecture a server package would have to target (plus
+   * whether the local cache already holds it), and which dsh launchers exist
+   * (plus whether this plugin is installed and current in the target profile).
+   *
+   * Like {@link runCommand}, nothing here is stored or kept: no channel, no
+   * record, no file written on the far side. The host key is *not* pinned —
+   * that happens on the first successful connect (`runConnect`); an unconfirmed
+   * key answers `stage: 'host-key'` so the wizard shows the same trust panel.
+   * @param request - host/distro plus transient credentials.
+   * @returns the architecture/package/candidate report, or the fingerprint to confirm.
+   */
+  async scanDsh(request: DshScanRequest): Promise<DshScanResult> {
+    const kind: RemoteTargetKind = request.kind ?? 'ssh'
+    const wsl = kind === 'wsl'
+    // Same predicate as `connect/start`: a `wsl` scan off Windows is refused, not
+    // silently treated as ssh.
+    if (!methodAvailable(wsl ? 'wsl' : 'ssh', process.platform)) {
+      throw codedError('unsupported', `the "${kind}" connection method is not available on ${process.platform}`)
+    }
+    const draft = scanDraft(request)
+    const where = wsl ? `WSL ${draft.wslDistro ?? ''}` : `${draft.host}:${draft.port}`
+    const privateKey = draft.privateKeyPath === undefined
+      ? undefined
+      : await readPrivateKey(draft.privateKeyPath).catch((error: unknown) => {
+          // Only the path may appear in the message — never the key material.
+          throw codedError('scan-failed', `cannot read the private key ${draft.privateKeyPath ?? ''}: ${error instanceof Error ? error.message : String(error)}`)
+        })
+    // A host whose key a stored target already pinned needs no confirmation
+    // dance; the pin itself is only ever written by a successful connect.
+    const stored = this.storedTargetFor(kind, request)
+    const pinned = request.hostKeyFingerprint ?? stored?.hostKeyFingerprint ?? ''
+    let transport: RemoteTransport
+    try {
+      transport = await openTransport({
+        target: draft,
+        ...(wsl || request.secret === undefined ? {} : { secret: request.secret }),
+        ...(privateKey === undefined ? {} : { privateKey }),
+        packageRoot: this.options.packageRoot,
+        ...(pinned === '' ? {} : { hostKeyFingerprint: pinned }),
+      })
+    } catch (error) {
+      if (!wsl && error instanceof HostKeyUnknownError) return { stage: 'host-key', fingerprint: error.fingerprint }
+      throw codedError('scan-failed', `cannot reach ${where}: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`)
+    }
+    try {
+      const configuredHome = (request.dshHome ?? draft.remote.dshHome ?? '').trim()
+      const result = await withScanDeadline(
+        transport.exec(sh(scanDshScript(configuredHome === '' ? {} : { dshHome: configuredHome })), { maxBytes: 64 * 1024, timeoutMs: 55_000 }),
+        SCAN_TIMEOUT_MS,
+      )
+      if (result.code !== 0) {
+        const tail = scrubSecrets(result.stderr.trim().slice(-2000))
+        throw codedError('scan-failed', `the dsh scan on ${where} failed (exit ${result.code ?? 'signal'}): ${tail !== '' ? tail : 'no stderr output'}`)
+      }
+      let scan
+      try {
+        scan = parseDshScanOutput(result.stdout)
+      } catch (error) {
+        throw codedError('scan-failed', `the dsh scan on ${where} produced unreadable output: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      const home = scan.home ?? ''
+      if (home === '' || !home.startsWith('/')) {
+        throw codedError('scan-failed', `cannot determine the remote home directory on ${where}`)
+      }
+      // One rule for platform/arch/libc, shared with the pipeline probe.
+      const facts = probeFactsFrom({ uname: scan.platform ?? '', machine: scan.machine ?? '', ostype: scan.ostype ?? '', ldd: scan.ldd ?? '' })
+      const { platform, arch, libc } = facts
+      const tag = artifactTag(platform, arch, libc)
+      const dshHome = expandRemoteHome(scan.dshHome ?? configuredHome, home)
+      const profile = (request.profile ?? draft.remote.profile).trim()
+      // The digest the wizard compares against the installed marker: the exact
+      // file set a connect would write, built by the same helper.
+      const profileDir = profileDirFor(dshHome, home, profile)
+      let expectedPluginSha: string | undefined
+      try {
+        expectedPluginSha = await sha256OfFiles(await profileFileSet(this.options.packageRoot, profileDir, profile))
+      } catch {
+        // A source checkout without a build has no lib/ to hash; the candidate
+        // list then reports `upToDate: false` rather than failing the scan.
+        expectedPluginSha = undefined
+      }
+      return {
+        stage: 'done',
+        probe: {
+          platform,
+          arch,
+          libc,
+          platformArch: platformArchOf(platform, arch),
+          tag,
+          home,
+          // One mapping from the scan's `TOOL` records (`shasum` ⇒ sha256sum),
+          // so the wizard and the pipeline answer "can I verify an artifact here"
+          // identically.
+          tools: scanTools(scan.tools),
+        },
+        package: await describeLocalPackage({ version: dshReleaseVersion(this.options.packageRoot), platform, arch, libc }),
+        dshHome,
+        profiles: scan.profiles.map(entry => entry.name),
+        candidates: assembleCandidates(scan, { profile, ...(expectedPluginSha === undefined ? {} : { expectedPluginSha }) }),
+      }
+    } finally {
+      await transport.close().catch(() => {})
+    }
+  }
+
+  /**
+   * Rename one stored remote workspace (api-contract §4, architecture A7).
+   *
+   * Only the plugin's own `title` changes, plus a best-effort retitle of the
+   * shell's row. The remote directory is **never** moved: the remote log headers
+   * carry the remote path, and an `mv` across the network has no rollback story.
+   * @param workspaceId - the plugin's workspace record id.
+   * @param title - raw user input; normalized with the official rules.
+   * @returns the updated record.
+   */
+  async renameWorkspace(workspaceId: string, title: string): Promise<RemoteWorkspaceRecord> {
+    const record = this.store.workspace(workspaceId)
+    if (record === undefined) throw codedError('not-found', `unknown remote workspace "${workspaceId}"`)
+    const normalized = this.normalizeTitle(title)
+    if (normalized === '') throw codedError('bad-request', 'workspace title must contain visible characters')
+    // Best effort: keep the official shell row in step so a future unhide of our
+    // rows cannot show two different names. Swallowed by design — the shell is
+    // free not to expose `rename`.
+    if (record.officialWorkspaceId !== undefined) {
+      const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
+      const label = this.store.target(record.targetId)?.label ?? ''
+      const shellTitle = label === '' ? normalized : `${normalized} · ${label}`
+      try {
+        await registry?.rename?.(record.officialWorkspaceId, shellTitle)
+      } catch {}
+    }
+    return await this.store.updateWorkspace(workspaceId, current => ({ ...current, title: normalized }))
   }
 
   /** Create a directory on a target, for step 4's "new folder". */
@@ -968,11 +1163,16 @@ export class RemoteWorkspaces {
    * @returns the workspace record and the session that now runs in it.
    */
   async openWorkspace(targetId: string, path: string, title?: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    // Before any session exists: the target's remote realm must be registrable.
+    // A session that would run in the *local* execution world instead (alpha54,
+    // defect B) writes files on this machine under the stub path, so opening one
+    // is refused outright rather than degraded.
+    await assertRemoteRealm(this.ctx, targetId)
     const target = this.requireConnectedTarget(targetId, 'creating a session')
     // Validate the directory on the remote host before any session exists.
     const listing = await this.listDirectory(targetId, path)
     const materialized = await this.materializeWorkspace(target, listing.path, title)
-    const opened = await openRemoteSession(this.ctx, {
+    const opened = await openSessionInRealm('create', targetId, () => openRemoteSession(this.ctx, {
       targetId,
       // The session's shell-side cwd is the stub (official attachSession
       // requires realpath(cwd) === workspace.path); the stub→remote rewrite in
@@ -980,7 +1180,12 @@ export class RemoteWorkspaces {
       path: materialized.stub,
       // No sessionId: opening a workspace always starts a fresh (seeded)
       // session. Continuing an existing one goes through `resumeSession`.
-    })
+    }))
+    // Post-condition: the live session really was composed with our preset and
+    // really carries the realm's `ssh`. Nothing user-visible has happened yet
+    // (the shell has not attached it), so failing here still prevents the
+    // silent-local-execution state.
+    assertRealmComposed(this.ctx, targetId, opened.sessionId)
     return await this.finishOpen(materialized, opened.sessionId)
   }
 
@@ -1020,10 +1225,18 @@ export class RemoteWorkspaces {
   }
 
   private async resumeSessionOnce(targetId: string, path: string, sessionId: string, title?: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    // Same gate as `openWorkspace`, plus the live-session case: a stored remote
+    // session can already be *live* because the shell opened it through its own
+    // row (the hidden official one under the stub workspace), which composes the
+    // shipped preset and never mounts our realm. `resumeRemoteSession` then
+    // returns that agent as-is, so the check has to happen before the call.
+    await assertRemoteRealm(this.ctx, targetId)
+    assertLiveSessionInRealm(this.ctx, targetId, sessionId)
     const target = this.requireConnectedTarget(targetId, 'continuing a session')
     const listing = await this.listDirectory(targetId, path)
     const materialized = await this.materializeWorkspace(target, listing.path, title)
-    const opened = await resumeRemoteSession(this.ctx, { targetId, sessionId })
+    const opened = await openSessionInRealm('resume', targetId, () => resumeRemoteSession(this.ctx, { targetId, sessionId }))
+    assertRealmComposed(this.ctx, targetId, opened.sessionId)
     return await this.finishOpen(materialized, opened.sessionId)
   }
 
@@ -1231,8 +1444,107 @@ export class RemoteWorkspaces {
   }
 }
 
+/**
+ * Build (or rebuild) the target record a connect attempt runs against.
+ *
+ * Extracted from `runConnect` and exported so its precedence rules are unit-tested
+ * instead of only observable through a live connect. The rule that matters:
+ *
+ * **an absent request field never resets what the record already holds.** The
+ * record is rebuilt from the wizard payload on every connect, so
+ * `request.remote?.x ?? default` silently threw away a configured `dshHome`
+ * (`DSH_HOME` decides where remote sessions live, so a reset makes history look
+ * lost) along with `profile`/`nodePath`/`dshCommand`/`plugins`. The order is
+ * request → existing record → default, and an explicitly sent value still wins.
+ * @param options - the wire request, the record found by label (if any) and the clock/id seams.
+ */
+export function targetDraftFrom(options: {
+  readonly request: ConnectRequest
+  readonly existing?: RemoteTargetRecord
+  /** ISO timestamp for a brand-new record; defaults to now. */
+  readonly now?: string
+  /** Id for a brand-new record; defaults to a fresh `rt-…`. */
+  readonly id?: string
+}): RemoteTargetRecord {
+  const { request, existing } = options
+  const kind: RemoteTargetKind = request.kind ?? 'ssh'
+  const wsl = kind === 'wsl'
+  const distro = (request.wslDistro ?? '').trim()
+  if (wsl && distro === '') throw new Error('a WSL target needs a distribution name')
+  const remote: RemoteRuntimeRecord = {
+    // request → existing record → default: see the note above about `dshHome`.
+    nodePath: request.remote?.nodePath ?? existing?.remote.nodePath ?? 'node',
+    dshCommand: request.remote?.dshCommand ?? existing?.remote.dshCommand ?? 'dsh',
+    profile: request.remote?.profile ?? existing?.remote.profile ?? 'dsh-remote-server',
+    dshHome: request.remote?.dshHome ?? existing?.remote.dshHome ?? '~/.dsh',
+    plugins: request.remote?.plugins ?? existing?.remote.plugins ?? [],
+  }
+  return {
+    id: existing?.id ?? options.id ?? `rt-${randomUUID().slice(0, 8)}`,
+    label: request.label,
+    kind,
+    // A WSL target is identified by its distribution; `host` mirrors it so a
+    // row/preview never has to special-case an empty string.
+    host: wsl ? distro : request.host,
+    port: wsl ? 22 : request.port,
+    // `username` is schema-required and unused by the WSL transport; the
+    // distro user (when given) is what the shell runs as.
+    username: wsl ? (request.wslUser ?? 'default') : request.username,
+    authKind: wsl ? 'agent' : request.authKind,
+    ...(wsl
+      ? { wslDistro: distro, ...(request.wslUser === undefined ? {} : { wslUser: request.wslUser }) }
+      : {
+          ...(request.privateKeyPath === undefined ? {} : { privateKeyPath: request.privateKeyPath }),
+          ...(request.sshConfigAlias === undefined ? {} : { sshConfigAlias: request.sshConfigAlias }),
+        }),
+    ...(request.packageSource === undefined ? {} : { packageSource: request.packageSource }),
+    // Hints from an earlier run survive a reconnect: without this a wizard
+    // re-connect would forget which dsh the user chose (and a remembered
+    // `packageSource: 'reuse'` would then have no launcher).
+    ...(existing?.reuseDsh === undefined ? {} : { reuseDsh: existing.reuseDsh }),
+    ...(existing?.platformProbe === undefined ? {} : { platformProbe: existing.platformProbe }),
+    ...(existing?.serverPackage === undefined ? {} : { serverPackage: existing.serverPackage }),
+    // A local distribution has no host key at all; ssh keeps the pinned one.
+    hostKeyFingerprint: wsl ? '' : request.hostKeyFingerprint ?? existing?.hostKeyFingerprint ?? '',
+    remote,
+    status: 'unknown',
+    createdAt: existing?.createdAt ?? options.now ?? new Date().toISOString(),
+  }
+}
+
+/**
+ * The record fields one successful provisioning pass produces.
+ *
+ * Pure, and shared by both connect paths (`runConnect` from the wizard,
+ * `connectOnce` from the tree) so a hint can never be written by one and
+ * forgotten by the other. `serverPackage` has a producer *here* specifically:
+ * it sat in the schema with nobody ever writing it (F1).
+ * @param result - the provisioning outcome.
+ * @param connectedAt - ISO timestamp of this connection.
+ */
+export function provisionedHints(
+  result: Pick<ProvisionResult, 'probe' | 'reuse' | 'package'>,
+  connectedAt: string,
+): Pick<RemoteTargetRecord, 'platformProbe' | 'reuseDsh' | 'serverPackage'> {
+  return {
+    platformProbe: { ...result.probe, probedAt: connectedAt },
+    ...(result.reuse === undefined
+      ? {}
+      : {
+          reuseDsh: {
+            path: result.reuse.path,
+            version: result.reuse.version,
+            ...(result.reuse.nodePath === undefined ? {} : { nodePath: result.reuse.nodePath }),
+            scannedAt: connectedAt,
+          },
+        }),
+    // Reuse ships no archive, so no package is recorded rather than a hollow one.
+    ...(result.package === undefined ? {} : { serverPackage: result.package }),
+  }
+}
+
 /** Public projection of a target record, with the stored-secret flag resolved. */
-function publicTarget(record: RemoteTargetRecord, store: TargetStore): PublicTarget {
+export function publicTarget(record: RemoteTargetRecord, store: TargetStore): PublicTarget {
   return {
     id: record.id,
     label: record.label,
@@ -1246,10 +1558,214 @@ function publicTarget(record: RemoteTargetRecord, store: TargetStore): PublicTar
     ...(record.sshConfigAlias === undefined ? {} : { sshConfigAlias: record.sshConfigAlias }),
     ...(record.wslDistro === undefined ? {} : { wslDistro: record.wslDistro }),
     ...(record.wslUser === undefined ? {} : { wslUser: record.wslUser }),
+    ...(record.packageSource === undefined ? {} : { packageSource: record.packageSource }),
+    ...(record.reuseDsh === undefined ? {} : { reuseDsh: record.reuseDsh }),
+    ...(record.platformProbe === undefined ? {} : { platformProbe: record.platformProbe }),
+    ...(record.serverPackage === undefined ? {} : { serverPackage: record.serverPackage }),
     remote: record.remote,
     status: record.status,
     ...(record.lastError === undefined ? {} : { lastError: scrubSecrets(record.lastError) }),
     ...(record.lastConnectedAt === undefined ? {} : { lastConnectedAt: record.lastConnectedAt }),
+  }
+}
+
+/** The scan's overall budget (api-contract §2.4: `scan-timeout` past 60 s). */
+const SCAN_TIMEOUT_MS = 60_000
+
+/**
+ * The preset-registry face the realm guards below use.
+ *
+ * Structural on purpose (`ctx.get('agentPresets')`), so a test can hand in a
+ * fake without constructing a cordis tree.
+ */
+interface PresetRegistryLike {
+  resolve(id: string): Promise<{ readonly id: string; readonly broken?: string }>
+  composedPreset(ctx: Context): string | undefined
+  serviceFor(agent: { ctx: Context }, name: string): unknown
+}
+
+/** The agent registry face the guards need. */
+interface AgentRegistryLike {
+  get(id: string): unknown
+}
+
+/** `ctx.get` a service by name, typed loosely. */
+function serviceOf<T>(ctx: Context, name: string): T | undefined {
+  return ctx.get(name as never) as T | undefined
+}
+
+/**
+ * Refuse to open a remote session unless the target's realm preset is registered
+ * and usable.
+ *
+ * Alpha54, defect B: an older connection's session ended up composed with the
+ * **shipped** preset — the model got the local `pwsh` tool, `pwd` answered the
+ * local stub directory and the proof file was written on *this* machine while the
+ * remote never saw it. A remote workspace whose realm is missing must fail
+ * loudly; silently running on the local world is the one outcome that must not
+ * happen, because it looks like success.
+ * @param ctx - host context.
+ * @param targetId - stored target; its preset id is derived, never guessed.
+ * @returns the preset id that was verified.
+ */
+export async function assertRemoteRealm(ctx: Context, targetId: string): Promise<string> {
+  const presetId = remotePresetId(targetId)
+  const presets = serviceOf<PresetRegistryLike>(ctx, 'agentPresets')
+  if (presets === undefined) {
+    throw codedError('realm-unavailable', `remote workspace "${targetId}": the agent preset registry is not available, so preset "${presetId}" cannot be mounted; refusing to open a session that would run on this machine`)
+  }
+  let resolved: { id: string; broken?: string }
+  try {
+    resolved = await presets.resolve(presetId)
+  } catch (error) {
+    throw codedError('realm-unavailable', `remote workspace "${targetId}": preset "${presetId}" is not registered (${errorReason(error)}); reconnect the target so its execution world is restored`)
+  }
+  if (resolved.id !== presetId) {
+    // `resolve` throws for unknown ids today; pin it anyway, because a silent
+    // substitution with the default (local) preset is exactly defect B.
+    throw codedError('realm-unavailable', `remote workspace "${targetId}": preset "${presetId}" resolved to "${resolved.id}"; refusing to open a session in a different execution world`)
+  }
+  if (resolved.broken !== undefined) {
+    throw codedError('realm-unavailable', `remote workspace "${targetId}": preset "${presetId}" failed to activate: ${resolved.broken}; reconnect the target and try again`)
+  }
+  return presetId
+}
+
+/**
+ * Refuse to *resume* a session that is already live in this process but composed
+ * with another preset.
+ *
+ * This is the second half of defect B: `resumeRemoteSession` returns a live agent
+ * as-is (it must — resuming twice collides on the write lease), so a session the
+ * shell opened locally through its own row would be handed back as if it were a
+ * remote session.
+ * @param ctx - host context.
+ * @param targetId - stored target.
+ * @param sessionId - the session about to be resumed.
+ */
+export function assertLiveSessionInRealm(ctx: Context, targetId: string, sessionId: string): void {
+  const live = serviceOf<AgentRegistryLike>(ctx, 'agents')?.get(sessionId) as { ctx?: Context } | undefined
+  if (live === undefined || live.ctx === undefined) return
+  const composed = serviceOf<PresetRegistryLike>(ctx, 'agentPresets')?.composedPreset(live.ctx)
+  const expected = remotePresetId(targetId)
+  if (composed !== expected) {
+    throw codedError(
+      'realm-unavailable',
+      `remote workspace "${targetId}": session "${sessionId}" is already live with preset "${composed ?? '(none)'}" instead of "${expected}", so its tools run on this machine instead of the remote host; close that session and reconnect the target`,
+    )
+  }
+}
+
+/**
+ * Verify a just-created/resumed session really runs in the remote realm.
+ * @param ctx - host context.
+ * @param targetId - stored target.
+ * @param sessionId - the session that was just composed.
+ */
+export function assertRealmComposed(ctx: Context, targetId: string, sessionId: string): void {
+  const presets = serviceOf<PresetRegistryLike>(ctx, 'agentPresets')
+  const live = serviceOf<AgentRegistryLike>(ctx, 'agents')?.get(sessionId) as { ctx?: Context } | undefined
+  if (presets === undefined || live?.ctx === undefined) return
+  const expected = remotePresetId(targetId)
+  const composed = presets.composedPreset(live.ctx)
+  const realmSsh = presets.serviceFor({ ctx: live.ctx }, 'ssh')
+  if (composed !== expected || realmSsh === undefined) {
+    throw codedError(
+      'realm-unavailable',
+      `remote workspace "${targetId}": session "${sessionId}" was composed with preset "${composed ?? '(none)'}" and no realm ssh service, so it would run on this machine; refusing to use it`,
+    )
+  }
+}
+
+/**
+ * Run one session open/resume, adding the target, the preset id and the original
+ * cause to a mount failure.
+ *
+ * `presets.mount()` failures surface from `agents.create/resume` as whatever the
+ * preset loader threw; without this wrapper the user sees an error that names
+ * neither the target nor the preset (alpha54, defect B).
+ * @param action - which flow failed, for the message.
+ * @param targetId - stored target.
+ * @param work - the open/resume call.
+ */
+export async function openSessionInRealm<T>(action: 'create' | 'resume', targetId: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    throw codedError(
+      'realm-unavailable',
+      `remote workspace "${targetId}": mounting preset "${remotePresetId(targetId)}" failed while ${action === 'create' ? 'creating' : 'resuming'} the session: ${errorReason(error)}`,
+    )
+  }
+}
+
+/** The most informative line an unknown error can give (never empty). */
+function errorReason(error: unknown): string {
+  if (error instanceof Error) return error.message !== '' ? error.message : error.name
+  return String(error)
+}
+
+
+/** An error carrying the code the route maps to an HTTP status (api-contract §10). */
+function codedError(code: string, message: string): Error {
+  const error = new Error(scrubSecrets(message))
+  ;(error as { code?: string }).code = code
+  return error
+}
+
+/** Reject with `scan-timeout` when one scan pass outlives its budget. */
+async function withScanDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(codedError('scan-timeout', 'the dsh scan did not finish within 60 s')), Math.max(1_000, ms))
+        timer.unref()
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * The transient target record a scan runs against.
+ *
+ * A scan happens *before* any record exists (that is the point of the wizard
+ * step), so the transport is handed a draft that is never stored — and it carries
+ * nothing but addressing: no credential reference, no secret.
+ */
+function scanDraft(request: DshScanRequest): RemoteTargetRecord {
+  const kind: RemoteTargetKind = request.kind ?? 'ssh'
+  const wsl = kind === 'wsl'
+  const distro = (request.wslDistro ?? '').trim()
+  const profile = (request.profile ?? '').trim()
+  const dshHome = (request.dshHome ?? '').trim()
+  return {
+    id: `scan-${randomUUID().slice(0, 8)}`,
+    label: wsl ? distro : (request.host ?? '').trim(),
+    kind,
+    host: wsl ? distro : (request.host ?? '').trim(),
+    port: wsl ? 22 : (request.port ?? 22),
+    username: wsl ? (request.wslUser ?? 'default') : (request.username ?? ''),
+    authKind: wsl ? 'agent' : (request.authKind ?? 'agent'),
+    ...(wsl
+      ? { wslDistro: distro, ...(request.wslUser === undefined ? {} : { wslUser: request.wslUser }) }
+      : {
+          ...(request.privateKeyPath === undefined ? {} : { privateKeyPath: request.privateKeyPath }),
+          ...(request.sshConfigAlias === undefined ? {} : { sshConfigAlias: request.sshConfigAlias }),
+        }),
+    hostKeyFingerprint: wsl ? '' : (request.hostKeyFingerprint ?? ''),
+    remote: {
+      nodePath: 'node',
+      dshCommand: 'dsh',
+      profile: profile === '' ? 'dsh-remote-server' : profile,
+      dshHome: dshHome === '' ? '~/.dsh' : dshHome,
+      plugins: [],
+    },
+    status: 'unknown',
+    createdAt: new Date().toISOString(),
   }
 }
 

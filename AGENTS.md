@@ -503,16 +503,34 @@ WSL 目标只在 Windows 上存在，所以 **linux 包常常是在 Windows 上�
   于是每条 shell 命令都在闸门被拒：
   `sandbox mode "workspace-write" is requested but no sandbox backend is usable on this host…`。
 - 处置（`src/server/controller.ts`）：远端世界**本身就是隔离边界**，所以 `confine()` 报
-  "no sandbox backend is usable" 时**原样返回 argv**（并在日志里说一次）。这与
+  "no sandbox backend is usable" 时**原样执行 argv**（并在远端日志里说一次）。这与
   workspace-write 的本地语义一致（"就是这台机器的这个工作区"），也不再逼用户点
   danger-full-access 审批。
+- **但返回值必须是官方 facts 对象，不能是裸 argv（alpha55 实测的致命坑）**：
+  `@deepseek-ai/dsh-sandbox-ssh::confine()` 用 **strict** schema 校验远端返回
+  `{ argv, enforcement: 'full'|'partial', denialSignatures: string[], runnerFailureRules: [...] }`。
+  alpha48–54 的兜底分支 `return input.argv` 是**裸字符串数组**，于是客户端 `.parse` 拒绝、
+  被 `catch` 包成 `SandboxUnavailableError`，用户看到的是
+  `sandbox mode "workspace-write" … no sandbox backend is usable on this host … (Linux)…(macOS)…(Windows) … Runner failure: [`
+  —— 那句话是 `SandboxUnavailableError` 的**通用模板**（它同时列三种平台的建议，与真实平台
+  无关，极容易被误读成"本机 Windows 沙箱被调用了"），而 `Runner failure:` 后面那个孤零零的
+  `[` 就是裸数组 / zod `issues` 的开头。兜底现在返回
+  `{ argv, enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }`
+  （`partial`：没有任何 backend 真正约束过 argv，声称 `full` 是失败方向错误）。
+- **验证必须用官方 strict schema，不许用 `z.unknown()`**：alpha48–50 那次"验证通过"正是因为
+  用 `z.unknown()` 拿到了裸数组，绕过了契约，于是这个 bug 活到 alpha55 才被浏览器 E2E 抓到。
+- 远端 `sandbox-policy` 行的 `mode` 默认 `workspace-write`、`workspaceRoot = process.cwd()`
+  （远端世界自己的工作区根），不需要改。
 - 端到端验证口径（真跑一条命令，拿到字面输出）：
 
   ```ts
   const p = await provisionTarget({ target /* kind:'wsl' */, packageRoot, packagePolicy })
   const c = await openRemoteClient(p.channel, '/home/graydove')
-  await c.request('sandbox', { argv: ['/bin/uname','-s'], policy: { mode:'workspace-write', workspaceRoot:'/home/graydove' } }, z.unknown())
-  // → ["/bin/uname","-s"]（无 wrapper）
+  const facts = z.object({ argv: z.array(z.string()), enforcement: z.enum(['full','partial']),
+    denialSignatures: z.array(z.string()), runnerFailureRules: z.array(z.unknown()) }).strict()
+  await c.request('sandbox', { argv: ['/bin/uname','-s'], policy: { mode:'workspace-write', workspaceRoot:'/home/graydove' } }, facts)
+  // → { argv: ["/bin/uname","-s"], enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }
+  //   用官方 facts 形状（strict）校验；用 z.unknown() 会把"裸数组"的 bug 放过去。
   await c.request('executable', { command: 'uname' }, z.unknown())      // → "/usr/bin/uname"
   const prep = await c.request('process.prepare', {
     argv: ['/bin/sh','-c','uname -s; pwd; echo WSL-OK'], cwd: '/home/graydove', graceMs: 5_000,
@@ -553,3 +571,12 @@ WSL 目标只在 Windows 上存在，所以 **linux 包常常是在 Windows 上�
   手动删 `~/.dsh/remote-server-sessions/...`。
 - 插件自己的行**在 shell 的工作区里是被隐藏而不是移除**（官方行仍在 DOM 中，`display: none`）。
 - 会话「运行中/待审批」状态没有观察，所以会话行**不显示状态点**（前导槽恒为空）。
+- **工作区行菜单没有「刷新会话列表」**：官方行菜单只有 `rename` / `delete.workspace` 两个
+  固定 key，「重命名工作区」占了 `rename`，列表改在展开与每个动词后自动重读。
+- **远端 registry 里的工作区标题不同步**：重命名只改插件记录的 `title`（绝不 `mv` 远端目录）；
+  要让远端 `reg.list` 也改名需要新增 `reg.rename` RPC（触碰 `src/server/**` 与两仓同步）。
+- **shell 侧的 `uiSession.bindingSource` 在记录非 live 时会抛错**，而它的 render 没有 error
+  boundary —— 这是 alpha54 那次「断开→重连整页白屏」的底层原因。我们已在断开/删除/掉线前
+  用官方 `uiWorkspace.clearMain()` 取消选中来回避；但若右栏仍留着该会话的 dock 页签
+  （`SidebarSessionViews.prune()` 会保留 `hasRetainedTabs`），仍可能触发同一路径。彻底修复
+  需要 shell 侧回落到 absent projection + error boundary。

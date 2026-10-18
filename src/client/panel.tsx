@@ -4,7 +4,7 @@
  * It has no sidebar row of its own: the 「远程工作区」 section's `+新建连接`
  * control opens it with `layout.selectPanel(PANEL_ID)`, and the same id is the
  * `main` slot key the shell renders the page under. The page hosts the whole
- * flow inline: 新建连接 sits at the top-left, and the four-step wizard renders
+ * flow inline: 新建连接 sits at the top-left, and the three-step wizard renders
  * in place instead of a dialog.
  */
 import { useEffect } from 'react'

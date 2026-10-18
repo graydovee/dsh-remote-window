@@ -22,7 +22,7 @@ import { listSshAliases, prefillFromResolution, resolveSshAlias } from './ssh-co
 import { listWslDistros } from './ssh/wsl.ts'
 import { methodAvailable } from './targets/methods.ts'
 import { TargetStore } from './targets/store.ts'
-import { scrubSecrets , type PackagePolicySettings } from './targets/types.ts'
+import { scrubSecrets , type PackagePolicySettings, type RemoteWorkspaceService } from './targets/types.ts'
 import { RemoteWorkspaces, packageRootFrom, type ConnectRequest, type ProvisionEvent } from './provision/service.ts'
 
 /** Route prefix for the plugin's own API and SSE channel. */
@@ -61,6 +61,21 @@ export const Config: Schema<Config> = Schema.object({
 
 /** JSON request body, bounded like every other plugin route in this app. */
 const MAX_BODY_BYTES = 1 << 20
+
+/**
+ * Service-layer error codes and the HTTP status the client expects.
+ *
+ * `RemoteWorkspaces` throws plain `Error`s with a `code` for the cases the
+ * browser has to distinguish (a vanished workspace vs a failed scan), and the
+ * envelope's status has to follow the code — everything unmapped stays 500.
+ */
+const STATUS_BY_CODE: Record<string, number> = {
+  'bad-request': 400,
+  unsupported: 400,
+  'not-found': 404,
+  'scan-failed': 500,
+  'scan-timeout': 500,
+}
 
 /** One JSON response. */
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -116,6 +131,128 @@ function optionalString(body: Record<string, unknown>, field: string): string | 
   return value.trim() === '' ? undefined : value.trim()
 }
 
+/** Package sources a `connect/start` body may name (`auto` follows the global policy). */
+const PACKAGE_SOURCES = ['auto', 'download', 'upload', 'reuse'] as const
+
+/** The fields `remote` may carry; anything else is a 400 here, not a zod 500 later. */
+const REMOTE_FIELDS = ['nodePath', 'dshCommand', 'profile', 'dshHome', 'plugins'] as const
+
+/** Profile names the remote profile directory can safely be built from. */
+const PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/u
+
+/**
+ * The optional `remote` object, validated field by field.
+ *
+ * It used to be passed through as `body.remote as ConnectRequest['remote']`, so a
+ * bad `profile` only failed much later, at `store.putTarget`'s zod parse — a 500
+ * `internal` in the middle of a connect instead of a 400 naming the field. The
+ * rules are exactly `targetRecordSchema`'s `runtimeSchema`, checked at the wire.
+ */
+function remoteFrom(body: Record<string, unknown>): ConnectRequest['remote'] | undefined {
+  const raw = body.remote
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new RouteError('bad-request', '"remote" must be an object', 400)
+  const value = raw as Record<string, unknown>
+  for (const key of Object.keys(value)) {
+    if (!(REMOTE_FIELDS as readonly string[]).includes(key)) {
+      throw new RouteError('bad-request', `"remote.${key}" is not a known field (allowed: ${REMOTE_FIELDS.join(', ')})`, 400)
+    }
+  }
+  const text = (field: (typeof REMOTE_FIELDS)[number], hint?: string): string | undefined => {
+    const candidate = value[field]
+    if (candidate === undefined) return undefined
+    if (typeof candidate !== 'string' || candidate.trim() === '') {
+      throw new RouteError('bad-request', `"remote.${field}" must be a non-empty string${hint === undefined ? '' : ` ${hint}`}`, 400)
+    }
+    return candidate.trim()
+  }
+  const profile = text('profile', `matching ${PROFILE_NAME.source}`)
+  if (profile !== undefined && !PROFILE_NAME.test(profile)) {
+    throw new RouteError('bad-request', `"remote.profile" must match ${PROFILE_NAME.source}`, 400)
+  }
+  const plugins = value.plugins
+  if (plugins !== undefined && (!Array.isArray(plugins) || plugins.some(entry => typeof entry !== 'string'))) {
+    throw new RouteError('bad-request', '"remote.plugins" must be an array of strings', 400)
+  }
+  const nodePath = text('nodePath')
+  const dshCommand = text('dshCommand')
+  const dshHome = text('dshHome')
+  return {
+    ...(nodePath === undefined ? {} : { nodePath }),
+    ...(dshCommand === undefined ? {} : { dshCommand }),
+    ...(profile === undefined ? {} : { profile }),
+    ...(dshHome === undefined ? {} : { dshHome }),
+    ...(plugins === undefined ? {} : { plugins: plugins as string[] }),
+  }
+}
+
+/**
+ * The wizard's `connect/start` body → {@link ConnectRequest}.
+ *
+ * Exported and pure **because this is the only place a new wire field is read
+ * off the JSON**: everything downstream (the ticket, `runConnect`, `planProvision`)
+ * sees the typed request and nothing else, so a field that the contract accepts
+ * but that is never copied here is invisible in three layers — which is exactly
+ * how `reuseLauncherPath` reached QA as
+ * `reuse-launcher-missing: no dsh launcher was selected` on alpha51. Keep the
+ * regression test (`tests/connect-request.test.ts`) in step with this function.
+ */
+export function connectRequestFrom(body: Record<string, unknown>): ConnectRequest {
+  const kindRaw = optionalString(body, 'kind') ?? 'ssh'
+  if (kindRaw !== 'ssh' && kindRaw !== 'wsl') throw new RouteError('bad-request', '"kind" must be "ssh" or "wsl"', 400)
+  const wslDistro = optionalString(body, 'wslDistro')
+  const wslUser = optionalString(body, 'wslUser')
+  if (kindRaw === 'wsl' && wslDistro === undefined) {
+    throw new RouteError('bad-request', '"wslDistro" is required for a WSL connection', 400)
+  }
+  const packageSource = optionalString(body, 'packageSource')
+  if (packageSource !== undefined && !(PACKAGE_SOURCES as readonly string[]).includes(packageSource)) {
+    throw new RouteError('bad-request', `"packageSource" must be ${PACKAGE_SOURCES.join('|')}`, 400)
+  }
+  // A reuse connect without a launcher can only fail later, as
+  // `reuse-launcher-missing` after the transport is already open; the wire
+  // contract makes it a 400 here instead (api-contract §3.1).
+  const reuseLauncherPath = optionalString(body, 'reuseLauncherPath')
+  if (packageSource === 'reuse' && reuseLauncherPath === undefined) {
+    throw new RouteError('bad-request', '"reuseLauncherPath" is required when "packageSource" is "reuse"', 400)
+  }
+  const remote = remoteFrom(body)
+  const shared = {
+    label: requireString(body, 'label'),
+    ...(packageSource === undefined ? {} : { packageSource: packageSource as ConnectRequest['packageSource'] }),
+    ...(reuseLauncherPath === undefined ? {} : { reuseLauncherPath }),
+    ...(remote === undefined ? {} : { remote }),
+  }
+  const request: ConnectRequest = kindRaw === 'wsl'
+    ? {
+        ...shared,
+        kind: 'wsl',
+        // A distro has no host/port/credentials; the transport is local.
+        host: wslDistro as string,
+        port: 22,
+        username: wslUser ?? 'default',
+        authKind: 'agent',
+        wslDistro: wslDistro as string,
+        ...(wslUser === undefined ? {} : { wslUser }),
+      }
+    : {
+        ...shared,
+        kind: 'ssh',
+        host: requireString(body, 'host'),
+        port: typeof body.port === 'number' ? body.port : Number.parseInt(requireString(body, 'port'), 10),
+        username: requireString(body, 'username'),
+        authKind: (optionalString(body, 'authKind') ?? 'agent') as ConnectRequest['authKind'],
+        ...(optionalString(body, 'secret') === undefined ? {} : { secret: optionalString(body, 'secret') as string }),
+        ...(optionalString(body, 'privateKeyPath') === undefined ? {} : { privateKeyPath: optionalString(body, 'privateKeyPath') as string }),
+        ...(optionalString(body, 'sshConfigAlias') === undefined ? {} : { sshConfigAlias: optionalString(body, 'sshConfigAlias') as string }),
+        ...(optionalString(body, 'hostKeyFingerprint') === undefined ? {} : { hostKeyFingerprint: optionalString(body, 'hostKeyFingerprint') as string }),
+      }
+  if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65_535) {
+    throw new RouteError('bad-request', '"port" must be between 1 and 65535', 400)
+  }
+  return request
+}
+
 /**
  * Local trust fence.
  *
@@ -150,6 +287,41 @@ function trustedRequest(ctx: Context, req: IncomingMessage): boolean {
     }
   }
   return true
+}
+
+/**
+ * The `remoteWorkspaces` service object the realm resolves: a typed facade over
+ * one {@link RemoteWorkspaces}.
+ *
+ * The **return type is load-bearing**, not documentation. `ctx.provide` takes an
+ * untyped object, so an object literal here silently drifts from
+ * `RemoteWorkspaceService`: on alpha52 `remoteClient`/`releaseRemoteClient` were
+ * missing from the literal, the realm's `start()` blew up with
+ * `workspaces.remoteClient is not a function`, and *every tool call in a remote
+ * session* failed while the session itself looked healthy (D4). Typing the
+ * factory's return makes a missing member a `tsc` error at the assembly point;
+ * `tests/remote-workspace-service.test.ts` additionally asserts
+ * "interface member ⊆ facade key" at runtime and that each key forwards.
+ * @param workspaces - the host-plane service instance owned by this row.
+ */
+export function remoteWorkspaceService(workspaces: RemoteWorkspaces): RemoteWorkspaceService {
+  return {
+    connectChannel: (targetId: string, signal?: AbortSignal) => workspaces.connectChannel(targetId, signal),
+    // The realm's `ctx.ssh` (connection/index.ts) reaches the target's **single**
+    // RPC client through these two: pinning it for a live session and dropping
+    // the pin on dispose. Without them the realm can never attach.
+    remoteClient: (targetId: string) => workspaces.remoteClient(targetId),
+    releaseRemoteClient: (targetId: string) => workspaces.releaseRemoteClient(targetId),
+    expectedDigest: (targetId: string) => workspaces.expectedDigest(targetId),
+    getPackagePolicy: () => workspaces.getPackagePolicy(),
+    pathAliases: (targetId: string) => workspaces.pathAliases(targetId),
+    setPackagePolicy: (settings: PackagePolicySettings) => workspaces.setPackagePolicy(settings),
+    routeForCwd: (cwd: string | undefined) => workspaces.routeForCwd(cwd),
+    stubForWorkspace: (workspaceId: string) => workspaces.stubForWorkspace(workspaceId),
+    locateRemoteSession: (sessionId: string) => workspaces.locateRemoteSession(sessionId),
+    sessionRequest: <T,>(targetId: string, method: string, params: unknown, signal?: AbortSignal) =>
+      workspaces.sessionRequest<T>(targetId, method, params, signal),
+  }
 }
 
 /** Register the plugin's routes and return a disposer. */
@@ -192,7 +364,8 @@ async function handleApi(ctx: Context, workspaces: RemoteWorkspaces, req: Incomi
     }
     const message = error instanceof Error ? error.message : String(error)
     const code = (error as { code?: string }).code
-    writeJson(res, 500, { ok: false, error: { code: typeof code === 'string' ? code : 'internal', message: scrubSecrets(message) } })
+    const status = typeof code === 'string' ? STATUS_BY_CODE[code] : undefined
+    writeJson(res, status ?? 500, { ok: false, error: { code: typeof code === 'string' ? code : 'internal', message: scrubSecrets(message) } })
   }
 }
 
@@ -272,52 +445,76 @@ async function dispatchApi(
     case 'connect/start': {
       const kindRaw = optionalString(body, 'kind') ?? 'ssh'
       if (kindRaw !== 'ssh' && kindRaw !== 'wsl') throw new RouteError('bad-request', '"kind" must be "ssh" or "wsl"', 400)
+      // The platform gate runs before field validation, as it always has: a
+      // forged `kind: 'wsl'` off Windows is `400 unsupported`, not a field error.
       if (!methodAvailable(kindRaw, process.platform)) {
         throw new RouteError('unsupported', `the "${kindRaw}" connection method is not available on ${process.platform}`, 400)
       }
-      const wslDistro = optionalString(body, 'wslDistro')
-      const wslUser = optionalString(body, 'wslUser')
-      if (kindRaw === 'wsl' && wslDistro === undefined) {
-        throw new RouteError('bad-request', '"wslDistro" is required for a WSL connection', 400)
-      }
-      const shared = {
-        label: requireString(body, 'label'),
-        ...(optionalString(body, 'packageSource') === undefined ? {} : { packageSource: optionalString(body, 'packageSource') as ConnectRequest['packageSource'] }),
-        ...(body.remote === undefined || typeof body.remote !== 'object' ? {} : { remote: body.remote as ConnectRequest['remote'] }),
-      }
-      const request: ConnectRequest = kindRaw === 'wsl'
-        ? {
-            ...shared,
-            kind: 'wsl',
-            // A distro has no host/port/credentials; the transport is local.
-            host: wslDistro as string,
-            port: 22,
-            username: wslUser ?? 'default',
-            authKind: 'agent',
-            wslDistro: wslDistro as string,
-            ...(wslUser === undefined ? {} : { wslUser }),
-          }
-        : {
-            ...shared,
-            kind: 'ssh',
-            host: requireString(body, 'host'),
-            port: typeof body.port === 'number' ? body.port : Number.parseInt(requireString(body, 'port'), 10),
-            username: requireString(body, 'username'),
-            authKind: (optionalString(body, 'authKind') ?? 'agent') as ConnectRequest['authKind'],
-            ...(optionalString(body, 'secret') === undefined ? {} : { secret: optionalString(body, 'secret') as string }),
-            ...(optionalString(body, 'privateKeyPath') === undefined ? {} : { privateKeyPath: optionalString(body, 'privateKeyPath') as string }),
-            ...(optionalString(body, 'sshConfigAlias') === undefined ? {} : { sshConfigAlias: optionalString(body, 'sshConfigAlias') as string }),
-            ...(optionalString(body, 'hostKeyFingerprint') === undefined ? {} : { hostKeyFingerprint: optionalString(body, 'hostKeyFingerprint') as string }),
-          }
-      if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65_535) {
-        throw new RouteError('bad-request', '"port" must be between 1 and 65535', 400)
-      }
-      return { ticket: workspaces.beginConnect(request) }
+      // Body → request mapping lives in `connectRequestFrom` (and is unit-tested):
+      // this route must not pick fields apart itself, which is how
+      // `reuseLauncherPath` got dropped on alpha51.
+      return { ticket: workspaces.beginConnect(connectRequestFrom(body)) }
     }
     case 'hostkey-confirm': {
       const ticket = requireString(body, 'ticket')
       const fingerprint = requireString(body, 'fingerprint')
       return { accepted: workspaces.confirmHostKey(ticket, fingerprint) }
+    }
+    case 'dsh-scan': {
+      // Read-only reconnaissance for the wizard's 复用 card: architecture + local
+      // cache state + the host's dsh launchers. Same validation rules as
+      // `connect/start` (api-contract §2.1), including the platform gate — a
+      // forged `kind: 'wsl'` off Windows is refused here, not shadowed by a
+      // confusing transport error.
+      const kindRaw = optionalString(body, 'kind') ?? 'ssh'
+      if (kindRaw !== 'ssh' && kindRaw !== 'wsl') throw new RouteError('bad-request', '"kind" must be "ssh" or "wsl"', 400)
+      if (!methodAvailable(kindRaw, process.platform)) {
+        throw new RouteError('unsupported', `the "${kindRaw}" connection method is not available on ${process.platform}`, 400)
+      }
+      const wsl = kindRaw === 'wsl'
+      const wslDistro = optionalString(body, 'wslDistro')
+      if (wsl && wslDistro === undefined) throw new RouteError('bad-request', '"wslDistro" is required for a WSL scan', 400)
+      const host = wsl ? optionalString(body, 'host') : requireString(body, 'host')
+      const username = wsl ? optionalString(body, 'username') : requireString(body, 'username')
+      const port = wsl ? 22 : typeof body.port === 'number' ? body.port : Number.parseInt(requireString(body, 'port'), 10)
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+        throw new RouteError('bad-request', '"port" must be between 1 and 65535', 400)
+      }
+      const authKind = optionalString(body, 'authKind') ?? 'agent'
+      if (authKind !== 'password' && authKind !== 'privateKey' && authKind !== 'agent') {
+        throw new RouteError('bad-request', '"authKind" must be password|privateKey|agent', 400)
+      }
+      const secret = optionalString(body, 'secret')
+      const privateKeyPath = optionalString(body, 'privateKeyPath')
+      const sshConfigAlias = optionalString(body, 'sshConfigAlias')
+      const hostKeyFingerprint = optionalString(body, 'hostKeyFingerprint')
+      const profile = optionalString(body, 'profile')
+      const dshHome = optionalString(body, 'dshHome')
+      const wslUser = optionalString(body, 'wslUser')
+      return await workspaces.scanDsh({
+        kind: wsl ? 'wsl' : 'ssh',
+        port,
+        authKind,
+        ...(host === undefined ? {} : { host }),
+        ...(username === undefined ? {} : { username }),
+        // The secret never leaves this body: it is not echoed, not stored and
+        // every failure message is scrubbed inside the service.
+        ...(secret === undefined ? {} : { secret }),
+        ...(privateKeyPath === undefined ? {} : { privateKeyPath }),
+        ...(sshConfigAlias === undefined ? {} : { sshConfigAlias }),
+        ...(hostKeyFingerprint === undefined ? {} : { hostKeyFingerprint }),
+        ...(wslDistro === undefined ? {} : { wslDistro }),
+        ...(wslUser === undefined ? {} : { wslUser }),
+        ...(profile === undefined ? {} : { profile }),
+        ...(dshHome === undefined ? {} : { dshHome }),
+      })
+    }
+    case 'workspace-rename': {
+      // Only the plugin's own title moves; the remote directory is never renamed
+      // (architecture A7). The title is normalized in the service, so an
+      // all-whitespace value is a 400 from there.
+      const workspace = await workspaces.renameWorkspace(requireString(body, 'workspaceId'), requireString(body, 'title'))
+      return { workspace }
     }
     case 'package-policy-get':
       return { policy: workspaces.getPackagePolicy() }
@@ -492,18 +689,7 @@ export function apply(ctx: Context, config: Config): void {
     leaseMs: config.leaseMs,
     maxProcesses: config.maxProcesses,
   })
-  ctx.provide('remoteWorkspaces', {
-    connectChannel: (targetId: string, signal?: AbortSignal) => workspaces.connectChannel(targetId, signal),
-    expectedDigest: (targetId: string) => workspaces.expectedDigest(targetId),
-    getPackagePolicy: () => workspaces.getPackagePolicy(),
-    pathAliases: (targetId: string) => workspaces.pathAliases(targetId),
-    setPackagePolicy: (settings: PackagePolicySettings) => workspaces.setPackagePolicy(settings),
-    routeForCwd: (cwd: string | undefined) => workspaces.routeForCwd(cwd),
-    stubForWorkspace: (workspaceId: string) => workspaces.stubForWorkspace(workspaceId),
-    locateRemoteSession: (sessionId: string) => workspaces.locateRemoteSession(sessionId),
-    sessionRequest: <T,>(targetId: string, method: string, params: unknown, signal?: AbortSignal) =>
-      workspaces.sessionRequest<T>(targetId, method, params, signal),
-  })
+  ctx.provide('remoteWorkspaces', remoteWorkspaceService(workspaces))
   // The routing persistence (deviation d13): the official JSONL row is
   // disabled by this bundle's patch, freeing the service name; providing here
   // — in the root tree every consumer (agent loop, session controller,

@@ -5,9 +5,9 @@
  * disposes it with the plugin fiber:
  *
  *  - `main` — the panel page: 新建连接 at the top-left, and the whole flow
- *    inline (choose a method → fill the configuration → watch the live
- *    progress stream including the explicit host-key confirmation → pick the
- *    remote directory).
+ *    inline (choose a method → fill the configuration → choose how the remote
+ *    side is provisioned, watch the live progress stream including the explicit
+ *    host-key confirmation).
  *
  * There is deliberately **no `sidebar.panellist` row any more**: the
  * 「远程工作区」 section in the left sidebar (mounted by {@link mountSidebarSection})

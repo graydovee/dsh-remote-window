@@ -117,6 +117,57 @@ export function EmptyState(props: { text: string }): ReactElement | null {
 }
 
 /**
+ * Whether this component is **the** live instance of its kind.
+ *
+ * `RemoteTree` — which hosts this plugin's dialogs — is mounted twice: once by
+ * the sidebar section and once by the plugin panel's list body. Both are live at
+ * the same time, so an unguarded dialog would render two stacked modals for one
+ * request. Same rule as {@link NoticeToastHost} (the first host owns the
+ * surface), but keyed per kind so the four dialogs do not fight each other.
+ *
+ * Ownership is claimed in an effect rather than in a `useState` initializer:
+ * a counter in an initializer double-counts under StrictMode's double-invoke and
+ * would leave every instance a non-owner.
+ * @param kind - a stable name per dialog, e.g. `'add-workspace'`.
+ * @returns true while this instance owns the dialog surface.
+ */
+export function useSingleHost(kind: string): boolean {
+  const [token] = useState<object>(() => ({}))
+  const [owned, setOwned] = useState(false)
+  useEffect(() => {
+    const claim = (): void => {
+      if (owners.has(kind)) return
+      owners.set(kind, token)
+      setOwned(true)
+    }
+    claim()
+    // Who else is waiting for this surface: when the owner's tree unmounts (the
+    // panel closing, say) the surface must pass on, or the dialog would vanish
+    // while its request is still pending.
+    const contenders = waiters.get(kind) ?? new Set<() => void>()
+    waiters.set(kind, contenders)
+    contenders.add(claim)
+    return () => {
+      contenders.delete(claim)
+      if (owners.get(kind) !== token) return
+      owners.delete(kind)
+      setOwned(false)
+      for (const next of contenders) {
+        next()
+        break
+      }
+    }
+  }, [kind, token])
+  return owned
+}
+
+/** Current owner token per dialog kind. */
+const owners = new Map<string, object>()
+
+/** Claim functions of every mounted instance, per dialog kind. */
+const waiters = new Map<string, Set<() => void>>()
+
+/**
  * The single toast host for this plugin.
  *
  * The sidebar section and the plugin panel are separate surface trees, and a

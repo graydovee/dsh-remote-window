@@ -16,18 +16,28 @@ import {
   api, openConnectStream, toWireError,
 } from './api.ts'
 import type {
-  AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, DirEntry, ListDirResult,
-  PublicTarget, RemoteRegistryWorkspace, RemoteRuntimeInput, RemoteSession, RemoteWorkspace,
-  SshAlias, WireError, WslDistro,
+  AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, ConnectionMode, DirEntry, DshCandidate,
+  DshScanRequest, ListDirResult, PublicTarget, RemoteRegistryWorkspace, RemoteRuntimeInput,
+  RemoteRuntimeProbe, RemoteSession, RemoteWorkspace, ServerPackageState, SshAlias, WireError,
+  WslDistro,
 } from './api.ts'
 import type { ClientContext } from './context.ts'
+import { draftFromAlias } from './alias-prefill.ts'
 import { methodAvailable } from '../targets/methods.ts'
 import type { ConnectionMethod } from '../targets/methods.ts'
 import { t } from './locales.ts'
 import type { LocaleKey } from './locales.ts'
 
-/** Which wizard step is showing. */
-export type WizardStep = 'method' | 'config' | 'connecting' | 'directory'
+/**
+ * Which wizard step is showing.
+ *
+ * Three steps, not four: the remote-directory browser is no longer a wizard
+ * step — it is the default tab of the 添加工作区 dialog (`directory-picker.tsx`),
+ * which is reachable from a connection row instead of from a just-finished
+ * connect. Step 3 therefore owns *both* the connection-method choice and the
+ * progress/log/host-key surface it drives.
+ */
+export type WizardStep = 'method' | 'config' | 'connect'
 
 /** Which surface the overlay shows. */
 export type WizardView = 'list' | 'wizard'
@@ -41,7 +51,7 @@ export type { ConnectionMethod }
 /** The four progress rows, in server order. */
 export const CONNECT_STEPS: readonly ConnectStep[] = ['connect', 'probe', 'runtime', 'upload', 'start']
 
-/** Editable connection draft (step 2). */
+/** Editable connection draft (step 2) plus the step-3 choice. */
 export interface ConnectDraft {
   label: string
   /** `ssh` fields; unused (and not rendered) for a `wsl` method. */
@@ -60,8 +70,18 @@ export interface ConnectDraft {
   dshCommand: string
   profile: string
   dshHome: string
-  /** Server-package source for this target; '' = follow the global policy. */
-  packageSource: '' | 'download' | 'upload'
+  /**
+   * Step 3's three-way choice; `''` = nothing chosen yet (连接 stays disabled).
+   *
+   * This is the only package-source control in the wizard: the step-2 advanced
+   * section used to carry a second `packageSource` selector, which could say
+   * "download" while step 3 said "upload". The wire field is still
+   * `ConnectRequest.packageSource` — {@link startConnect} maps this choice onto
+   * it (architecture A3: no second, parallel mode concept).
+   */
+  connectionMode: '' | ConnectionMode
+  /** The launcher picked from the scan's candidates; required for `reuse`. */
+  reuseLauncherPath: string
 }
 
 /** One discovery pass over the installed WSL distributions. */
@@ -69,6 +89,25 @@ export interface WslProbeState {
   status: 'idle' | 'loading' | 'ready' | 'unavailable'
   distros: WslDistro[]
   /** Scrubbed reason from `wsl.exe` (e.g. WSL not enabled); shown inline. */
+  error?: string
+}
+
+/**
+ * The read-only pre-connection scan (`/api/dsh-scan`).
+ *
+ * `status: 'idle'` with a `fingerprint` is the *host-key pending* state: the
+ * scan stopped before it could read anything and the same fingerprint panel the
+ * connect flow uses is showing (`scanDsh` re-runs with that fingerprint). The
+ * four states the UI must render are therefore scanning / empty / candidates /
+ * host-key, and they are all derivable from this record.
+ */
+export interface DshScanState {
+  status: 'idle' | 'scanning' | 'ready' | 'unavailable'
+  candidates: DshCandidate[]
+  probe?: RemoteRuntimeProbe
+  package?: ServerPackageState
+  /** Set while the host answered `stage: 'host-key'`; cleared by a good scan. */
+  fingerprint?: string
   error?: string
 }
 
@@ -97,8 +136,6 @@ export interface ConnectLogLine {
 /** Connection attempt state (step 3). */
 export interface ConnectState {
   phase: 'idle' | 'running' | 'awaiting-hostkey' | 'failed' | 'succeeded'
-  /** Which flow owns this attempt: the wizard, or a directory-open reconnect. */
-  origin: 'wizard' | 'directory'
   ticket?: string
   steps: Record<ConnectStep, StepState>
   /** Live connection log, oldest first, capped. */
@@ -108,8 +145,14 @@ export interface ConnectState {
   error?: WireError
 }
 
-/** Remote directory browser state (step 4). */
+/** Remote directory browser state (the 添加工作区 dialog's default tab). */
 export interface DirectoryState {
+  /**
+   * Whether the browse dialog is open. This used to be implied by the wizard
+   * being on its `directory` step; the dialog owns its own lifetime now, so the
+   * flag lives with the state it gates.
+   */
+  open: boolean
   targetId?: string
   listing?: ListDirResult
   loading: boolean
@@ -152,9 +195,17 @@ export interface ConfirmState {
 export interface AddWorkspaceState {
   targetId: string
   targetLabel: string
+  /** Which tab of the dialog is showing; the browse tab is the default. */
+  tab: 'browse' | 'registry'
   loading: boolean
   items: RemoteRegistryWorkspace[]
   error?: WireError
+}
+
+/** The 重命名工作区 dialog's pending request. */
+export interface WorkspaceRenameState {
+  readonly workspace: RemoteWorkspace
+  readonly title: string
 }
 
 /** The complete rendered snapshot. */
@@ -173,6 +224,8 @@ export interface AppState {
   platform: string
   /** WSL distribution discovery, driven by the wizard's WSL config step. */
   wslProbe: WslProbeState
+  /** The step-3 read-only scan: remote architecture, package state, dsh candidates. */
+  dshScan: DshScanState
   targets: PublicTarget[]
   workspaces: RemoteWorkspace[]
   pluginVersion: string
@@ -193,6 +246,8 @@ export interface AppState {
   currentSessionId?: string
   /** The rename dialog's target, when it is open. */
   renameTarget?: { workspace: RemoteWorkspace; session: RemoteSession; title: string }
+  /** The 重命名工作区 dialog's target, when it is open. */
+  renameWorkspace?: WorkspaceRenameState
   /** A destructive row verb waiting for confirmation, when one is open. */
   confirm?: ConfirmState
   error?: WireError
@@ -258,12 +313,23 @@ function emptySteps(): Record<ConnectStep, StepState> {
 }
 
 function idleConnect(): ConnectState {
-  return { phase: 'idle', origin: 'wizard', steps: emptySteps(), log: [] }
+  return { phase: 'idle', steps: emptySteps(), log: [] }
+}
+
+function emptyDshScan(): DshScanState {
+  return { status: 'idle', candidates: [] }
 }
 
 function emptyDirectory(): DirectoryState {
-  return { loading: false, creating: false, newDirName: '', title: '', titleTouched: false, pathInput: '',
-  connecting: false,
+  return {
+    open: false,
+    loading: false,
+    creating: false,
+    newDirName: '',
+    title: '',
+    titleTouched: false,
+    pathInput: '',
+    connecting: false,
   }
 }
 
@@ -282,7 +348,8 @@ function emptyDraft(): ConnectDraft {
     dshCommand: '',
     profile: '',
     dshHome: '',
-    packageSource: '',
+    connectionMode: '',
+    reuseLauncherPath: '',
   }
 }
 
@@ -300,6 +367,7 @@ function initialState(): AppState {
     prefilling: false,
     platform: '',
     wslProbe: { status: 'idle', distros: [] },
+    dshScan: emptyDshScan(),
     targets: [],
     workspaces: [],
     pluginVersion: '',
@@ -380,7 +448,7 @@ export function useRemoteItemCount(): number {
  * @param current - the snapshot to inspect.
  */
 export function isConnectBlocking(current: AppState): boolean {
-  if (current.view !== 'wizard' || current.step !== 'connecting') return false
+  if (current.view !== 'wizard' || current.step !== 'connect') return false
   return current.connect.phase === 'running' || current.connect.phase === 'awaiting-hostkey'
 }
 
@@ -484,23 +552,244 @@ export function bindClientContext(ctx: ClientContext): void {
 }
 
 /**
+ * Sessions this plugin has put on the shell's screen, mapped to the target each
+ * one belongs to.
+ *
+ * A disconnect destroys the *remote* session, and the shell has no idea: it
+ * keeps the session selected (`dsh.sessions.current`), keeps a `mainView`
+ * retention and keeps the right-bar view bound to it. Answering "is the shell's
+ * current conversation one of ours for this target?" is what lets us deselect
+ * before tearing the session down (see {@link releaseShellSelection}).
+ */
+const revealedSessions = new Map<string, string>()
+
+/** The shell service fields this file reads / calls (see context.ts). */
+interface ShellWorkspaceService {
+  openSession?(id: string): void
+  /** Releases the selected conversation (ui-workspace `clearMain`). */
+  clearMain?(): void
+  /** Persisted selection snapshot: `dsh.sessions.current`. */
+  selection?: { getSnapshot?(): { sessionId?: unknown } }
+}
+
+function shellWorkspace(): ShellWorkspaceService | undefined {
+  try {
+    return clientContext?.get('uiWorkspace') as ShellWorkspaceService | undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The session the shell currently shows, read through the official service.
+ * @returns the session id, or undefined when nothing is selected.
+ */
+function shellSelectedSessionId(): string | undefined {
+  try {
+    const selected = shellWorkspace()?.selection?.getSnapshot?.()?.sessionId
+    if (typeof selected === 'string' && selected !== '') return selected
+  } catch {
+    // Fall through to the retention scan: a shape change must not disable the
+    // deselect guard silently.
+  }
+  return mainViewRetainedSessionId()
+}
+
+/**
+ * Fallback for {@link shellSelectedSessionId}: the row carrying a `mainView`
+ * retention.
+ *
+ * That is the same predicate the shell's own `mainSessionId()` uses over the
+ * Session list snapshot, i.e. a published `retainedBy.mainView` counter rather
+ * than a private field.
+ * @returns the selected session id, or undefined when there is none.
+ */
+function mainViewRetainedSessionId(): string | undefined {
+  try {
+    const sessions = clientContext?.get('sessions') as {
+      list?: { getSnapshot?(): { byId?: Record<string, { retainedBy?: { mainView?: number } }> } }
+    } | undefined
+    const byId = sessions?.list?.getSnapshot?.()?.byId
+    if (byId !== undefined) {
+      for (const [id, row] of Object.entries(byId)) {
+        if ((row?.retainedBy?.mainView ?? 0) > 0) return id
+      }
+    }
+  } catch {
+    // Nothing to do: without a readable selection the guard simply stays off.
+  }
+  return undefined
+}
+
+/**
+ * Drop the shell's selected conversation — the official deselect hop.
+ *
+ * `uiWorkspace.clearMain()` is exactly what the shell itself runs when the open
+ * session is archived (`archiveSession` → `clearMain`): it releases the
+ * `mainView` retention, clears the persisted selection and retires the right-bar
+ * view bound to that session.
+ */
+function clearShellSelection(): void {
+  try {
+    const workspace = shellWorkspace()
+    if (workspace !== undefined && typeof workspace.clearMain === 'function') workspace.clearMain()
+  } catch (error) {
+    console.error('[dsh-remote-workspace] clearing the shell selection failed', error)
+  }
+}
+
+/**
+ * Deselect the shell's conversation when it shows one of *this* target's sessions.
+ *
+ * **Why this exists (measured in alpha52, white-page defect):** 断开 destroys the
+ * remote session, but nothing told the shell to stop showing it. The session
+ * record stops being live, and the next render of a session-scoped slot runs
+ * `ui-session.bindingSource(reference)` → `reference.binding`, which throws
+ * `Session reference "session-…" is released`; with no error boundary React then
+ * unmounts the entire app (blank `body`, no rows, only a reload recovers).
+ * The same stale id also trips `uiConversation.binding: unknown session` on the
+ * next locale refresh. Deselecting *before* the teardown removes both: the
+ * `mainView` reference is released while it is still valid, and the right-bar
+ * view for that session is pruned with the selection.
+ *
+ * Only a session this plugin revealed for this target is deselected — the
+ * user's own local conversation is never touched.
+ * @param targetId - the target whose remote sessions are about to go away.
+ */
+function releaseShellSelection(targetId: string): void {
+  const selected = shellSelectedSessionId()
+  if (selected === undefined) return
+  const known = revealedSessions.get(selected)
+  const mine = known === undefined ? targetOwnsSession(targetId, selected) : known === targetId
+  if (!mine) return
+  clearShellSelection()
+  revealedSessions.delete(selected)
+  if (state.currentSessionId === selected) commit({ currentSessionId: undefined })
+}
+
+/**
+ * Whether one session id belongs to this target according to our own records.
+ *
+ * The revealed map is module state and a hot reload loses it, while the shell
+ * keeps its selection; the workspace records (and the cached remote session
+ * lists they hang off) do not. A session id can only appear under one target,
+ * so a match cannot be a false positive.
+ * @param targetId - the target being torn down.
+ * @param sessionId - the shell's selected session.
+ * @returns true when the id is one of this target's remote sessions.
+ */
+function targetOwnsSession(targetId: string, sessionId: string): boolean {
+  for (const workspace of state.workspaces) {
+    if (workspace.targetId !== targetId) continue
+    if (workspace.sessionId === sessionId) return true
+    if (state.sessions[workspace.id]?.items.some(item => item.id === sessionId) === true) return true
+  }
+  return false
+}
+
+/**
  * Ask the shell to bring a just-opened session to the front. The shell owns
  * session navigation: `uiWorkspace.openSession` is how its own UI switches
  * conversations; without this the workspace opens silently and the user stays
  * on the plugin panel with only a toast.
+ *
+ * **Why it waits (alpha55 defect):** `uiWorkspace.openSession` → `replaceMain` →
+ * `sessions.retain(id)`, and the shell's client catalog rejects an id it has not
+ * seen yet with `sessions.retain: unknown session <id>` (thrown from the
+ * SessionManager's `resolveTarget`). A remote session is in that catalog only
+ * because the *host* forwarded its "session added" summary — a frame that is not
+ * ordered before the `POST /api/open-session` response. Before the first
+ * disconnect the row was already there, so the reveal happened to win; right
+ * after a reconnect (our teardown had dropped the host session, so the click's
+ * resume re-creates it) the reveal could beat the frame, the throw was
+ * swallowed, and the click visibly did nothing at all.
+ * @param sessionId - the session to show.
+ * @param targetId - the target owning it, remembered so a disconnect can
+ *   deselect it ({@link releaseShellSelection}).
  */
-function revealSession(sessionId: string): void {
+async function revealSession(sessionId: string, targetId?: string): Promise<void> {
+  if (targetId !== undefined) revealedSessions.set(sessionId, targetId)
+  const workspace = shellWorkspace()
+  if (workspace === undefined || typeof workspace.openSession !== 'function') return
+  await waitForShellSession(sessionId)
   try {
-    const workspace = clientContext?.get('uiWorkspace') as { openSession?(id: string): void } | undefined
-    if (workspace !== undefined && typeof workspace.openSession === 'function') workspace.openSession(sessionId)
+    workspace.openSession(sessionId)
   } catch (error) {
+    // Never swallow: a failed reveal leaves the main column on
+    // 选择一个工作区开始 with no explanation anywhere (the plugin's error banner
+    // lives in a panel that is not showing) — exactly the silent dead click.
     console.error('[dsh-remote-workspace] revealSession failed', error)
+    notifyError(t('tree.session.revealFailed', { message: error instanceof Error ? error.message : String(error) }))
+  }
+}
+
+/** How long the shell's client catalog may take to learn a just-resumed session. */
+const REVEAL_WAIT_MS = 4_000
+
+/** Poll interval while waiting for that catalog row. */
+const REVEAL_POLL_MS = 250
+
+/** The shell's client `sessions` service, as this file reads it. */
+interface ShellSessionsService {
+  list?: { getSnapshot?(): { byId?: Record<string, unknown> } }
+  /** Authoritative baseline re-pull (the shell's own public method). */
+  refresh?(): Promise<unknown>
+}
+
+function shellSessions(): ShellSessionsService | undefined {
+  try {
+    return clientContext?.get('sessions') as ShellSessionsService | undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Whether the shell's client catalog knows this session id.
+ *
+ * That is exactly the observable `sessions.retain(id)` checks before throwing
+ * `unknown session`, so the reveal is safe once it reads true.
+ * @param sessions - the shell's sessions service.
+ * @param sessionId - the session about to be revealed.
+ * @returns true when the id has a row in the shell's session list snapshot.
+ */
+function shellSessionKnown(sessions: ShellSessionsService, sessionId: string): boolean {
+  try {
+    const byId = sessions.list?.getSnapshot?.()?.byId
+    return byId !== undefined && byId[sessionId] !== undefined
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Wait (bounded) until the shell can select this session.
+ *
+ * Returns immediately when the service is not reachable at all: the wait must
+ * only ever postpone a reveal it can actually help, never delay every click by
+ * the timeout.
+ * @param sessionId - the session about to be revealed.
+ */
+async function waitForShellSession(sessionId: string): Promise<void> {
+  const sessions = shellSessions()
+  if (sessions === undefined) return
+  if (shellSessionKnown(sessions, sessionId)) return
+  // The forwarded "session added" frame can be late; ask for one authoritative
+  // baseline pull as well as polling the snapshot it feeds.
+  try {
+    if (typeof sessions.refresh === 'function') void Promise.resolve(sessions.refresh()).catch(() => {})
+  } catch {
+    // Polling below is enough.
+  }
+  const deadline = Date.now() + REVEAL_WAIT_MS
+  while (!shellSessionKnown(sessions, sessionId) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, REVEAL_POLL_MS))
   }
 }
 
 /** Open one session in the shell's main column (the official navigation hop). */
-function revealSessionId(sessionId: string): void {
-  revealSession(sessionId)
+function revealSessionId(sessionId: string, targetId?: string): void {
+  void revealSession(sessionId, targetId)
 }
 
 /**
@@ -651,6 +940,9 @@ function settleRename(): void {
 async function refreshState(): Promise<void> {
   const gen = generation
   const firstLoad = !state.stateLoaded
+  // Compared after the commit, so it has to be captured here: the loop below
+  // needs "was this target ready before this refresh?".
+  const before = state.targets
   commit({ stateLoading: true })
   try {
     const value = await api.state()
@@ -673,7 +965,13 @@ async function refreshState(): Promise<void> {
     // The status is computed from live channels, so this also folds a subtree
     // whose channel died in the background — not only an explicit 断开.
     for (const target of value.targets) {
-      if (target.status !== 'ready') collapseTarget(target.id)
+      if (target.status !== 'ready') {
+        collapseTarget(target.id)
+        // A channel that died under an open conversation takes its sessions with
+        // it: deselect before the shell renders a released reference (same
+        // white-page chain as stopTarget — see releaseShellSelection).
+        if (before.find(candidate => candidate.id === target.id)?.status === 'ready') releaseShellSelection(target.id)
+      }
     }
   } catch (error) {
     if (gen !== generation) return
@@ -716,7 +1014,17 @@ function closeOverlay(): void {
   generation += 1
   stopStream()
   setPendingSecret(undefined)
-  commit({ open: false, view: 'list', error: undefined, notice: undefined, prefilling: false, pending: false, addWorkspace: undefined })
+  commit({
+    open: false,
+    view: 'list',
+    error: undefined,
+    notice: undefined,
+    prefilling: false,
+    pending: false,
+    addWorkspace: undefined,
+    renameWorkspace: undefined,
+    directory: emptyDirectory(),
+  })
 }
 
 /**
@@ -750,35 +1058,36 @@ function newConnection(): void {
     pending: false,
     stateLoading: false,
     addWorkspace: undefined,
+    renameWorkspace: undefined,
     connect: idleConnect(),
+    dshScan: emptyDshScan(),
     directory: emptyDirectory(),
   })
 }
 
 /** Switch the wizard to a step, loading that step's data. */
 function setStep(step: WizardStep): void {
-  // 连接中 is a *run state*, not a place to browse: entering it without a live
-  // attempt would strand the wizard on a retry button wired to a stale draft.
-  if (step === 'connecting' && state.connect.phase !== 'running' && state.connect.phase !== 'awaiting-hostkey') return
   commit({ step, error: undefined })
   if (step === 'config') {
     if (state.method === 'wsl') void loadWslDistros()
     else void loadAliases()
+    return
   }
-}
-
-/** Return to the saved-items list from any wizard step. */
-function showList(): void {
-  generation += 1
-  stopStream()
-  commit({ view: 'list', step: 'method', error: undefined, notice: undefined, prefilling: false, pending: false })
-  void refreshState()
+  if (step === 'connect') {
+    // Step 3 opens with what the scan knows: the reuse candidate list and the
+    // upload card's "which package does the remote need" line both come from it,
+    // for either method. The scan runs on this user action only (hard
+    // constraint 10: never from render), and never twice for one identity.
+    if (state.dshScan.status === 'idle' && state.dshScan.fingerprint === undefined) void scanDsh()
+  }
 }
 
 function setMethod(method: ConnectionMethod): void {
   // Hidden methods cannot be selected even if some stale node still calls this.
   if (!methodAvailable(method, state.platform)) return
-  commit({ method })
+  // The scan is a fact about one identity on one method: switching method makes
+  // it stale, and a stale candidate list is worse than none.
+  commit({ method, dshScan: emptyDshScan() })
   if (method === 'wsl') void loadWslDistros()
 }
 
@@ -826,12 +1135,28 @@ function patchConfig(patch: Partial<ConnectDraft>): void {
   // this connection (its ProxyJump/IdentityFile may not apply), so the marker
   // is dropped; picking the alias again re-establishes it.
   const clearsAlias = patch.host !== undefined || patch.port !== undefined || patch.username !== undefined
+  // The scan describes one identity (and one remote DSH_HOME): any edit that
+  // changes who/where we would connect to invalidates it.
+  const clearsScan = SCAN_IDENTITY_FIELDS.some(field => patch[field] !== undefined)
   commit((previous) => {
     const config: ConnectDraft = { ...previous.config, ...patch }
     if (clearsAlias) delete config.sshConfigAlias
-    return { config }
+    // A live attempt keeps its own log: editing a field mid-flight must not
+    // pull the record of what the host is actually doing out from under it.
+    const live = previous.connect.phase === 'running' || previous.connect.phase === 'awaiting-hostkey'
+    return {
+      config,
+      ...(clearsScan ? { dshScan: emptyDshScan() } : {}),
+      ...(clearsScan && !live ? { connect: idleConnect() } : {}),
+    }
   })
 }
+
+/** Draft fields a scan result depends on. */
+const SCAN_IDENTITY_FIELDS: readonly (keyof ConnectDraft)[] = [
+  'host', 'port', 'username', 'authKind', 'privateKeyPath',
+  'wslDistro', 'wslUser', 'profile', 'dshHome',
+]
 
 function dismissError(): void {
   commit({ error: undefined })
@@ -892,7 +1217,15 @@ async function loadAliases(force = false): Promise<void> {
   }
 }
 
-/** Prefill host/port/user/key from one `~/.ssh/config` alias. */
+/**
+ * Prefill host/port/user/key from one `~/.ssh/config` alias.
+ *
+ * The patch comes from `alias-prefill.ts`, which never touches `authKind`: an
+ * alias states *where* to connect and which identity file it names, not *how*
+ * the user wants to authenticate. Forcing 私钥 off an `IdentityFile` made a
+ * password-only host fail with "All configured authentication methods failed"
+ * (alpha55 defect).
+ */
 async function chooseAlias(alias: string): Promise<void> {
   const gen = generation
   commit({ prefilling: true, error: undefined })
@@ -903,20 +1236,14 @@ async function chooseAlias(alias: string): Promise<void> {
       return
     }
     setPendingSecret(undefined)
-    const identityFile = value.identityFile !== undefined && value.identityFile !== ''
-      ? value.identityFile
-      : undefined
     commit(previous => ({
       prefilling: false,
+      // Picking an alias re-points the connection at another identity, so the
+      // scan (architecture, candidates) belongs to the previous one and goes.
+      dshScan: emptyDshScan(),
       config: {
         ...previous.config,
-        sshConfigAlias: value.alias,
-        host: value.host,
-        port: String(value.port),
-        username: value.username !== undefined && value.username !== '' ? value.username : previous.config.username,
-        privateKeyPath: identityFile ?? previous.config.privateKeyPath,
-        authKind: identityFile === undefined ? previous.config.authKind : 'privateKey',
-        label: previous.config.label.trim() === '' ? value.alias : previous.config.label,
+        ...draftFromAlias(value, previous.config),
         secret: '',
       },
     }))
@@ -926,15 +1253,175 @@ async function chooseAlias(alias: string): Promise<void> {
   }
 }
 
+/** Choose one of step 3's three connection methods. */
+function setConnectionMode(mode: '' | ConnectionMode): void {
+  // NOT `patchConfig`: that drops the held secret, and switching reuse→upload
+  // after the password was entered would then demand it again for no reason.
+  commit(previous => ({ config: { ...previous.config, connectionMode: mode }, error: undefined }))
+  // Both remaining methods need the scan: reuse lists the candidates, upload
+  // shows the architecture and whether the package is already cached locally.
+  if ((mode === 'reuse' || mode === 'upload') && state.dshScan.status === 'idle' && state.dshScan.fingerprint === undefined) {
+    void scanDsh()
+  }
+}
+
+/**
+ * The fingerprint this device already confirmed for the draft's identity.
+ * @param host - the draft's host.
+ * @param port - the draft's port.
+ * @param username - the draft's user.
+ * @returns the confirmed fingerprint, or undefined when this identity is new.
+ */
+function trustedFingerprint(host: string, port: number, username: string): string | undefined {
+  const trusted = state.trusted
+  if (trusted === undefined) return undefined
+  return trusted.host === host && trusted.port === port && trusted.username === username ? trusted.fingerprint : undefined
+}
+
+/** Assemble the read-only scan request from the step-2 draft. */
+function buildScanRequest(
+  draft: ConnectDraft,
+  method: ConnectionMethod,
+  secret: string | undefined,
+  fingerprint: string | undefined,
+): DshScanRequest {
+  const request: DshScanRequest = {}
+  if (method === 'wsl') {
+    request.kind = 'wsl'
+    request.wslDistro = draft.wslDistro.trim()
+    const wslUser = draft.wslUser.trim()
+    if (wslUser !== '') request.wslUser = wslUser
+  } else {
+    const host = draft.host.trim()
+    const port = Number(draft.port.trim())
+    const username = draft.username.trim()
+    request.kind = 'ssh'
+    request.host = host
+    request.port = port
+    request.username = username
+    request.authKind = draft.authKind
+    if (secret !== undefined) request.secret = secret
+    if (draft.authKind === 'privateKey') request.privateKeyPath = draft.privateKeyPath.trim()
+    if (draft.sshConfigAlias !== undefined && draft.sshConfigAlias !== '') request.sshConfigAlias = draft.sshConfigAlias
+    const confirmed = fingerprint ?? trustedFingerprint(host, port, username)
+    if (confirmed !== undefined) request.hostKeyFingerprint = confirmed
+  }
+  if (draft.profile.trim() !== '') request.profile = draft.profile.trim()
+  if (draft.dshHome.trim() !== '') request.dshHome = draft.dshHome.trim()
+  return request
+}
+
+/**
+ * Pick the candidate to preselect after a scan: keep a still-present choice,
+ * else the best usable one (`compatible && upToDate` first, then any
+ * compatible — the host already sorts them), else nothing.
+ * @param candidates - the scan's candidates.
+ * @param current - the launcher currently selected in the draft.
+ * @returns the path to select, or `''` when nothing is usable.
+ */
+function pickCandidate(candidates: readonly DshCandidate[], current: string): string {
+  if (current !== '' && candidates.some(candidate => candidate.path === current)) return current
+  const best = candidates.find(candidate => candidate.compatible && candidate.profile?.upToDate === true)
+    ?? candidates.find(candidate => candidate.compatible)
+  return best?.path ?? ''
+}
+
+/**
+ * Run the read-only pre-connection scan (`/api/dsh-scan`).
+ *
+ * Nothing is pinned or recorded: a `host-key` stage only stores the fingerprint
+ * so step 3 can show the same confirmation panel the connect flow uses, and the
+ * next scan carries that fingerprint.
+ * @param force - scan again even when a result is already cached.
+ */
+async function scanDsh(force = false): Promise<void> {
+  if (state.dshScan.status === 'scanning') return
+  if (state.dshScan.status === 'ready' && !force && state.dshScan.fingerprint === undefined) return
+  const draft = state.config
+  const method = state.method
+  const invalid = validateDraft(draft, method)
+  if (invalid !== undefined) {
+    commit({ error: invalid })
+    return
+  }
+  // A WSL distribution has no credentials at all (see `startConnect`).
+  const resolved = method === 'wsl' ? { ok: true as const, secret: undefined } : resolveSecret(draft)
+  if (!resolved.ok) {
+    commit({ error: resolved.error })
+    return
+  }
+  const request = buildScanRequest(draft, method, resolved.secret, state.dshScan.fingerprint)
+  // Remember the fingerprint this scan was sent with: a `done` stage means the
+  // host accepted it, so the connect that follows can skip a second identical
+  // prompt. It stays in memory for this session only — a scan pins nothing.
+  const sentFingerprint = state.dshScan.fingerprint
+  const gen = generation
+  commit(previous => ({ dshScan: { ...previous.dshScan, status: 'scanning', error: undefined } }))
+  try {
+    const result = await api.dshScan(request)
+    if (gen !== generation) return
+    if (result.stage === 'host-key') {
+      commit({ dshScan: { status: 'idle', candidates: [], fingerprint: result.fingerprint } })
+      return
+    }
+    commit(previous => ({
+      dshScan: {
+        status: 'ready',
+        candidates: result.candidates,
+        probe: result.probe,
+        package: result.package,
+      },
+      config: {
+        ...previous.config,
+        reuseLauncherPath: pickCandidate(result.candidates, previous.config.reuseLauncherPath),
+      },
+      ...(sentFingerprint === undefined || method === 'wsl'
+        ? {}
+        : {
+          trusted: {
+            host: draft.host.trim(),
+            port: Number(draft.port.trim()),
+            username: draft.username.trim(),
+            fingerprint: sentFingerprint,
+          },
+        }),
+    }))
+  } catch (error) {
+    if (gen !== generation) return
+    const wire = toWireError(error)
+    commit({ dshScan: { status: 'unavailable', candidates: [], error: wire.message } })
+  }
+}
+
+/**
+ * Select one scanned dsh as the one to reuse.
+ *
+ * Pure local state: the path is not a `patchConfig` edit (that would clear the
+ * held secret) and nothing is sent to the host until 连接.
+ * @param path - the candidate's launcher path.
+ */
+function selectDshCandidate(path: string): void {
+  commit(previous => ({ config: { ...previous.config, reuseLauncherPath: path } }))
+}
+
 /** Start (or retry) the connection attempt behind `/api/connect/start`. */
 async function startConnect(): Promise<void> {
-  commit(previous => ({ connect: { ...previous.connect, origin: 'wizard' } }))
   const draft = state.config
   const method = state.method
   const wsl = method === 'wsl'
   const invalid = validateDraft(draft, method)
   if (invalid !== undefined) {
     commit({ view: 'wizard', step: 'config', error: invalid })
+    return
+  }
+  // Step 3's choice is the only thing that decides how the server side is
+  // provisioned; `download` never reaches here (its card is disabled).
+  if (draft.connectionMode === '' || draft.connectionMode === 'download') {
+    commit({ view: 'wizard', step: 'connect', error: validation('connect.mode.required') })
+    return
+  }
+  if (draft.connectionMode === 'reuse' && draft.reuseLauncherPath.trim() === '') {
+    commit({ view: 'wizard', step: 'connect', error: validation('connect.mode.reuse.required') })
     return
   }
   // A WSL target has no credentials at all: the transport is a local process.
@@ -970,22 +1457,25 @@ async function startConnect(): Promise<void> {
     if (resolved.secret !== undefined) request.secret = resolved.secret
     if (draft.authKind === 'privateKey') request.privateKeyPath = draft.privateKeyPath.trim()
     if (draft.sshConfigAlias !== undefined && draft.sshConfigAlias !== '') request.sshConfigAlias = draft.sshConfigAlias
-    const trusted = state.trusted
-    if (trusted !== undefined && trusted.host === host && trusted.port === port && trusted.username === username) {
-      request.hostKeyFingerprint = trusted.fingerprint
-    }
+    const confirmed = trustedFingerprint(host, port, username)
+    if (confirmed !== undefined) request.hostKeyFingerprint = confirmed
     endpoint = `${host}:${port} as ${username}`
   }
   const remote = buildRemote(draft)
   if (remote !== undefined) request.remote = remote
-  if (draft.packageSource === 'download' || draft.packageSource === 'upload') request.packageSource = draft.packageSource
+  if (draft.connectionMode === 'reuse') {
+    request.packageSource = 'reuse'
+    request.reuseLauncherPath = draft.reuseLauncherPath.trim()
+  } else if (draft.connectionMode === 'upload') {
+    request.packageSource = 'upload'
+  }
 
   setPendingSecret(resolved.secret)
   const gen = generation
   commit(previous => ({
     pending: true,
     view: 'wizard',
-    step: 'connecting',
+    step: 'connect',
     error: undefined,
     notice: undefined,
     connect: { ...idleConnect(), phase: 'running', log: [{ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info' as const, text: `connecting to ${endpoint}` }] },
@@ -1078,13 +1568,18 @@ function handleFrame(frame: ConnectFrame): void {
         ? state.trusted
         : { host: target.host, port: target.port, username: target.username, fingerprint: target.hostKeyFingerprint }
       commit(previous => ({
-        step: 'directory',
-        notice: { kind: 'success', text: t('connect.succeeded') },
-        connect: { ...previous.connect, phase: 'succeeded', hostKey: undefined, target, error: undefined },
-        directory: { ...emptyDirectory(), targetId: target.id },
+        // Landing spot after a successful connect: the saved-items list, with
+        // this connection expanded so 添加工作区 is one click away (this is the
+        // requirement's "don't jump into a directory page"). It is also why the
+        // step rewinds to `method`: the next 新建连接 starts from step 1.
+        view: 'list',
+        step: 'method',
+        notice: { kind: 'success', text: t('connect.succeeded.list') },
+        connect: { ...idleConnect(), phase: 'succeeded', target },
+        directory: emptyDirectory(),
+        expanded: { ...previous.expanded, [targetNodeKey(target.id)]: true },
         trusted: trusted ?? previous.trusted,
       }))
-      void loadDirectory(target.id, '')
       void refreshState()
       return
     }
@@ -1130,16 +1625,18 @@ async function confirmHostKey(): Promise<void> {
   }
 }
 
-/** Abandon a pending host-key prompt and return to the configuration step. */
+/**
+ * Abandon a pending attempt and stay on step 3.
+ *
+ * Step 3 owns the whole attempt (method choice, progress, host-key), so
+ * cancelling rewinds the attempt — not the step: the user is exactly where they
+ * choose another mode or retry. The held secret stays (only leaving the wizard
+ * drops it), so 重试 works without typing the password again.
+ */
 function cancelConnect(): void {
   stopStream()
-  // A reconnect owned by the directory flow has no wizard draft to return to.
-  if (state.connect.origin === 'directory') {
-    showList()
-    return
-  }
   commit({
-    step: 'config',
+    step: 'connect',
     error: undefined,
     notice: undefined,
     connect: idleConnect(),
@@ -1147,107 +1644,96 @@ function cancelConnect(): void {
   })
 }
 
-/** Retry a directory-open reconnect from the 连接中 step. */
-function retryDirectoryConnect(): void {
-  const targetId = state.directory.targetId
-  if (targetId === undefined) return
-  commit(previous => ({
-    error: undefined,
-    connect: {
-      ...previous.connect,
-      phase: 'running',
-      origin: 'directory',
-      steps: { ...emptySteps(), connect: { status: 'running' } },
-    },
-  }))
-  void loadDirectory(targetId, '', { promoteFromConnecting: true })
+/** Browse one remote directory of the connected (or saved) target. */
+async function loadDirectory(targetId: string, path: string): Promise<void> {
+  return await withConnecting(async () => {
+    const gen = generation
+    commit(previous => ({
+      directory: { ...previous.directory, open: true, targetId, loading: true, error: undefined },
+    }))
+    try {
+      const listing = await api.listDir(targetId, path)
+      if (gen !== generation) return
+      commit(previous => ({
+        directory: {
+          ...previous.directory,
+          listing,
+          loading: false,
+          connecting: false,
+          error: undefined,
+          pathInput: listing.path,
+          newDirName: '',
+          title: previous.directory.titleTouched && previous.directory.title !== ''
+            ? previous.directory.title
+            : basename(listing.path),
+        },
+      }))
+    } catch (error) {
+      if (gen !== generation) return
+      commit(previous => ({
+        directory: { ...previous.directory, loading: false, connecting: false, error: toWireError(error) },
+      }))
+    }
+  })
 }
 
-/** Browse one remote directory of the connected (or saved) target. */
-async function loadDirectory(targetId: string, path: string, options?: { promoteFromConnecting?: boolean }): Promise<void> {
-  const promote = options?.promoteFromConnecting === true
-  const logLine = (text: string): void => {
-    commit(previous => ({
-      connect: {
-        ...previous.connect,
-        log: [...previous.connect.log, { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info' as const, text }],
-      },
-    }))
-  }
-  // Coarse, honest progress beats a frozen directory step: the host reports
-  // nothing mid-flight, so these lines mark the stages we know it walks.
-  const hints = promote
-    ? [
-        setTimeout(() => { logLine(t('connect.log.directoryProbe')) }, 1_500),
-        setTimeout(() => { logLine(t('connect.log.directoryStart')) }, 4_000),
-      ]
-    : []
-  return await withConnecting(async () => {
+/**
+ * Open the 添加工作区 dialog on its browse tab, connecting the target first if
+ * its channel is down.
+ *
+ * `list-dir` runs through the host's cached browser client, which re-provisions
+ * a cold target on its own — seconds to tens of seconds. The dialog therefore
+ * has to show a 连接中 state while that call is in flight; the wizard used to
+ * express this with an entire step, and without it the pane just sits empty.
+ * @param target - the connection row's target.
+ */
+async function openBrowseDirectory(target: PublicTarget): Promise<void> {
   const gen = generation
   commit(previous => ({
-    directory: { ...previous.directory, targetId, loading: true, error: undefined },
+    addWorkspace: {
+      targetId: target.id,
+      targetLabel: target.label,
+      tab: 'browse',
+      loading: previous.addWorkspace?.loading ?? false,
+      items: previous.addWorkspace?.items ?? [],
+    },
+    error: undefined,
+    directory: { ...emptyDirectory(), open: true, targetId: target.id },
   }))
-  try {
-    const listing = await api.listDir(targetId, path)
-    if (gen !== generation) return
-    for (const hint of hints) clearTimeout(hint)
-    if (promote) {
-      // Show the final line before promoting: committing both in the same tick
-      // lets React coalesce them and the line never reaches the DOM.
-      logLine(t('connect.log.directoryReady'))
-      await new Promise(resolve => setTimeout(resolve, 120))
+  if (target.status !== 'ready') {
+    commit(previous => ({ directory: { ...previous.directory, connecting: true } }))
+    try {
+      await api.connect(target.id)
       if (gen !== generation) return
+      await refreshState()
+      if (gen !== generation) return
+    } catch (error) {
+      if (gen !== generation) return
+      commit(previous => ({
+        directory: { ...previous.directory, connecting: false, error: toWireError(error) },
+      }))
+      return
     }
-    commit(previous => ({
-      ...(promote ? { step: 'directory' as const, connect: { ...previous.connect, phase: 'succeeded' as const } } : {}),
-      directory: {
-        ...previous.directory,
-        listing,
-        loading: false,
-        connecting: false,
-        error: undefined,
-        pathInput: listing.path,
-        newDirName: '',
-        title: previous.directory.titleTouched && previous.directory.title !== ''
-          ? previous.directory.title
-          : basename(listing.path),
-      },
-    }))
-  } catch (error) {
-    if (gen !== generation) return
-    for (const hint of hints) clearTimeout(hint)
-    commit(previous => ({
-      ...(promote ? { step: 'directory' as const, connect: { ...previous.connect, phase: 'failed' as const } } : {}),
-      directory: { ...previous.directory, loading: false, connecting: false, error: toWireError(error) },
-    }))
+    commit(previous => ({ directory: { ...previous.directory, connecting: false } }))
   }
-  })
+  await loadDirectory(target.id, '')
 }
 
-/** Enter the directory browser for a saved target (from the list view). */
-function openTargetDirectory(target: PublicTarget): void {
-  generation += 1
-  // A host that is not live (never connected, or explicitly stopped) must show
-  // the 连接中 step while the channel is (re)built — never a directory step
-  // that sits empty until provisioning finishes.
-  const needsConnect = target.status !== 'ready'
-  const now = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  commit({
-    view: 'wizard',
-    step: needsConnect ? 'connecting' : 'directory',
-    error: undefined,
-    notice: undefined,
-    directory: { ...emptyDirectory(), targetId: target.id },
-    connect: needsConnect
-      ? {
-          phase: 'running',
-          origin: 'directory' as const,
-          steps: { ...emptySteps(), connect: { status: 'running' } },
-          log: [{ time: now, level: 'info', text: t('connect.log.directoryConnect', { label: target.label }) }],
-        }
-      : idleConnect(),
-  })
-  void loadDirectory(target.id, '', { promoteFromConnecting: needsConnect })
+/** Switch the 添加工作区 dialog between its two tabs, loading what the tab needs. */
+function setAddWorkspaceTab(tab: 'browse' | 'registry'): void {
+  const dialog = state.addWorkspace
+  if (dialog === undefined || dialog.tab === tab) return
+  commit(previous => ({
+    addWorkspace: previous.addWorkspace === undefined ? undefined : { ...previous.addWorkspace, tab },
+  }))
+  if (tab === 'registry') {
+    void refreshAddWorkspace()
+    return
+  }
+  const target = state.targets.find(candidate => candidate.id === dialog.targetId)
+  if (target === undefined) return
+  if (state.directory.targetId === target.id && state.directory.listing !== undefined) return
+  void openBrowseDirectory(target)
 }
 
 function setNewDirName(name: string): void {
@@ -1284,7 +1770,7 @@ async function createDirectory(): Promise<void> {
   }
 }
 
-/** Open the browsed directory as a workspace; the wizard closes on success. */
+/** Open the browsed directory as a workspace; the dialog closes on success. */
 async function openWorkspace(): Promise<void> {
   return await withConnecting(async () => {
   const { targetId, listing, title } = state.directory
@@ -1295,15 +1781,18 @@ async function openWorkspace(): Promise<void> {
     const trimmed = title.trim()
     const result = await api.openWorkspace(targetId, listing.path, trimmed === '' ? undefined : trimmed)
     if (gen !== generation) return
-    commit({
+    commit(previous => ({
       pending: false,
       view: 'list',
       step: 'method',
+      addWorkspace: undefined,
       directory: emptyDirectory(),
       connect: idleConnect(),
       notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
-    })
-    revealSession(result.sessionId)
+      // The new workspace row is only visible under an open connection node.
+      expanded: { ...previous.expanded, [targetNodeKey(targetId)]: true },
+    }))
+    void revealSession(result.sessionId, targetId)
     void refreshState()
   } catch (error) {
     if (gen !== generation) return
@@ -1312,13 +1801,63 @@ async function openWorkspace(): Promise<void> {
   })
 }
 
+/**
+ * Ask for a new title for one remote workspace.
+ *
+ * Only the plugin's own record changes (the host rewrites `title`), never the
+ * remote directory: the directory is what every stored session's header points
+ * at, and a network `mv` has no rollback (architecture A7).
+ * @param workspace - the workspace row's record.
+ */
+function requestWorkspaceRename(workspace: RemoteWorkspace): void {
+  commit({ renameWorkspace: { workspace, title: workspace.title } })
+}
+
+/** Close the 重命名工作区 dialog without acting. */
+function settleWorkspaceRename(): void {
+  commit({ renameWorkspace: undefined })
+}
+
+/**
+ * Apply one workspace rename through the host and refresh the tree.
+ *
+ * Like the session rename, the dialog owns its own lifetime: this action keeps
+ * `renameWorkspace` set so the form can show a failure inline, and the caller
+ * closes it on success (`settleWorkspaceRename`).
+ * @param title - the new title (the host normalizes it too).
+ */
+async function acceptWorkspaceRename(title: string): Promise<void> {
+  const pending = state.renameWorkspace
+  const trimmed = title.trim()
+  if (pending === undefined || trimmed === '') return
+  const gen = generation
+  commit({ pending: true, error: undefined })
+  try {
+    await api.workspaceRename(pending.workspace.id, trimmed)
+    if (gen !== generation) return
+    commit({ pending: false, notice: { kind: 'success', text: t('tree.workspace.renamed', { title: trimmed }) } })
+    await refreshState()
+  } catch (error) {
+    if (gen !== generation) return
+    commit({ pending: false })
+    throw error
+  }
+}
+
 async function forgetTarget(target: PublicTarget): Promise<void> {
   if (state.pending) return
   const gen = generation
   commit({ pending: true, error: undefined })
+  // Deleting the connection closes its channel and disposes its preset, which
+  // takes every session of it with it — so the shell must stop showing one of
+  // them *first* (see releaseShellSelection).
+  releaseShellSelection(target.id)
   try {
     await api.forgetTarget(target.id)
     if (gen !== generation) return
+    for (const [sessionId, owner] of revealedSessions) {
+      if (owner === target.id) revealedSessions.delete(sessionId)
+    }
     commit({ pending: false, notice: { kind: 'success', text: t('list.forgotTarget', { label: target.label }) } })
     await refreshState()
   } catch (error) {
@@ -1346,6 +1885,11 @@ async function stopTarget(target: PublicTarget): Promise<void> {
   if (state.pending) return
   const gen = generation
   commit({ pending: true, error: undefined })
+  // Deselect BEFORE the host closes the channel: once the remote session is
+  // gone its client record stops being live, and a shell conversation still
+  // pointing at it throws during render — which unmounts the whole app
+  // (the alpha52 white page). See releaseShellSelection for the full chain.
+  releaseShellSelection(target.id)
   try {
     const { stopped } = await api.stopTarget(target.id)
     if (gen !== generation) return
@@ -1360,7 +1904,7 @@ async function stopTarget(target: PublicTarget): Promise<void> {
     // fold its subtree away (工作区/会话收起).
     if (stopped) collapseTarget(target.id)
     if (stopped && state.directory.targetId === target.id) {
-      commit({ directory: emptyDirectory(), view: 'list', step: 'method' })
+      commit({ directory: emptyDirectory(), addWorkspace: undefined })
     }
     await refreshState()
   } catch (error) {
@@ -1382,7 +1926,7 @@ async function reopenWorkspace(workspace: RemoteWorkspace): Promise<void> {
       pending: false,
       notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
     })
-    revealSession(result.sessionId)
+    void revealSession(result.sessionId, workspace.targetId)
     await refreshState()
     refreshSessionsFor(result.workspace)
   } catch (error) {
@@ -1495,12 +2039,20 @@ async function openSession(workspace: RemoteWorkspace, session: RemoteSession): 
         text: t('tree.session.opened', { title: session.title ?? shortSessionId(session.id) }),
       },
     })
-    revealSession(result.sessionId)
+    void revealSession(result.sessionId, workspace.targetId)
     await refreshState()
     refreshSessionsFor(workspace)
   } catch (error) {
     if (gen !== generation) return
-    commit({ pending: false, error: toWireError(error) })
+    // A failed click must say why: the inline banner below lives in the plugin
+    // panel, which is not the surface the user is looking at (alpha55 defect A
+    // read as "the row does nothing at all").
+    const wire = toWireError(error)
+    commit({
+      pending: false,
+      error: wire,
+      notice: { kind: 'error', text: t('tree.session.openFailed', { message: wire.message }) },
+    })
   }
   })
 }
@@ -1511,17 +2063,20 @@ export function shortSessionId(id: string): string {
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8)
 }
 
-/** Open the 添加工作区 picker for one connected host. */
+/**
+ * Open the 添加工作区 dialog for one connection.
+ *
+ * The default tab is 浏览目录 (the requirement: adding a workspace means picking
+ * a remote directory), so opening the dialog is opening the browser — including
+ * its connect-first step when the channel is down.
+ * @param target - the connection row's target.
+ */
 async function openAddWorkspace(target: PublicTarget): Promise<void> {
-  commit({
-    addWorkspace: { targetId: target.id, targetLabel: target.label, loading: true, items: [] },
-    error: undefined,
-  })
-  await refreshAddWorkspace()
+  await openBrowseDirectory(target)
 }
 
 function closeAddWorkspace(): void {
-  commit({ addWorkspace: undefined })
+  commit({ addWorkspace: undefined, directory: emptyDirectory() })
 }
 
 /** (Re)read the remote dsh's own workspace registry for the open picker. */
@@ -1562,14 +2117,15 @@ async function adoptRemoteWorkspace(entry: RemoteRegistryWorkspace): Promise<voi
     try {
       const result = await api.openWorkspace(dialog.targetId, entry.path, entry.title)
       if (gen !== generation) return
-      commit({
+      commit(previous => ({
         pending: false,
         addWorkspace: undefined,
+        directory: emptyDirectory(),
         notice: { kind: 'success', text: t('directory.opened', { title: result.workspace.title }) },
-      })
-      revealSession(result.sessionId)
+        expanded: { ...previous.expanded, [targetNodeKey(dialog.targetId)]: true },
+      }))
+      void revealSession(result.sessionId, dialog.targetId)
       await refreshState()
-      commit(previous => ({ expanded: { ...previous.expanded, [targetNodeKey(dialog.targetId)]: true } }))
     } catch (error) {
       if (gen !== generation) return
       commit({ pending: false, error: toWireError(error) })
@@ -1587,7 +2143,8 @@ function expandTarget(targetId: string): void {
  *
  * This is the gate the product requires — a connection has a state, and only a
  * *connected* connection can have workspaces or sessions. It is deliberately
- * narrower than 打开目录, which walks the whole provisioning wizard.
+ * narrower than the 添加工作区 dialog's own connect-first step, which additionally
+ * lists a directory afterwards.
  */
 async function connectTarget(target: PublicTarget): Promise<void> {
   return await withConnecting(async () => {
@@ -1643,7 +2200,7 @@ async function openWorkspaceRecord(workspace: RemoteWorkspace): Promise<void> {
           text: t('tree.session.opened', { title: workspace.title }),
         },
       })
-      revealSession(result.sessionId)
+      void revealSession(result.sessionId, workspace.targetId)
       await refreshState()
       refreshSessionsFor(workspace)
     } catch (error) {
@@ -1695,7 +2252,6 @@ export const store = {
   closeOverlay,
   newConnection,
   openConnectionWizard,
-  showList,
   setStep,
   setMethod,
   patchConfig,
@@ -1706,17 +2262,18 @@ export const store = {
   loadAliases,
   loadWslDistros,
   chooseAlias,
+  setConnectionMode,
+  scanDsh,
+  selectDshCandidate,
   startConnect,
   confirmHostKey,
   cancelConnect,
   loadDirectory,
-  openTargetDirectory,
   setNewDirName,
   setDirectoryTitle,
   setPathInput,
   createDirectory,
   openWorkspace,
-  retryDirectoryConnect,
   forgetTarget,
   forgetWorkspace,
   stopTarget,
@@ -1740,8 +2297,13 @@ export const store = {
   acceptConfirm,
   openAddWorkspace,
   closeAddWorkspace,
+  setAddWorkspaceTab,
   refreshAddWorkspace,
   adoptRemoteWorkspace,
+  openBrowseDirectory,
+  requestWorkspaceRename,
+  settleWorkspaceRename,
+  acceptWorkspaceRename,
   expandTarget,
   connectTarget,
 } as const

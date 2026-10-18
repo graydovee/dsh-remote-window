@@ -29,7 +29,25 @@ export const SERVER_ROOT = '.dsh/server'
 /** Component marker directory, under {@link SERVER_ROOT}. */
 export const COMPONENTS_DIR = `${SERVER_ROOT}/.components`
 
-/** How long a stale `.deploy.lock` may sit before a new deploy reclaims it. */
+/** Packaging mode's deployment lock, under {@link SERVER_ROOT}. */
+export const DEPLOY_LOCK_DIR = '.deploy.lock'
+
+/**
+ * Reuse mode's marker file, **inside the profile directory**.
+ *
+ * Two marker locations exist because two install layouts do: a packaged
+ * deployment records `.components/plugin.json` under its own root, while a
+ * reused dsh keeps nothing but its profile — and both share the same
+ * `$DSH_HOME/profiles/<profile>`. The scan reads both (see `dsh-scan.ts`), so
+ * switching a target between the two modes never makes an installed plugin look
+ * missing. The relative layout is frozen by `doc/api-contract.md` §9.2.
+ */
+export const PROFILE_MARKER_FILE = '.dsh-rw-plugin.json'
+
+/** Reuse mode's deployment lock, inside the profile directory (same semantics as {@link DEPLOY_LOCK_DIR}). */
+export const PROFILE_LOCK_DIR = '.dsh-rw.lock'
+
+/** How long a stale lock may sit before a new deploy reclaims it. */
 const LOCK_STALE_MS = 10 * 60 * 1000
 
 /** The node component's marker file record. */
@@ -53,6 +71,19 @@ export interface PluginMarker {
   readonly sha256: string
 }
 
+/**
+ * Reuse mode's marker inside the profile directory.
+ *
+ * Carries `version`/`profile` on top of the digest so the wizard can say *what*
+ * is installed where without opening the package manifest.
+ */
+export interface ProfilePluginMarker {
+  readonly id: 'plugin'
+  readonly sha256: string
+  readonly version: string
+  readonly profile: string
+}
+
 /** Everything one deployment needs to know about the remote host. */
 export interface RemoteEnvironment {
   /** Absolute remote home directory. */
@@ -68,6 +99,12 @@ export interface RemoteEnvironment {
   readonly node: NodeMarker | undefined
   readonly dsh: DshMarker | undefined
   readonly plugin: PluginMarker | undefined
+  /**
+   * The reuse-mode marker of the profile this run will use, when the probe read
+   * one. Additive: an older deployment only has {@link plugin}, and a missing
+   * value is never a failure (see `doc/architecture.md` §3.7).
+   */
+  readonly profilePlugin: ProfilePluginMarker | undefined
 }
 
 /** Quote one argv element for the remote POSIX shell. */
@@ -95,6 +132,33 @@ export function parseMarker<T>(raw: string | undefined): T | undefined {
 }
 
 /**
+ * The platform/arch/libc rule, in one place.
+ *
+ * Both the pipeline probe (`parseProbeOutput`) and the read-only `dsh-scan`
+ * need it — the scan reports `uname`/`ostype`/`ldd` as separate records instead
+ * of the probe's framed segments — and two copies of "a Linux container may
+ * fake `uname -s`, `/proc/sys/kernel/ostype` tells the truth" would drift.
+ * @param options - the four raw facts.
+ * @returns the artifact-relevant platform classification.
+ */
+export function probeFactsFrom(options: { uname: string; machine: string; ostype: string; ldd: string }): {
+  platform: 'linux' | 'darwin'
+  arch: 'x64' | 'arm64'
+  libc: '' | 'gnu' | 'musl'
+} {
+  const ostype = options.ostype.trim().toLowerCase()
+  const unameSystem = options.uname.trim()
+  // A Linux container may fake `uname -s`; `/proc/sys/kernel/ostype` tells the
+  // truth (ZCode's detectEnv does the same).
+  const platform = ostype.includes('linux') || (unameSystem === 'Darwin' && ostype === 'linux') ? 'linux' : unameSystem === 'Darwin' ? 'darwin' : 'linux'
+  const rawArch = options.machine.trim()
+  const arch = rawArch === 'arm64' || rawArch === 'aarch64' ? 'arm64' : 'x64'
+  const ldd = options.ldd.trim().toLowerCase()
+  const libc = platform !== 'linux' ? '' : ldd.includes('musl') ? 'musl' : 'gnu'
+  return { platform, arch, libc }
+}
+
+/**
  * Fold the probe's separator-framed output into a {@link RemoteEnvironment}.
  * Pure so the decision layer is unit-testable without a host.
  */
@@ -106,20 +170,18 @@ export function parseProbeOutput(stdout: string): Omit<RemoteEnvironment, 'platf
   const segments = stdout.split('@@RW@@').map(segment => segment.trim())
   const home = (segments[0] ?? '').split('\n')[0] ?? ''
   const uname = (segments[1] ?? '').split('\n').map(line => line.trim()).filter(Boolean)
-  const ostype = ((segments[2] ?? '').split('\n')[0] ?? '').trim().toLowerCase()
   const tools = (segments[3] ?? '').split('\n').map(line => line.trim().split('/').pop() ?? '').filter(Boolean)
-  // A Linux container may fake `uname -s`; `/proc/sys/kernel/ostype` tells the
-  // truth (ZCode's detectEnv does the same).
-  const platform = ostype.includes('linux') || (uname[0] === 'Darwin' && ostype === 'linux') ? 'linux' : uname[0] === 'Darwin' ? 'darwin' : 'linux'
-  const rawArch = uname[1] ?? ''
-  const arch = rawArch === 'arm64' || rawArch === 'aarch64' ? 'arm64' : 'x64'
-  const ldd = ((segments[7] ?? '').split('\n')[0] ?? '').toLowerCase()
-  const libc = platform !== 'linux' ? '' : ldd.includes('musl') ? 'musl' : 'gnu'
+  const facts = probeFactsFrom({
+    uname: uname[0] ?? '',
+    machine: uname[1] ?? '',
+    ostype: (segments[2] ?? '').split('\n')[0] ?? '',
+    ldd: (segments[7] ?? '').split('\n')[0] ?? '',
+  })
   return {
     home,
-    platform,
-    arch,
-    libc,
+    platform: facts.platform,
+    arch: facts.arch,
+    libc: facts.libc,
     tools: {
       tar: tools.includes('tar'),
       sha256sum: tools.includes('sha256sum') || tools.includes('shasum'),
@@ -129,11 +191,21 @@ export function parseProbeOutput(stdout: string): Omit<RemoteEnvironment, 'platf
     node: parseMarker<NodeMarker>(segments[4]),
     dsh: parseMarker<DshMarker>(segments[5]),
     plugin: parseMarker<PluginMarker>(segments[6]),
+    profilePlugin: parseMarker<ProfilePluginMarker>(segments[8]),
   }
 }
 
-/** The one-shot environment probe: facts only, framed by `@@RW@@` separators. */
-export function probeScript(): string {
+/**
+ * The one-shot environment probe: facts only, framed by `@@RW@@` separators.
+ *
+ * The last segment is additive (reuse mode's profile marker). A profile name is
+ * schema-validated to `[a-z0-9-]`, but the script is built from it, so anything
+ * else simply omits the segment instead of interpolating.
+ * @param options - the profile whose reuse marker should be read, if any.
+ */
+export function probeScript(options: { profile?: string } = {}): string {
+  const profile = options.profile ?? ''
+  const safeProfile = /^[a-z0-9][a-z0-9-]*$/.test(profile)
   return [
     'printf \'%s\\n\' "$HOME"',
     "printf '@@RW@@\\n'",
@@ -151,6 +223,10 @@ export function probeScript(): string {
     'cat ~/.dsh/server/.components/plugin.json 2>/dev/null || true',
     "printf '@@RW@@\\n'",
     'ldd --version 2>&1 | head -1 || true',
+    "printf '@@RW@@\\n'",
+    // Unquoted on purpose: a single-quoted `~` is a literal directory name, and
+    // the profile is already restricted to `[a-z0-9-]` above.
+    ...(safeProfile ? [`cat ~/.dsh/profiles/${profile}/${PROFILE_MARKER_FILE} 2>/dev/null || true`] : []),
   ].join('\n')
 }
 
@@ -262,26 +338,48 @@ export function checkDshScript(options: { home: string }): string {
 }
 
 /**
+ * The lock-acquire body for one absolute lock directory.
+ *
+ * `mkdir` is the atomic test-and-set; a lock older than ten minutes is a crashed
+ * client and is reclaimed once. Shared by both layouts (packaging keeps its lock
+ * under the server root, reuse keeps one inside the profile directory) so the
+ * semantics can never diverge.
+ */
+function lockAcquireBody(lockDir: string, token: string): string {
+  const parent = lockDir.slice(0, lockDir.lastIndexOf('/'))
+  return [
+    'set -eu',
+    `command mkdir -p ${q(parent)}`,
+    `if command mkdir ${q(lockDir)} 2>/dev/null; then printf %s ${q(token)} > ${q(`${lockDir}/owner`)}; exit 0; fi`,
+    `owner=$(cat ${q(`${lockDir}/owner`)} 2>/dev/null || true)`,
+    `[ "$owner" = ${q(token)} ] && exit 0`,
+    `age=$(( $(date +%s) - $(stat -c %Y ${q(lockDir)} 2>/dev/null || stat -f %m ${q(lockDir)} 2>/dev/null || echo 0) ))`,
+    `if [ "$age" -gt ${Math.floor(LOCK_STALE_MS / 1000)} ]; then`,
+    `  rm -rf ${q(lockDir)}`,
+    `  command mkdir ${q(lockDir)} && printf %s ${q(token)} > ${q(`${lockDir}/owner`)} && exit 0`,
+    'fi',
+    `echo "another deployment holds ${lockDir} (owner ${'$'}{owner:-unknown}, ${'$'}age s old)" >&2`,
+    'exit 8',
+  ].join('\n')
+}
+
+/** The lock-release body for one absolute lock directory (best effort). */
+function lockReleaseBody(lockDir: string, token: string): string {
+  return [
+    `[ -f ${q(`${lockDir}/owner`)} ] || exit 0`,
+    `owner=$(cat ${q(`${lockDir}/owner`)})`,
+    `[ "$owner" = ${q(token)} ] || exit 0`,
+    `rm -rf ${q(lockDir)}`,
+  ].join('\n')
+}
+
+/**
  * Acquire the deployment lock. `mkdir` is the atomic test-and-set; a lock
  * older than ten minutes is a crashed client and is reclaimed once.
  */
 export async function acquireDeployLock(transport: RemoteTransport, home: string, token: string): Promise<void> {
-  const root = `${home}/${SERVER_ROOT}`
-  const body = [
-    'set -eu',
-    `command mkdir -p ${q(root)}`,
-    `if command mkdir ${q(`${root}/.deploy.lock`)} 2>/dev/null; then printf %s ${q(token)} > ${q(`${root}/.deploy.lock/owner`)}; exit 0; fi`,
-    `owner=$(cat ${q(`${root}/.deploy.lock/owner`)} 2>/dev/null || true)`,
-    `[ "$owner" = ${q(token)} ] && exit 0`,
-    `age=$(( $(date +%s) - $(stat -c %Y ${q(`${root}/.deploy.lock`)} 2>/dev/null || stat -f %m ${q(`${root}/.deploy.lock`)} 2>/dev/null || echo 0) ))`,
-    `if [ "$age" -gt ${Math.floor(LOCK_STALE_MS / 1000)} ]; then`,
-    `  rm -rf ${q(`${root}/.deploy.lock`)}`,
-    `  command mkdir ${q(`${root}/.deploy.lock`)} && printf %s ${q(token)} > ${q(`${root}/.deploy.lock/owner`)} && exit 0`,
-    'fi',
-    `echo "another deployment holds ${root}/.deploy.lock (owner ${'$'}{owner:-unknown}, ${'$'}age s old)" >&2`,
-    'exit 8',
-  ].join('\n')
-  const result = await transport.exec(sh(body), { maxBytes: 4096, timeoutMs: 30_000 })
+  const lockDir = `${home}/${SERVER_ROOT}/${DEPLOY_LOCK_DIR}`
+  const result = await transport.exec(sh(lockAcquireBody(lockDir, token)), { maxBytes: 4096, timeoutMs: 30_000 })
   if (result.code !== 0) {
     throw new Error(`cannot acquire the remote deploy lock: ${result.stderr.trim() || `exit ${result.code}`}`)
   }
@@ -289,14 +387,167 @@ export async function acquireDeployLock(transport: RemoteTransport, home: string
 
 /** Release the deployment lock (best effort). */
 export async function releaseDeployLock(transport: RemoteTransport, home: string, token: string): Promise<void> {
-  const root = `${home}/${SERVER_ROOT}`
-  const body = [
-    `[ -f ${q(`${root}/.deploy.lock/owner`)} ] || exit 0`,
-    `owner=$(cat ${q(`${root}/.deploy.lock/owner`)})`,
-    `[ "$owner" = ${q(token)} ] || exit 0`,
-    `rm -rf ${q(`${root}/.deploy.lock`)}`,
+  const lockDir = `${home}/${SERVER_ROOT}/${DEPLOY_LOCK_DIR}`
+  await transport.exec(sh(lockReleaseBody(lockDir, token)), { maxBytes: 4096, timeoutMs: 15_000 }).catch(() => {})
+}
+
+/** The reuse-mode lock directory for one profile. */
+export function profileLockDir(profileDir: string): string {
+  return `${profileDir}/${PROFILE_LOCK_DIR}`
+}
+
+/**
+ * The reuse-mode lock body, for callers that batch scripts themselves.
+ * @param options - the profile directory and this attempt's owner token.
+ */
+export function profileLockScript(options: { profileDir: string; token: string }): string {
+  return lockAcquireBody(profileLockDir(options.profileDir), options.token)
+}
+
+/** The reuse-mode unlock body. */
+export function profileUnlockScript(options: { profileDir: string; token: string }): string {
+  return lockReleaseBody(profileLockDir(options.profileDir), options.token)
+}
+
+/**
+ * Acquire the reuse-mode lock.
+ *
+ * Same `mkdir` test-and-set, different scope: a reused dsh's profile is shared by
+ * every device that points at this host, so two connects can race the plugin
+ * file set. The lock lives **inside the profile directory** because that, not
+ * `~/.dsh/server`, is the only path a reuse deployment owns.
+ * @param transport - open transport.
+ * @param profileDir - absolute remote profile directory.
+ * @param token - this attempt's owner token.
+ */
+export async function acquireProfileLock(transport: RemoteTransport, profileDir: string, token: string): Promise<void> {
+  const result = await transport.exec(sh(profileLockScript({ profileDir, token })), { maxBytes: 4096, timeoutMs: 30_000 })
+  if (result.code !== 0) {
+    throw new Error(`cannot acquire the remote profile lock: ${result.stderr.trim() || `exit ${result.code}`}`)
+  }
+}
+
+/** Release the reuse-mode lock (best effort). */
+export async function releaseProfileLock(transport: RemoteTransport, profileDir: string, token: string): Promise<void> {
+  await transport.exec(sh(profileUnlockScript({ profileDir, token })), { maxBytes: 4096, timeoutMs: 15_000 }).catch(() => {})
+}
+
+/**
+ * The script that writes the reuse-mode plugin marker.
+ *
+ * Written **after** the file set is on disk, so a failed upload can never look
+ * current (same rule as every other marker in this module).
+ * @param options - profile directory, file-set digest, plugin version and profile name.
+ */
+export function profilePluginScript(options: { profileDir: string; sha256: string; version: string; profile: string }): string {
+  const marker: ProfilePluginMarker = {
+    id: 'plugin',
+    sha256: options.sha256,
+    version: options.version,
+    profile: options.profile,
+  }
+  return [
+    'set -eu',
+    `command mkdir -p ${q(options.profileDir)}`,
+    `printf %s ${q(`${JSON.stringify(marker)}\n`)} > ${q(`${options.profileDir}/${PROFILE_MARKER_FILE}`)}`,
   ].join('\n')
-  await transport.exec(sh(body), { maxBytes: 4096, timeoutMs: 15_000 }).catch(() => {})
+}
+
+/**
+ * The read-only script that measures one reuse launcher.
+ *
+ * Everything it needs is measured here rather than assumed, because the wizard's
+ * scan may be minutes old and the user may have picked a path that has since
+ * changed. `$DSHHOME/server/node/bin` leads `PATH` for the same measured reason
+ * the scan needs it: the uploaded dsh is a `/bin/sh` shim around `exec node`, and
+ * without that prefix its `--version` answers `exec: node: not found` (exit 127).
+ * @param options - the selected launcher and the deployment root that may hold a Node.
+ */
+export function reuseLauncherScript(options: { launcherPath: string; installHome: string }): string {
+  const deployedNode = serverPath(options.installHome, 'node/bin/node')
+  return [
+    'set -u',
+    'export LC_ALL=C',
+    // `export`: this line stands alone (not as a command prefix), and the
+    // interpreter probe below only finds the deployed node because PATH is
+    // exported to the launcher it spawns.
+    `export ${pathAssignment([serverPath(options.installHome, 'node/bin')])}`,
+    `L=${q(options.launcherPath)}`,
+    "printf '%s\\n' '@@RW@@REUSE@@1'",
+    'if [ -e "$L" ]; then printf \'EXISTS\\t1\\n\'; else printf \'EXISTS\\t0\\n\'; fi',
+    'if [ -x "$L" ]; then printf \'EXEC\\t1\\n\'; else printf \'EXEC\\t0\\n\'; fi',
+    'real=$(readlink -f "$L" 2>/dev/null || printf \'%s\' "$L")',
+    '  [ -n "$real" ] || real=$L',
+    "printf 'REAL\\t%s\\n' \"$real\"",
+    'sb=$(head -1 "$real" 2>/dev/null)',
+    'case "$sb" in \'#!\'*) printf \'SHEBANG\\t1\\n\' ;; *) printf \'SHEBANG\\t0\\n\' ;; esac',
+    "node=''",
+    'case "$sb" in',
+    "  '#!'*'/env node'*) node=$(command -v node 2>/dev/null || true) ;;",
+    "  '#!'*'/env '*node*) node=$(command -v node 2>/dev/null || true) ;;",
+    "  '#!'*node*) node=$(printf '%s' \"$sb\" | sed -e 's/^#![[:space:]]*//' -e 's/[[:space:]].*$//') ;;",
+    'esac',
+    'case "$node" in /*) ;; *) node=\'\' ;; esac',
+    '  [ -x "$node" ] || node=\'\'',
+    "printf 'NODE\\t%s\\n' \"$node\"",
+    `if [ -x ${q(deployedNode)} ]; then printf 'DEPLOYED\\t%s\\n' ${q(deployedNode)}; else printf 'DEPLOYED\\t\\n'; fi`,
+    'if [ -x "$L" ]; then',
+    '  out=$("$L" --version 2>/dev/null); code=$?',
+    "  printf 'VERSION\\t%s\\n' \"$(printf '%s' \"$out\" | head -1)\"",
+    "  printf 'CODE\\t%s\\n' \"$code\"",
+    'else',
+    "  printf 'VERSION\\t\\n'",
+    "  printf 'CODE\\t127\\n'",
+    'fi',
+    "printf '%s\\n' 'END'",
+  ].join('\n')
+}
+
+/** What {@link reuseLauncherScript} reported about one launcher. */
+export interface ReuseLauncherProbe {
+  readonly path: string
+  readonly realPath: string
+  readonly exists: boolean
+  readonly executable: boolean
+  readonly hasShebang: boolean
+  readonly version: string
+  readonly exitCode: number | null
+  readonly nodePath?: string
+  readonly deployedNode?: string
+}
+
+/**
+ * Parse {@link reuseLauncherScript}'s records.
+ *
+ * Structural twin of `plan.ReuseLauncherFacts`: this module owns the shell side,
+ * `plan.ts` owns the decision, and neither imports the other's values.
+ * @param stdout - the script's stdout.
+ * @param launcherPath - the path that was probed (echoed back into the facts).
+ * @returns the facts, with conservative defaults for records that never arrived.
+ */
+export function parseReuseLauncherOutput(stdout: string, launcherPath: string): ReuseLauncherProbe {
+  const values = new Map<string, string>()
+  for (const line of stdout.split('\n').map(entry => entry.replace(/\r$/u, ''))) {
+    if (line === '' || line === 'END') continue
+    const index = line.indexOf('\t')
+    if (index <= 0) continue
+    values.set(line.slice(0, index), line.slice(index + 1))
+  }
+  const codeText = values.get('CODE') ?? ''
+  const exitCode = /^\d+$/.test(codeText) ? Number.parseInt(codeText, 10) : null
+  const node = values.get('NODE') ?? ''
+  const deployed = values.get('DEPLOYED') ?? ''
+  return {
+    path: launcherPath,
+    realPath: values.get('REAL') || launcherPath,
+    exists: values.get('EXISTS') === '1',
+    executable: values.get('EXEC') === '1',
+    hasShebang: values.get('SHEBANG') === '1',
+    version: values.get('VERSION') ?? '',
+    exitCode,
+    ...(node === '' ? {} : { nodePath: node }),
+    ...(deployed === '' ? {} : { deployedNode: deployed }),
+  }
 }
 
 /** Write small files (profile text, lib bundles) through the transport. */

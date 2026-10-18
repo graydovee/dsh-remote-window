@@ -341,6 +341,94 @@ ${ROW_STYLES}
   color: var(--dsw-alias-label-caption);
 }
 
+/* --------------------------- step-3 scan panels (new cards, layout only)
+
+   These are NOT the sidebar's rows: they are the two panels step 3 shows under
+   its connection-method cards (the reuse candidate list and the upload summary).
+   Every colour/spacing value comes from the shell's tokens, so the cards follow
+   the active theme like the rest of the plugin. */
+
+.dsh-rw-scan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dsh-rw-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dsh-rw-candidate {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-candidate:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dsh-rw-candidate[data-selected="true"] {
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.dsh-rw-candidate:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dsh-rw-candidate-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dsh-rw-candidate-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.dsh-rw-candidate-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-candidate-note {
+  font-size: 11px;
+  color: var(--dsw-alias-label-caption);
+}
+
+.dsh-rw-candidate-reason {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-rw-candidate-action {
+  flex: none;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
 /* ---------------------------------------------------------------- fields */
 
 .dsh-rw-fields {

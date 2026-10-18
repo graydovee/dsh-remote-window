@@ -8,6 +8,7 @@
  * platform downloads anything, and repeated connects are pure uploads.
  */
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -69,13 +70,43 @@ export function remoteAssetsCacheDir(): string {
   return join(homedir(), '.dsh', 'remote-assets')
 }
 
-function sha256File(path: string): Promise<string> {
-  return execLocal('shasum', ['-a', '256', path], 60_000).then(r => {
-    const line = r.stdout.split('\n')[0] ?? ''
-    const hash = line.trim().split(/\s+/)[0] ?? ''
-    if (r.code !== 0 || hash.length !== 64) throw new Error(`cannot hash ${path}: ${r.stderr || line}`)
-    return hash
-  })
+/**
+ * The most informative single line an error can give — never empty.
+ *
+ * `error.message` is empty for several `fs`/stream failures, and those were
+ * exactly the ones this module reported as `cannot hash <path>: ` (alpha52, on a
+ * Windows host): a diagnostic dead end. Fall back to the code, then the name.
+ */
+function errorReason(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.message !== '') return error.message
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== undefined && String(code) !== '') return String(code)
+    return error.name
+  }
+  return String(error)
+}
+
+/**
+ * sha256 of one file, **streamed through `node:crypto`**.
+ *
+ * Was `execLocal('shasum', ['-a', '256', path])`, which is POSIX-only: on a
+ * Windows host `shasum`/`sha256sum` do not exist, so the very first `ensureNode`
+ * on any fresh remote died at `cannot hash …` (empty reason, no `.ready` marker)
+ * — the whole upload path was unusable from Windows. Node's own crypto is always
+ * present, and streaming keeps a 57 MB node tarball / 144 MB server package out
+ * of memory (same style as `sha256OfFiles`).
+ * @param path - absolute local file path.
+ * @returns the lowercase hex digest.
+ */
+export async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  try {
+    for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
+  } catch (error) {
+    throw new Error(`cannot hash ${path}: ${errorReason(error)}`)
+  }
+  return hash.digest('hex')
 }
 
 /** Machine architecture in Node tarball spelling. */
@@ -334,19 +365,53 @@ export function sourceOrder(policy: 'auto' | 'download' | 'upload'): readonly ('
 }
 
 /**
+ * What the local cache holds for one target architecture, without touching the
+ * network or the packer.
+ *
+ * Used by `dsh-scan` to tell the wizard "already cached, upload directly" before
+ * the user commits to the upload path. Deliberately the *same* validation the
+ * resolver applies on a hit (`cachedAssetIfReady` + the 1 MiB floor from
+ * api-contract §9.1), so a "cached" badge and a real cache hit cannot disagree.
+ * @param options - the dsh release and the target platform.
+ * @returns the artifact name plus, on a hit, its digest and size.
+ */
+export async function describeLocalPackage(options: {
+  version: string
+  platform: 'linux' | 'darwin'
+  arch: 'x64' | 'arm64'
+  libc: '' | 'gnu' | 'musl'
+}): Promise<{ artifact: string; version: string; cached: boolean; sha256?: string; sizeBytes?: number }> {
+  const tag = artifactTag(options.platform, options.arch, options.libc)
+  const artifact = artifactName(options.version, tag)
+  const hit = await cachedAssetIfReady(join(remoteAssetsCacheDir(), artifact))
+  if (hit === undefined || hit.size <= 1024 * 1024) {
+    return { artifact, version: options.version, cached: false }
+  }
+  return { artifact, version: options.version, cached: true, sha256: hit.sha256, sizeBytes: hit.size }
+}
+
+/**
  * Resolve the server package per policy. Every source lands in the same local
  * cache, so a policy change or a retry after a partial download never
  * re-fetches what is already on disk.
+ *
+ * `'reuse'` is accepted by the *type* only so the caller can pass the target's
+ * effective source straight through: reuse never produces an artifact, so it is
+ * refused loudly here instead of quietly building one (architecture §3.3/A11 —
+ * a reuse failure must never become a silent 40 MB upload).
  */
 export async function resolveServerPackage(options: {
   version: string
   platform: 'linux' | 'darwin'
   arch: 'x64' | 'arm64'
   libc: '' | 'gnu' | 'musl'
-  policy: 'auto' | 'download' | 'upload'
+  policy: 'auto' | 'download' | 'upload' | 'reuse'
   mirror: string
   onProgress?: (message: string, detail?: string) => void
 }): Promise<{ asset: CachedAsset; via: 'cache' | 'download' | 'build' }> {
+  if (options.policy === 'reuse') {
+    throw new Error('the "reuse" package source produces no server package; reuse is a provisioning mode, not an artifact source')
+  }
   const notify = options.onProgress ?? (() => {})
   const tag = artifactTag(options.platform, options.arch, options.libc)
   const dir = remoteAssetsCacheDir()

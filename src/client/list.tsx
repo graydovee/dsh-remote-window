@@ -1,23 +1,29 @@
 /**
- * The plugin panel body — the *secondary* surface.
+ * The plugin panel body — the *secondary* surface — plus the 添加工作区 dialog.
  *
  * The tree itself lives in the left sidebar (see `sidebar.tsx`, next to the
  * shell's own 工作区 section). This panel is where the connection wizard renders
- * and where the 添加工作区 picker is hosted, and it keeps a full-width copy of the
- * tree so the plugin still works if the sidebar anchor is ever unavailable.
+ * and where a second copy of the tree is kept, so the plugin still works if the
+ * sidebar anchor is ever unavailable.
+ *
+ * The dialog has two tabs, **browse first**: adding a workspace means picking a
+ * remote directory (that is the requirement), and the remote dsh's own registry
+ * is the shortcut for directories it already knows. The browse tab is
+ * `directory-picker.tsx` — the only copy of that UI, moved out of the wizard.
  */
 import type { ReactElement } from 'react'
 import {
   Button, IconPlusOutlineRegular, IconRefreshOutlineRegular, IconWorkspaceTreeOutlineRegular,
-  Modal, PathLabel,
+  Modal, PathLabel, SegmentedControl,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { RemoteRegistryWorkspace } from './api.ts'
-import { EmptyState, ErrorBanner, LoadingLine } from './common.tsx'
+import { EmptyState, ErrorBanner, LoadingLine, useSingleHost } from './common.tsx'
+import { DirectoryPicker } from './directory-picker.tsx'
 import { t } from './locales.ts'
 import { store, useAppState } from './store.ts'
 import { RemoteTree } from './tree.tsx'
 
-/** One row of the 添加工作区 picker: a workspace the remote dsh registered. */
+/** One row of the 远端已注册 tab: a workspace the remote dsh registered. */
 function AddWorkspaceRow(props: { entry: RemoteRegistryWorkspace; added: boolean; pending: boolean }): ReactElement | null {
   const { entry } = props
   return (
@@ -40,17 +46,30 @@ function AddWorkspaceRow(props: { entry: RemoteRegistryWorkspace; added: boolean
   )
 }
 
-/** The 添加工作区 modal: the remote dsh's own registry, plus a browse escape hatch. */
+/**
+ * The 添加工作区 dialog: 浏览目录 (default) and 远端已注册.
+ *
+ * Opening it opens the browser, including its connect-first step for a target
+ * whose channel is down (`store.openBrowseDirectory` shows 连接中 inside the
+ * dialog rather than a blank pane).
+ */
 export function AddWorkspaceDialog(): ReactElement | null {
+  const owned = useSingleHost('add-workspace')
   const state = useAppState()
   const dialog = state.addWorkspace
-  if (dialog === undefined) return null
+  if (!owned || dialog === undefined) return null
   const added = new Set(
     state.workspaces
       .filter(workspace => workspace.targetId === dialog.targetId)
       .map(workspace => workspace.path),
   )
-  const target = state.targets.find(candidate => candidate.id === dialog.targetId)
+  const browse = dialog.tab === 'browse'
+  const { directory } = state
+  const canOpen = browse
+    && !state.pending
+    && !directory.loading
+    && !directory.connecting
+    && directory.listing !== undefined
   return (
     <Modal
       open
@@ -64,48 +83,69 @@ export function AddWorkspaceDialog(): ReactElement | null {
             <Button
               variant="ghost"
               icon={<IconRefreshOutlineRegular size={12} />}
-              disabled={dialog.loading}
-              onClick={() => { void store.refreshAddWorkspace() }}
+              disabled={browse ? directory.loading : dialog.loading}
+              onClick={() => {
+                if (!browse) {
+                  void store.refreshAddWorkspace()
+                  return
+                }
+                const targetId = directory.targetId
+                if (targetId === undefined) return
+                void store.loadDirectory(targetId, directory.listing?.path ?? '')
+              }}
             >
               {t('common.refresh')}
             </Button>
           </span>
           <span className="dsh-rw-footer-group">
-            {/* Directory browsing stays available: a workspace need not be
-                registered on the remote dsh to be opened here. */}
-            <Button
-              variant="outline"
-              disabled={target === undefined}
-              onClick={() => {
-                store.closeAddWorkspace()
-                if (target !== undefined) store.openTargetDirectory(target)
-              }}
-            >
-              {t('tree.addWorkspace.browse')}
-            </Button>
-            <Button variant="primary" onClick={store.closeAddWorkspace}>{t('tree.addWorkspace.close')}</Button>
+            {browse && (
+              <Button
+                variant="primary"
+                disabled={!canOpen}
+                onClick={() => { void store.openWorkspace() }}
+              >
+                {state.pending ? t('directory.opening') : t('directory.open')}
+              </Button>
+            )}
+            <Button variant="ghost" onClick={store.closeAddWorkspace}>{t('tree.addWorkspace.close')}</Button>
           </span>
         </div>
       )}
     >
       <div className="dsh-rw-picker">
-        {dialog.error !== undefined && <ErrorBanner error={dialog.error} />}
-        {dialog.loading && dialog.items.length === 0 && <LoadingLine text={t('tree.addWorkspace.loading')} />}
-        {!dialog.loading && dialog.items.length === 0 && dialog.error === undefined && (
-          <EmptyState text={t('tree.addWorkspace.empty')} />
-        )}
-        {dialog.items.length > 0 && (
-          <ul className="dsh-rw-picker-list">
-            {dialog.items.map(entry => (
-              <AddWorkspaceRow
-                key={entry.id}
-                entry={entry}
-                added={added.has(entry.path)}
-                pending={state.pending}
-              />
-            ))}
-          </ul>
-        )}
+        <SegmentedControl<'browse' | 'registry'>
+          id="dsh-rw-add-workspace-tab"
+          value={dialog.tab}
+          label={t('tree.addWorkspace.title')}
+          options={[
+            { value: 'browse', label: t('tree.addWorkspace.tab.browse') },
+            { value: 'registry', label: t('tree.addWorkspace.tab.registry') },
+          ]}
+          onChange={(next) => { store.setAddWorkspaceTab(next) }}
+        />
+        {browse
+          ? <DirectoryPicker />
+          : (
+            <>
+              {dialog.error !== undefined && <ErrorBanner error={dialog.error} />}
+              {dialog.loading && dialog.items.length === 0 && <LoadingLine text={t('tree.addWorkspace.loading')} />}
+              {!dialog.loading && dialog.items.length === 0 && dialog.error === undefined && (
+                <EmptyState text={t('tree.addWorkspace.empty')} />
+              )}
+              {dialog.items.length > 0 && (
+                <ul className="dsh-rw-picker-list">
+                  {dialog.items.map(entry => (
+                    <AddWorkspaceRow
+                      key={entry.id}
+                      entry={entry}
+                      added={added.has(entry.path)}
+                      pending={state.pending}
+                    />
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
       </div>
     </Modal>
   )
@@ -132,7 +172,7 @@ export function ListBody(): ReactElement | null {
           <RemoteTree compact={false} />
         </div>
       </div>
-      {/* The picker is rendered by `RemoteTree` (it is a tree-level dialog). */}
+      {/* The dialog is rendered by `RemoteTree` (it is a tree-level dialog). */}
     </div>
   )
 }

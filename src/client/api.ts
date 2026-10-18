@@ -54,6 +54,18 @@ export interface PublicTarget {
   wslUser?: string
   remote: RemoteRuntimeConfig
   status: TargetStatus
+  /** How this target's server package was last obtained, when the host knows. */
+  packageSource?: 'auto' | 'download' | 'upload' | 'reuse'
+  /** The remote dsh the user picked last time (reuse), for a future preset. */
+  reuseDsh?: { path: string; version: string; nodePath?: string; scannedAt: string }
+  /** Last probed architecture — a hint only; the pipeline probes again. */
+  platformProbe?: {
+    platform: 'linux' | 'darwin'
+    arch: 'x64' | 'arm64'
+    libc: '' | 'gnu' | 'musl'
+    tag: string
+    probedAt: string
+  }
   lastError?: string
   lastConnectedAt?: string
 }
@@ -150,9 +162,110 @@ export interface ConnectStartRequest {
   wslDistro?: string
   wslUser?: string
   /** Per-target server-package source; omitted = follow the global policy. */
-  packageSource?: 'download' | 'upload'
+  packageSource?: 'auto' | 'download' | 'upload' | 'reuse'
+  /** Required when `packageSource: 'reuse'`: the launcher the user picked. */
+  reuseLauncherPath?: string
   remote?: RemoteRuntimeInput
 }
+
+/* ------------------------------------------------------- connection method */
+
+/**
+ * The three-way choice of wizard step 3.
+ *
+ * `download` is rendered this round but never selectable (the card is
+ * disabled): the server-package releases it would fetch do not exist yet.
+ */
+export type ConnectionMode = 'reuse' | 'upload' | 'download'
+
+/** Per-target package source; `''` = follow the global policy. */
+export type PackageSourceInput = '' | 'upload' | 'reuse'
+
+/* --------------------------------------------------------------- dsh scan */
+
+/** Body of `/api/dsh-scan`: the same identity fields a connect request carries. */
+export interface DshScanRequest {
+  kind?: 'ssh' | 'wsl'
+  host?: string
+  port?: number
+  username?: string
+  authKind?: AuthKind
+  /** Only ever in this request body; never echoed back. */
+  secret?: string
+  privateKeyPath?: string
+  sshConfigAlias?: string
+  hostKeyFingerprint?: string
+  wslDistro?: string
+  wslUser?: string
+  profile?: string
+  dshHome?: string
+}
+
+/** The remote `dsh-remote-workspace` profile found next to one dsh. */
+export interface ScannedDshProfile {
+  name: string
+  pluginVersion?: string
+  pluginSha256?: string
+  /** The scanned plugin file set matches this machine's (sha256 equal). */
+  upToDate: boolean
+}
+
+/** One dsh installation the scan found on the remote host. */
+export interface DshCandidate {
+  /** The launcher the user sees and we would start. */
+  path: string
+  /** `readlink -f` target; the scan's de-duplication key. */
+  realPath: string
+  /** First line of `<launcher> --version`; `''` when it failed. */
+  version: string
+  compatible: boolean
+  executable: boolean
+  /** `node` the launcher's shebang needs; absent for a self-contained binary. */
+  nodePath?: string
+  selfContained: boolean
+  profile?: ScannedDshProfile
+  /** Why it is incompatible, already scrubbed by the host. */
+  reason?: string
+}
+
+/** What the remote host needs: platform, arch and the package tag that matches. */
+export interface RemoteRuntimeProbe {
+  platform: 'linux' | 'darwin'
+  arch: 'x64' | 'arm64'
+  libc: '' | 'gnu' | 'musl'
+  platformArch: string
+  tag: string
+  home: string
+  tools: { tar: boolean; sha256sum: boolean; curl: boolean; wget: boolean }
+}
+
+/** The server package that would be uploaded, and whether it is already local. */
+export interface ServerPackageState {
+  artifact: string
+  version: string
+  /** Local `~/.dsh/remote-assets` hit whose sha256 verified. */
+  cached: boolean
+  sha256?: string
+  sizeBytes?: number
+}
+
+/**
+ * `/api/dsh-scan`'s two outcomes.
+ *
+ * `host-key` means the scan is read-only *and* still unauthenticated-host: the
+ * wizard shows the same fingerprint panel a connect shows and re-scans with the
+ * confirmed fingerprint. Nothing is pinned or stored by a scan.
+ */
+export type DshScanResult =
+  | { stage: 'host-key'; fingerprint: string }
+  | {
+      stage: 'done'
+      probe: RemoteRuntimeProbe
+      package: ServerPackageState
+      dshHome: string
+      profiles: string[]
+      candidates: DshCandidate[]
+    }
 
 /** One installed WSL distribution, as `/api/wsl-distros` reports it. */
 export interface WslDistro {
@@ -366,6 +479,23 @@ export const api = {
   /** Sessions stored on the remote server for one local workspace record. */
   sessions(targetId: string, workspaceId: string): Promise<{ sessions: RemoteSession[] }> {
     return call<{ sessions: RemoteSession[] }>('sessions', { targetId, workspaceId })
+  },
+
+  /**
+   * Read-only pre-connection scan: the remote architecture, the server package
+   * state and every dsh already installed there.
+   *
+   * Takes the same identity fields as {@link api.connectStart} (including the
+   * secret, which is used once and never stored), but pins nothing and creates
+   * no record — a `host-key` stage only asks for a confirmation.
+   */
+  dshScan(request: DshScanRequest): Promise<DshScanResult> {
+    return call<DshScanResult>('dsh-scan', request)
+  },
+
+  /** Rename one remote workspace (the host changes its own record's title only). */
+  workspaceRename(workspaceId: string, title: string): Promise<{ workspace: RemoteWorkspace }> {
+    return call<{ workspace: RemoteWorkspace }>('workspace-rename', { workspaceId, title })
   },
 
   /** Drop one saved target (and everything derived from it). */

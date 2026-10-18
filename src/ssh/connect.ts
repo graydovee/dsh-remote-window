@@ -9,7 +9,7 @@
 import { Client, type ConnectConfig, type SFTPWrapper, type ClientChannel } from 'ssh2'
 import { fingerprintOf, HostKeyMismatchError, HostKeyUnknownError } from './hostkey.ts'
 import { scrubSecrets } from '../targets/types.ts'
-import type { RemoteFile } from '../provision/profile.ts'
+import type { RemoteFile } from '../targets/types.ts'
 
 export type { SFTPWrapper, RemoteFile }
 

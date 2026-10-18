@@ -92,6 +92,35 @@ const sandboxRequest = z.object({ argv: z.array(z.string()).min(1), policy: poli
 /** Modes already reported as unconfined so the log stays one line per mode. */
 const unconfinedReported = new Set<string>()
 
+/**
+ * The reply for a confined-mode request this world cannot confine.
+ *
+ * The shape is a **wire contract**, not an implementation detail:
+ * `@deepseek-ai/dsh-sandbox-ssh` parses the `sandbox` reply with a strict facts
+ * schema (`{ argv, enforcement, denialSignatures, runnerFailureRules }` — see
+ * its `factsSchema`) and converts **any** parse failure into
+ * `SandboxUnavailableError`. Returning the bare argv array therefore produced
+ * "sandbox mode … is requested but no sandbox backend is usable on this host"
+ * (with Linux/macOS/Windows advice) for a command that actually ran on the
+ * remote host — alpha54, and the `Runner failure: [` tail was zod's JSON dump of
+ * the rejected array. An earlier round verified this call with `z.unknown()`,
+ * which is exactly why the mismatch survived: the client never parsed it.
+ *
+ * `enforcement: 'partial'` is the honest value — no backend governs these file
+ * effects (the service definition reserves `full` for an argv a backend actually
+ * wrapped). Empty signatures/rules say this world adds no denial or
+ * runner-failure detection of its own.
+ * @param argv - the caller's argv, executed as-is inside this remote world.
+ */
+export function unconfinedSandboxFacts(argv: readonly string[]): {
+  argv: string[]
+  enforcement: 'partial'
+  denialSignatures: string[]
+  runnerFailureRules: []
+} {
+  return { argv: [...argv], enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }
+}
+
 /** Say once per mode that the remote world cannot confine and runs as-is. */
 function noteUnconfined(mode: string): void {
   if (unconfinedReported.has(mode)) return
@@ -477,7 +506,8 @@ export class RemoteExecutionServer {
         // workspace-write means locally: this workspace's machine.
         if (!/no sandbox backend is usable/i.test(String((error as Error).message))) throw error
         noteUnconfined(resolved.mode)
-        return input.argv
+        // Shape is a wire contract — see `unconfinedSandboxFacts`.
+        return unconfinedSandboxFacts(input.argv)
       }
     }
     if (method === 'fs.resolve' || method === 'fs.lstat') {

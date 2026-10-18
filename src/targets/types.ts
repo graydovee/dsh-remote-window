@@ -13,6 +13,47 @@ import { z } from 'zod'
 /** Authentication kind; the value never carries a secret. */
 export type RemoteAuthKind = 'password' | 'privateKey' | 'agent'
 
+/** One file to write on a remote host (absolute POSIX path + its bytes). */
+export interface RemoteFile {
+  /** Absolute POSIX path on the remote host. */
+  readonly path: string
+  readonly content: Buffer
+}
+
+/**
+ * Where the server package comes from for one target.
+ *
+ * `auto` follows the global policy; `reuse` is not a package source at all — it
+ * says "use the dsh the host already has", so nothing is produced or uploaded.
+ * The three artifact sources stay a closed set (`assets.sourceOrder`), and
+ * `resolveServerPackage` refuses `reuse` outright.
+ */
+export type RemotePackageSource = 'auto' | 'download' | 'upload' | 'reuse'
+
+/** The launcher a reuse connection was last started with (a UI hint, not a contract). */
+export interface RemoteReuseDshRecord {
+  readonly path: string
+  readonly version: string
+  readonly nodePath?: string
+  readonly scannedAt: string
+}
+
+/** The architecture the target was last probed on — a hint only. */
+export interface RemotePlatformProbeRecord {
+  readonly platform: 'linux' | 'darwin'
+  readonly arch: 'x64' | 'arm64'
+  readonly libc: '' | 'gnu' | 'musl'
+  readonly tag: string
+  readonly probedAt: string
+}
+
+/** The server package this target last deployed (badge + troubleshooting). */
+export interface RemoteServerPackageRecord {
+  readonly artifact: string
+  readonly sha256: string
+  readonly version: string
+}
+
 /**
  * Resource kind.
  *
@@ -54,7 +95,13 @@ export interface RemoteTargetRecord {
   /** `wsl` only: the distro user; absent means the distribution's default user. */
   readonly wslUser?: string
   /** How to obtain the server package: `auto` follows the global policy. */
-  readonly packageSource?: 'auto' | 'download' | 'upload'
+  readonly packageSource?: RemotePackageSource
+  /** User-selected remote dsh for `packageSource: 'reuse'`; preselected next time. */
+  readonly reuseDsh?: RemoteReuseDshRecord
+  /** Architecture seen on the last probe — a hint, never a correctness input. */
+  readonly platformProbe?: RemotePlatformProbeRecord
+  /** The server package last deployed (or reused) for this target. */
+  readonly serverPackage?: RemoteServerPackageRecord
   /** Remote runtime coordinates. */
   readonly remote: RemoteRuntimeRecord
   readonly status: 'unknown' | 'ready' | 'failed' | 'stopped'
@@ -193,7 +240,9 @@ const runtimeSchema = z.object({
 }).strict()
 
 /** Server-package source for one target. */
-export const packageSourceSchema = z.enum(['auto', 'download', 'upload'])
+// Widened with `'reuse'` (architecture §3.3): an *optional* field whose enum grew,
+// so every stored record still validates and the domain stays at version 1.
+export const packageSourceSchema = z.enum(['auto', 'download', 'upload', 'reuse'])
 
 /** The domain global slot's schema (global default policy + release mirror). */
 export const packagePolicySettingsSchema = z.object({
@@ -220,6 +269,27 @@ export const targetRecordSchema = z.object({
   wslDistro: z.string().min(1).optional(),
   wslUser: z.string().min(1).optional(),
   packageSource: packageSourceSchema.optional(),
+  /** Reuse mode's launcher memory; `.strict()` like every other record object. */
+  reuseDsh: z.object({
+    path: z.string().min(1),
+    version: z.string(),
+    nodePath: z.string().min(1).optional(),
+    scannedAt: z.string().min(1),
+  }).strict().optional(),
+  /** Last probed architecture (hint only; every connect probes again). */
+  platformProbe: z.object({
+    platform: z.enum(['linux', 'darwin']),
+    arch: z.enum(['x64', 'arm64']),
+    libc: z.enum(['', 'gnu', 'musl']),
+    tag: z.string().min(1),
+    probedAt: z.string().min(1),
+  }).strict().optional(),
+  /** The server package last deployed, for the UI badge and for troubleshooting. */
+  serverPackage: z.object({
+    artifact: z.string().min(1),
+    sha256: z.string().length(64),
+    version: z.string().min(1),
+  }).strict().optional(),
   stubPath: z.string().min(1).optional(),
   officialWorkspaceId: z.string().min(1).optional(),
   remote: runtimeSchema,
@@ -287,7 +357,13 @@ export interface PublicTarget {
   /** `wsl` targets: the distribution and its optional user, for the row/labels. */
   readonly wslDistro?: string
   readonly wslUser?: string
-  readonly packageSource?: 'auto' | 'download' | 'upload'
+  readonly packageSource?: RemotePackageSource
+  /** Last reuse launcher, so the wizard can preselect it (`doc/api-contract.md` §5). */
+  readonly reuseDsh?: RemoteReuseDshRecord
+  /** Last probed architecture (the wizard's upload badge). */
+  readonly platformProbe?: RemotePlatformProbeRecord
+  /** The server package last deployed (badge/troubleshooting; holds no credential). */
+  readonly serverPackage?: RemoteServerPackageRecord
   readonly remote: RemoteRuntimeRecord
   readonly status: 'unknown' | 'ready' | 'failed' | 'stopped'
   readonly lastError?: string
@@ -320,6 +396,9 @@ export function toPublicTarget(record: RemoteTargetRecord): PublicTarget {
     ...(record.wslDistro === undefined ? {} : { wslDistro: record.wslDistro }),
     ...(record.wslUser === undefined ? {} : { wslUser: record.wslUser }),
     ...(record.packageSource === undefined ? {} : { packageSource: record.packageSource }),
+    ...(record.reuseDsh === undefined ? {} : { reuseDsh: record.reuseDsh }),
+    ...(record.platformProbe === undefined ? {} : { platformProbe: record.platformProbe }),
+    ...(record.serverPackage === undefined ? {} : { serverPackage: record.serverPackage }),
     remote: record.remote,
     status: record.status,
     ...(record.lastError === undefined ? {} : { lastError: scrubSecrets(record.lastError) }),

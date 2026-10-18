@@ -117,7 +117,10 @@ async function forkSession(workspace: RemoteWorkspace, sessionId: string, action
     // the fork resolves, but this plugin's list is its own, so it has to be
     // re-read (the shell's list updates itself; ours does not).
     await store.refreshSessions(workspace)
-    store.revealSessionId(childId)
+    // The target id lets the store deselect this session when the connection is
+    // torn down later (a stale selection throws during render — see
+    // `releaseShellSelection` in store.ts).
+    store.revealSessionId(childId, workspace.targetId)
   } catch (error) {
     report(action, error)
   }

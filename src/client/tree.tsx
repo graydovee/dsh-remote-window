@@ -17,9 +17,9 @@
  * Row verbs are the official ones with our meanings (the menu is fixed to a
  * rename/delete pair plus the `+` button, so the *labels* are what change):
  *
- *   connection  ＋ 添加工作区   ⋮ 连接/断开 · 忘记连接
- *   workspace   ＋ 新会话       ⋮ 刷新会话列表 · 移除工作区
- *   session     (click the row)  ⋮ 复制会话 ID
+ *   connection  ＋ 添加工作区   ⋮ 连接/断开 · 删除连接
+ *   workspace   ＋ 新会话       ⋮ 重命名工作区 · 移除工作区
+ *   session     (click the row)  ⋮ 置顶/重命名/分叉/归档
  */
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
@@ -31,6 +31,7 @@ import type { AppState } from './store.ts'
 import { AddWorkspaceDialog } from './list.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
 import { RenameSessionDialog } from './rename-dialog.tsx'
+import { WorkspaceRenameDialog } from './workspace-rename-dialog.tsx'
 import { SessionMenu, SessionRowActions } from './session-row-parts.tsx'
 import { workspaceFlags } from './session-verbs.ts'
 import type { SessionFlags } from './session-verbs.ts'
@@ -91,7 +92,10 @@ function connectionTranslate(target: PublicTarget): VerbTranslate {
 /** Row verbs for a remote workspace. */
 function workspaceTranslate(workspace: RemoteWorkspace): VerbTranslate {
   return (key, params) => {
-    if (key === 'rename') return t('tree.sessions.refresh')
+    // The official menu has exactly two fixed slots (`rename` / `delete`), so
+    // 重命名工作区 takes the first one and 刷新会话列表 is gone (architecture A8:
+    // the list refreshes on expand and after every verb anyway).
+    if (key === 'rename') return t('tree.workspace.rename')
     if (key === 'delete.workspace') return t('tree.workspace.forget')
     if (key === 'actions.newSession' || key === 'actions.newSession.aria') return t('tree.workspace.newSession')
     if (key === 'actions.workspace.aria') return t('tree.workspace.aria', { name: workspace.title })
@@ -291,7 +295,7 @@ function WorkspaceRow(props: { workspace: RemoteWorkspace; target: PublicTarget;
         onToggle={() => { store.toggleNode(key) }}
         onCreate={() => { void store.reopenWorkspace(workspace) }}
         actions={{
-          rename: () => { void store.loadSessions(workspace, true) },
+          rename: () => { store.requestWorkspaceRename(workspace) },
           delete: () => { store.requestForgetWorkspace(workspace) },
         }}
         // A disconnected connection cannot start sessions; the row still
@@ -404,6 +408,7 @@ export function RemoteTree(props: { compact: boolean; empty?: string }): ReactEl
     <AddWorkspaceDialog />
     <ConfirmDialog />
     <RenameSessionDialog />
+    <WorkspaceRenameDialog />
     <div
       className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}
       role="tree"

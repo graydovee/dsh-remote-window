@@ -14,19 +14,23 @@
  */
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { RemoteFile } from '../targets/types.ts'
+
+/**
+ * One file to write on the remote host.
+ *
+ * Re-exported from `targets/types.ts`, where it now lives: `ssh/connect.ts`
+ * needs the shape and must not import the provisioning layer (architecture
+ * §2.3, decision A9). Existing `import type { RemoteFile } from './profile.ts'`
+ * call sites keep working.
+ */
+export type { RemoteFile }
 
 /** Remote profile name used unless the target configures another one. */
 export const DEFAULT_SERVER_PROFILE = 'dsh-remote-server'
 
 /** Directory inside the profile that holds this plugin. */
 export const PROFILE_PACKAGE_DIR = 'node_modules/dsh-remote-workspace'
-
-/** One file to write on the remote host. */
-export interface RemoteFile {
-  /** Absolute POSIX path. */
-  readonly path: string
-  readonly content: Buffer
-}
 
 const ROOT_CONFIG = `# dsh profile root — an empty entry list. The tree is composed as patches:
 # each bundle in package.json's dsh.profile.bundles, then cordis.patch.yml, then any
@@ -149,5 +153,44 @@ export function serverCommand(options: { home: string; installHome: string; prof
     `DSH_HOME=${shellQuote(options.home)}`,
     pathAssignment([`${root}/node/bin`, `${root}/dsh/node_modules/.bin`]),
     `exec ${shellQuote(`${root}/dsh/node_modules/.bin/dsh`)} --profile ${shellQuote(options.profile)}`,
+  ].join(' ')
+}
+
+/**
+ * The command that starts a **reused** dsh on its stdio.
+ *
+ * Why a PATH prefix rather than `node <launcher>`: the launcher we measured on
+ * Ubuntu 22.04 (the deployed `.bin/dsh`) is a `/bin/sh` wrapper whose last line
+ * is `exec node …`, so handing it to `node` as a script is not possible. Putting
+ * the interpreter's directory **first on `PATH`** starts both shapes — a JS
+ * launcher with `#!/usr/bin/env node` and that `/bin/sh` shim — with exactly the
+ * same command, and it is also what makes `candidates[].nodePath` meaningful
+ * (`doc/api-contract.md` §9.2's intent; the invocation differs only in form).
+ *
+ * `nodePath` is omitted for a self-contained (native) launcher: nothing needs to
+ * be on PATH, and the remote's own PATH must not be relied on.
+ * @param options - `DSH_HOME`, the launcher, the profile and the interpreter.
+ */
+export function reuseServerCommand(options: {
+  readonly dshHome: string
+  readonly launcher: string
+  readonly profile: string
+  /** Node (or other interpreter) whose directory leads `PATH`; omit when self-contained. */
+  readonly nodePath?: string
+}): string {
+  const dirs: string[] = []
+  if (options.nodePath !== undefined) {
+    const nodeDir = options.nodePath.slice(0, options.nodePath.lastIndexOf('/'))
+    if (nodeDir !== '') dirs.push(nodeDir)
+    // A launcher in the interpreter's own `bin` (the nvm/pnpm layout) adds
+    // nothing — but a hand-installed launcher elsewhere still needs its dir for
+    // any `exec dsh` inside a wrapper script.
+    const launcherDir = options.launcher.includes('/') ? options.launcher.slice(0, options.launcher.lastIndexOf('/')) : ''
+    if (launcherDir !== '' && !dirs.includes(launcherDir)) dirs.push(launcherDir)
+  }
+  return [
+    `DSH_HOME=${shellQuote(options.dshHome)}`,
+    ...(dirs.length === 0 ? [] : [pathAssignment(dirs)]),
+    `exec ${shellQuote(options.launcher)} --profile ${shellQuote(options.profile)}`,
   ].join(' ')
 }

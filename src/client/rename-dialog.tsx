@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { RemoteWorkspace } from './api.ts'
+import { useSingleHost } from './common.tsx'
 import { t } from './locales.ts'
 import { store, useAppState } from './store.ts'
 import { rowsTranslate } from './vendor/workspace-rows/translate.ts'
@@ -75,9 +76,10 @@ function RenameForm(props: { workspace: RemoteWorkspace; sessionId: string; curr
 
 /** The dialog host: renders one form per pending request, or nothing. */
 export function RenameSessionDialog(): ReactElement | null {
+  const owned = useSingleHost('rename-session')
   const state = useAppState()
   const target = state.renameTarget
-  if (target === undefined) return null
+  if (!owned || target === undefined) return null
   return (
     <RenameForm
       key={target.session.id}
