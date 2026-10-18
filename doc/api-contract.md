@@ -43,6 +43,13 @@
 > `cleanup-shell-workspaces`、`forget-workspace` 退役；
 > ⑰ §4 重写为「工作区写操作」；§10 增 `workspace-not-empty`(409)/`server-protocol-mismatch`/
 > `cleanup-failed`/`invalid-workspace-id`。
+>
+> **修订 v7（2026-10-18，P0 契约修订：join 改为 server 清单驱动）**：
+> ⑱ §15.1 `WorkspaceRef` 注释改为「自动登记，材料化前 `stubPath` 为空」；
+> ⑲ §15.2 `workspaceRefs` 语义改写 + **新不变量**「已连接 target 上 `workspaceRefs` 的
+> `remoteWorkspaceId` 集合 ⊇ `serverWorkspaces` 的 id 集合」+ `remote-workspaces` 路由降为内部/QA 用；
+> ⑳ §15.3 迁移**无收尾步骤**、并入自动登记流程；§12 客户端表：弹窗回单页签、删 `unaddedServerWorkspaces()`；
+> ㉑ §4.1 明确「移除 = 所有客户端都消失」。
 
 ---
 
@@ -352,8 +359,8 @@ data: {"type":"done","target":{ …PublicTarget… }}
 - 转发为 `reg.delete { id, force? }`（§14.2）。
 - **`force` 省略/false 且 `sessionCount > 0`** → **HTTP `409`**，
   `error.code = 'workspace-not-empty'`，`error.message` 里带数字（便于 UI 直接展示「还有 N 个会话」）。
-- `force: true` → 删 server 清单条目；**远端会话日志一律保留**（架构 A35）。响应 `sessionCount`
-  是删除前统计，用于提示与 QA 取证。
+- `force: true` → 删 server 清单条目；**远端会话日志一律保留**（架构 A35）。**所有客户端**都会
+  看不到该工作区（清单是共享权威，A44）。响应 `sessionCount` 是删除前统计，用于提示与 QA 取证。
 - 成功（或幂等：本来就没有）后，host 删掉本地 `WorkspaceRef`（含 stub 目录与官方 shell 条目，
   走 `forgetWorkspace` 的清理路径），`refsDropped` 列出被删的本地 ref id。
 - `forget-workspace` 路由**退役**：清单在 server，不存在「只在本机忘记」；旧的 `forget-workspace`
@@ -980,7 +987,7 @@ export const targetRecordSchema = z.object({
 | `src/client/store.ts` | §6：`WizardStep` 三步、`ConnectDraft.connectionMode/reuseLauncherPath`（**`ConnectDraft.packageSource` 退役**）、`DshScanState`、`DirectoryState.open`、`WorkspaceRenameState`；`scanDsh/selectDshCandidate/setConnectionMode/requestWorkspaceRename/acceptWorkspaceRename/openBrowseDirectory`；`done` 帧改落点；删掉 `origin`/`openTargetDirectory`/`retryDirectoryConnect` |
 | `src/client/wizard.tsx` | 第 3 步：三张方式卡片（远程下载 disabled）+ 复用候选列表 + 现有进度/日志/host-key；**reuse 失败时渲染「改用上传 server 包并重试」按钮**（只切 `connectionMode='upload'` 重跑，不自动回退）；`DirectoryStep` 搬走 |
 | `src/client/directory-picker.tsx` | **新建**：从 `DirectoryStep` 搬来的浏览 UI（面包屑/上级/主目录/路径跳转/新建目录/标题/打开） |
-| `src/client/list.tsx` | `AddWorkspaceDialog` 改两页签（浏览目录默认 / 远端已注册） |
+| `src/client/list.tsx` | `AddWorkspaceDialog` **只保留「浏览目录」单页签**（P0 取消「远端已注册」页签：自动登记后它恒为空）；`client/workspace-join.ts` 的 `unaddedServerWorkspaces()` **删除** |
 | `src/client/tree.tsx` | 连接行 `delete` 槽文案 → 删除连接；工作区行 `rename` 槽 → 重命名工作区（调 `requestWorkspaceRename`）；挂 `WorkspaceRenameDialog` |
 | `src/client/workspace-rename-dialog.tsx` | **新建**：照 `rename-dialog.tsx` |
 | `src/client/locales.ts` | 新增/改写的 key（中英都要）：`tree.forgetConnection`→删除连接、`tree.removedConnection`、`connect.mode.*`、`connect.scan.*`、`dsh.*`、`tree.workspace.rename*`、`connect.succeeded.list`、`step.label.connect` |
@@ -1211,12 +1218,18 @@ WSL 目标 = 本机 `Ubuntu-22.04`，SSH 目标 = 真实主机 `graydove@192.168
 保证旧文档原样通过：
 
 ```ts
-/** 本地引用：只存「本机材料化 + 视图状态」，不存 path/title（那是 server 的）。 */
+/**
+ * 本地引用：只存「本机材料化 + 视图状态」，不存 path/title（那是 server 的）。
+ *
+ * **它不决定「有没有这一行」**（Leader 裁决 A43）：host 会在每次 `reg.list` 之后自动登记
+ * （server 有、本机无 → 建一条只带 targetId + remoteWorkspaceId 的 ref）与回收
+ * （本机有、server 无 → 删 ref）。因此 `stubPath`/`officialWorkspaceId` 在真正打开会话之前**为空**。
+ */
 export const workspaceRefSchema = z.object({
   id: z.string().min(1),                       // 本地 ref id（`wr-xxxxxxxx`），UI 节点 key
   targetId: z.string().min(1),
   remoteWorkspaceId: z.string().length(16).optional(),  // server 权威 id；迁移前可缺
-  stubPath: z.string().min(1).optional(),
+  stubPath: z.string().min(1).optional(),      // 材料化后才写
   officialWorkspaceId: z.string().min(1).optional(),
   pinnedSessions: z.array(z.string()).optional(),
   archivedSessions: z.array(z.string()).optional(),
@@ -1234,7 +1247,7 @@ export const workspaceRefSchema = z.object({
 ```jsonc
 {
   "targets": [ /* PublicTarget[]，见 §5 */ ],
-  "workspaceRefs": [ /* WorkspaceRef[]，全部 target 的本地引用 */ ],
+  "workspaceRefs": [ /* WorkspaceRef[]：本机对**全部**已知工作区的材料化/视图状态（含自动登记的） */ ],
   "serverWorkspaces": {            // 只有**在线** target 才有键；离线 target 没有条目
     "rt-1a2b3c4d": [ /* ServerWorkspace[]，= reg.list 的结果，见 §14.1 */ ]
   },
@@ -1245,11 +1258,20 @@ export const workspaceRefSchema = z.object({
 ```
 
 - **`workspaces` 字段退役**（改名为 `workspaceRefs`）；客户端与 host 同版本发布，不需要兼容层。
+- **语义（A43）**：`workspaceRefs` **不是**「本机加过的工作区」，而是「本机对这些工作区的
+  材料化与视图状态」。行是否存在由 `serverWorkspaces` 决定；ref 只提供
+  `stubPath`/`officialWorkspaceId`/`sessionId`/置顶归档/`lastOpenedAt`。
+- **新不变量**：对每个**已连接** target，`workspaceRefs` 里 `remoteWorkspaceId` 的集合
+  **⊇** `serverWorkspaces[targetId]` 的 `id` 集合（正常情况相等；`reg.list` 失败时保留既有 ref，
+  避免列表抖动）。host 在拼 `/api/state` 之前完成自动登记/回收，所以客户端**永远不需要**自己补 ref。
 - `serverWorkspaces` 由 host 对每个**已连接** target 调 `reg.list` 拼出；某个 target 的读取失败时
   该键缺省（不要塞空数组——空数组意味着「server 说没有工作区」）。
 - **性能约束**：`/api/state` 不得每次轮询都串行打 N 个 `reg.list`。host 侧按 target 缓存该结果
   （写操作 `workspace-rename`/`workspace-delete`/`open-workspace`/`connect` 后失效；或 TTL ≤ 2 s），
   缓存只是同一权威的短期副本，**不得**落盘。
+
+> 旁注：`remote-workspaces` 路由（`reg.list` 直读）**保留**，但 UI 不再有入口（「远端已注册」页签已取消）；
+> 它现在是 QA/排障与 host 内部取清单的实现细节。
 
 ### 15.3 迁移算法（旧 `RemoteWorkspaceRecord` → `WorkspaceRef`）
 
@@ -1259,9 +1281,11 @@ export const workspaceRefSchema = z.object({
    - target 已连接 → 调 `reg.create(path, title)`；
      - 成功 → 写入 `remoteWorkspaceId`，删掉 `path`/`title`/`createdAt`（保留 stub/official/sessionId）；
      - 失败 → `console.warn` 一条（过 `scrubSecrets`），记录原样保留，下次连上再试；
-3. `pinnedSessions`/`archivedSessions` 本来就是远端 sessionId，**不需要搬**，只是键从本地 ref id
+3. **没有单独的收尾步骤**：迁移只是把旧记录翻译成 server id，随后它就和任何 ref 一样由
+   §7.1/§15.2 的**自动登记/回收流程**接管（server 有则留存并对齐 id，server 无则删除 ref）；
+4. `pinnedSessions`/`archivedSessions` 本来就是远端 sessionId，**不需要搬**，只是键从本地 ref id
    换成 `remoteWorkspaceId`（视图层按新键查找）；
-4. 迁移**不**删除 stub 目录、**不**注册官方 shell 条目（那是 §7.4 的清扫/材料化职责）。
+5. 迁移**不**删除 stub 目录、**不**注册官方 shell 条目（那是 §7.4 的清扫/材料化职责）。
 
 ### 15.4 客户端 `api.ts` 增补（B 照抄）
 

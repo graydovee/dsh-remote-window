@@ -23,6 +23,10 @@
 > （清单来自 `reg.list`、重命名走 `reg.rename`、删除走 `reg.delete` + `force`）；
 > 新增 **F 节**：跨客户端同源 / desktop 零污染 / 删除不动会话日志 / 迁移无损 / 协议 v3 握手 /
 > `reg.list` 向后解析 六条可判定证据链。权威归属表见 `doc/architecture.md` §7.1。
+> **v7（2026-10-18，P0 契约修订：join 改 server 清单驱动）**——4.3 弹窗回单页签（删「远端已注册」
+> 页签与 `unaddedServerWorkspaces()`）；**F.1 判定升级**：另一客户端建的工作区，本客户端刷新后
+> **无需任何手动操作**就要出现（加了「要点按钮才出现 = 判失败」的反例），并新增第 ⑤ 步
+> （移除后对端行与 ref 同时回收）。新增已知缺口「不能只在本机隐藏单个工作区」。
 >
 > 判定口径：**能跑出证据的才算过**（UI 项报 DOM 实测值，远端项报远端文件/进程/输出的字面内容）。
 > 架构与接口细节见 `doc/architecture.md`、`doc/api-contract.md`。
@@ -84,7 +88,7 @@
 |---|---|---|---|---|---|
 | 4.1 断开连接 | 已有：`tree.tsx:365`（`rename` 槽 → `store.stopTarget`）、`tree.tsx:79` 译文、`store.ts:1345-1370` `stopTarget`、`service.ts:422-444` `stopTarget`、路由 `index.ts:419-420` | 已有 | **措辞按需求方原文**（Leader 裁决 b）：已连接时显示「**断开连接**」，未连接时显示「**连接**」（同一个菜单槽的二态，不改动作） | `client/locales.ts` | 低。动作不变 |
 | 4.2 删除连接（措辞从「忘记连接」改） | 实现已有：`tree.tsx:366`（`delete` 槽 → `store.requestForgetTarget`）、`store.ts:592-602`、`service.ts:403-420` `forgetTarget`、路由 `index.ts:379-382`。**措辞**是「忘记连接」：`locales.ts:109` + 确认框 `locales.ts:110-111`(zh)/`375-376`(en) | 只有措辞与确认框正文 | **Leader 裁决 3（已采纳）**：改 `tree.forgetConnection` 等 key 的中英文为「删除连接」；确认正文**逐项**写「会删」= 本机记录 + 已存凭据 + N 个远程工作区记录 + 其本地锚点目录/shell 条目，「不会删」= 远端 `~/.dsh/server` 部署物 + `remote-server-sessions` 会话日志 + 远端 profile；`store.ts:1322` 的成功 toast（`list.forgotTarget`）同步 | `client/locales.ts`、`client/store.ts`(仅文案 key) | 低。**动作语义不变**（见 architecture §3.5 的处置表） |
-| 4.3 添加工作区 | 存在但语义不对：`tree.tsx:363`（`+` 槽，仅 connected 时）；`store.ts:1515-1521` `openAddWorkspace` 打开的是**远端注册表列表** `list.tsx:44-112`（数据源 `reg.list`，`service.ts:848-862`），浏览只是弹窗里的小逃生口 `list.tsx:76-85` | 主路径不是「浏览目录」 | `AddWorkspaceDialog` 改为两页签，默认「浏览目录」（抽出 `directory-picker.tsx`），「远端已注册」次之；未连接时弹窗内先 `api.connect` 再列目录 | `client/list.tsx`、`client/directory-picker.tsx`(新)、`client/wizard.tsx`(抽走)、`client/store.ts` | 中。抽组件时不要复制两份目录 UI（现有 `DirectoryStep` 全量搬走） |
+| 4.3 添加工作区 | 存在但语义不对：`tree.tsx:363`（`+` 槽，仅 connected 时）；`store.ts:1515-1521` `openAddWorkspace` 打开的是**远端注册表列表** `list.tsx:44-112`（数据源 `reg.list`，`service.ts:848-862`），浏览只是弹窗里的小逃生口 `list.tsx:76-85` | 主路径不是「浏览目录」 | `AddWorkspaceDialog` **只保留「浏览目录」单页签**（P0 裁决 A43：自动登记后「远端已注册」页签恒为空，取消它并删掉 `unaddedServerWorkspaces()`）；未连接时弹窗内先 `api.connect` 再列目录 | `client/list.tsx`、`client/directory-picker.tsx`(新)、`client/wizard.tsx`(抽走)、`client/store.ts`、`client/workspace-join.ts` | 中。抽组件时不要复制两份目录 UI（现有 `DirectoryStep` 全量搬走） |
 
 ### 5. 添加工作区能浏览远端目录，选一个目录作为工作区
 
@@ -165,7 +169,8 @@
 | 远程下载 server 包 | UI 置灰 + 文案；`downloadServerPackage` 代码保留（`auto` 策略仍用） |
 | 删除远端会话 | 仍是已知缺口（AGENTS「已知缺口」），行菜单不含删除 |
 | 删除连接时清理远端部署物 / 远端 workspace 索引 | 明确保留（architecture §3.5），残留写进文档 |
-| 远端 registry 里的工作区标题与本地重命名同步 | 需要新增 `reg.rename` RPC（触碰 `src/server/**`），本轮不做 |
+| 远端 registry 里的工作区标题与本地重命名同步 | **P0 已做**（`reg.rename`，架构 A34）；本条不再适用 |
+| **「只在本机隐藏某个工作区」** | P0 明确不做（A44）：清单是 server 权威，本地隐藏会被下一次自动登记复活；需要的话应做成「整连接不连/删除连接」，而不是逐工作区隐藏。QA 不按此判失败 |
 | 会话「运行中/待审批」状态点 | 仍未观察 |
 | 工作区行「刷新会话列表」 | 退出行菜单（Leader 裁决 2 已采纳；官方行菜单只有 `rename`/`delete.workspace` 两个固定 key，重命名占了 `rename`；列表在展开与每个动词后自动重读）。见 architecture §3.6 |
 | 远端 registry 标题与本地 `title` 不一致 | 已知缺口（裁决 5）：重命名只改插件记录 `title`，绝不 `mv` 远端目录；同步远端 `reg.list` 需新增 `reg.rename`。QA 不按此判失败 |
@@ -214,16 +219,23 @@
 > **清单在 server**、**共享 registry 不被污染**、**删除不动会话日志**。
 > 每条都要字面证据（命令输出 / JSON 片段 / 文件列表），不接受「看起来对」。
 
-### F.1 跨客户端同源（清单在 server）
+### F.1 跨客户端同源（清单在 server，**行由 server 清单驱动**）
+
+**判定核心（Leader 裁决 A43）**：在另一客户端建出来的工作区，**本客户端刷新后无需任何手动操作
+就出现**（不需要点「添加工作区」、不需要在某个页签里手动加一次、不需要重启）。
 
 | 步骤 | 期望 | 证据 |
 |---|---|---|
-| ① 客户端 A（`dsh web` 端口 P1，profile `web`）连接同一台 server，添加工作区 `/home/graydove/proj` | 成功；`reg.list` 里出现该项 | `POST /api/remote-workspaces` 的响应 JSON（含 `id`/`path`/`title`/`sessionCount`），`id` 记下来 |
-| ② 客户端 B（**另一个** profile 或另一个端口 P2，同一 server）连接 | B 的 `serverWorkspaces` 里出现**同一个 `id`**、同 `path`/`title` | 两边的 `POST /api/state` 响应对照（把 `id` 字段并排贴出） |
+| ① 客户端 A（`dsh web` 端口 P1，profile `web`）连接同一台 server，添加工作区 `/home/graydove/proj` | 成功；`reg.list` 里出现该项 | A 的 `POST /api/state` → `serverWorkspaces[targetId]` 里的 `{id,path,title,sessionCount}`，`id` 记下来 |
+| ② 客户端 B（**另一个** profile 或另一个端口 P2，同一 server，**此前从未加过这个工作区**）连接并**只刷新**（不点任何按钮） | **无需手动操作**，B 的「远程工作区」树里直接出现该工作区行（同 `id`、同 `path`、同标题） | 截图/DOM 实测行文本 + B 的 `POST /api/state`：`serverWorkspaces[id]` 有该项，且 `workspaceRefs` 里存在同 `remoteWorkspaceId` 的 ref（证明显式登记是自动发生的） |
 | ③ A 建一个会话、聊一轮；B 展开该工作区 | B 看到**同一个 sessionId** 与**同一个标题** | B 的 `POST /api/sessions` 响应；`persist.titles` 读到的标题一致 |
 | ④ A 重命名工作区；B 刷新 | B 看到新标题（`reg.rename` 是 server 权威） | 两边 `reg.list` 的 `title` 一致 |
+| ⑤ A 移除该工作区（无会话 → 直接删；有会话 → 二次确认 `force`）；B 刷新 | B 的行**同时消失**（清单是共享权威） | B 的 `POST /api/state` 里 `serverWorkspaces` 无该项，且 `workspaceRefs` 里对应 ref 也被回收 |
 
-> 反例（会被判失败）：B 里看不到 A 建的工作区；或两边 `id` 不同（说明还在各自 `reg.create` 不同 path）。
+> 反例（会被判失败）：
+> - B 里**看不到** A 建的工作区，或必须点「添加工作区 / 远端已注册」才出现 → 说明 join 还是 inner join，判失败；
+> - 两边 `id` 不同 → 说明还在各自 `reg.create` 不同 path；
+> - ⑤ 之后 B 仍有这一行（ref 没被回收）或 A 端需要重启才消失。
 
 ### F.2 desktop 零污染（共享 registry 不再出现我们的 stub）
 

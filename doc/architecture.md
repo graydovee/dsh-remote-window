@@ -308,11 +308,11 @@ start    ── reuse 用 `PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> 
   `OfferedMethod = Exclude<ConnectionMethod, 'docker'>`），host 侧的 `methodAvailable` 也仍然
   拒绝它 —— 保留值是为了将来加回时不必改协议面，**不代表**它有 UI 入口。
 
-`directory` 不再是向导步骤。浏览远端目录成为 **`AddWorkspaceDialog` 的默认页签**：
+`directory` 不再是向导步骤。浏览远端目录成为 **`AddWorkspaceDialog` 的唯一内容（单页签）**：
 
-- 一个宿主（挂在 `RemoteTree` 上，沿用「对话框挂在树上」这条踩过两次的不变量），两个页签：
-  **浏览目录**（默认）/ **远端已注册**（现有 `reg.list` 列表）。原来是「注册表列表 + 一个浏览逃生口」，
-  现在反过来，因为需求 5 要的是浏览。
+- 一个宿主（挂在 `RemoteTree` 上，沿用「对话框挂在树上」这条踩过两次的不变量），**只有一个页签：
+  浏览目录**。（P0 变化：原计划的「远端已注册」页签**取消**——自动登记之后 server 里已有的工作区
+  本来就会直接出现在树里，那个页签恒为空，留着只会误导。见 §7.5。）
 - 浏览 UI 从 `wizard.tsx::DirectoryStep`（`wizard.tsx:632-765`）**抽成 `src/client/directory-picker.tsx`**，
   `DirectoryState`（`store.ts:112`）留在 store 里不动（只加一个 `open` 标记）。
 - 目标未连接时：弹窗内先走 `api.connect(targetId)`，`directory.connecting` 已经是现成的「连接中」显示。
@@ -375,7 +375,7 @@ start    ── reuse 用 `PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> 
 | 缺口 | 来源 | 影响 | 后续 |
 |---|---|---|---|
 | 工作区行不再有「刷新会话列表」 | 裁决 2 | 官方行菜单只有 `rename` / `delete.workspace` 两个固定 key，「重命名工作区」占了 `rename`；列表改在展开与每个动词后自动重读 | 若用户反馈强烈，下一轮给面板加「按工作区刷新」入口 |
-| 远端 registry 标题与本地 `title` 不一致 | 裁决 5 | 重命名只改插件记录 `title`（绝不 `mv` 远端目录）；远端 `reg.list` 仍返回旧标题，添加工作区弹窗「远端已注册」页签显示旧标题 | 需要 `reg.rename` RPC（含两仓库同步） |
+| 远端 registry 标题与本地 `title` 不一致 | 裁决 5 | 重命名只改插件记录 `title`（绝不 `mv` 远端目录）；远端 `reg.list` 仍返回旧标题 | **P0 已关闭**：`reg.rename`（A34）让 title 只有一个权威；「远端已注册」页签也已随自动登记取消 |
 | 删除连接不清理远端部署物/会话/索引 | 裁决 3 | 远端残留 `~/.dsh/server`、`workspaces.json` 条目 | 需要 `reg.delete` + 显式「清理远端」动作 |
 | **shell 侧 `uiSession.bindingSource` 在记录非 live 时抛错，且 render 无 error boundary** | alpha54 白屏事故（验收后发现） | 这是「断开→重连整页白屏」的**底层原因**。我们已在其前用官方 `uiWorkspace.clearMain()` 取消选中来回避（断开/删除/掉线路径），但**右栏若仍留着该会话的 dock 页签**（`SidebarSessionViews.prune()` 保留 `hasRetainedTabs`）仍可能触发同一路径 | 彻底修复需要 shell 侧回落到 absent projection + error boundary（**不是**本仓库能改的） |
 
@@ -495,6 +495,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | v4 | 2026-10-18 | D-1 裁决 (b)：撤销 origin 降权；路由层 `reuse-launcher-missing` 口径 | 决策 A27–A28；api-contract §2.3/§3.1/§10/§12/§13 同步，acceptance-gap 新增 2a.9（路由必须透传 `reuseLauncherPath`） |
 | v5 | 2026-10-18 | 冻结前最后一批实现回写 | 决策 A29–A32；新增 §2.8（远端 sandbox facts 契约）、§3.9（`realm-unavailable` 三守卫）；§3.3/§1 方式卡改「只有 ssh/wsl，docker 整卡移除」；§3.6 已知缺口补「`uiSession.bindingSource` 抛错 + 无 error boundary ⇒ 白屏根因，已用 `clearMain()` 回避」；§2.2 增 `method-cards.ts`；api-contract §10/§11 与 acceptance-gap 1.2/C 节同步 |
 | v6 | 2026-10-18 | **阶段 P0：server 权威 + 本地只留引用**（用户批准的重构） | 决策 A33–A42；新增 **§7**（7.1 权威归属表 / 7.2 协议 v3 与握手矩阵 / 7.3 `WorkspaceRef` 与迁移 / 7.4 Gate 0 A/B/C + 清扫 + `cleanup-shell-workspaces` / 7.5 客户端视图与断线 / 7.6 旧结论关闭表）；A7/A17 标注被推翻；api-contract 新增 §14（协议 v3 逐字契约）、§15（`WorkspaceRef`/`state` 形状）、§10 错误码、§1 路由表；acceptance-gap 新增 F 节（P0 验收口径） |
+| v7 | 2026-10-18 | **P0 契约修订：join 改为 server 清单驱动**（Leader 裁决 A43/A44） | §7.1 增加「ref 集合是 server 清单的投影」+ 自动登记/回收规则 + 不变量 `workspaceRefs ⊇ serverWorkspaces`；§7.3 迁移并入自动登记流程；§7.5 行来源改 server 清单驱动、弹窗回单页签（删 `unaddedServerWorkspaces()`）、移除=删 server 登记、新增两条已知缺口；§3.4 单页签；§3.6 registry 标题缺口标关闭；api-contract §15.2/§15.3 语义与新不变量；acceptance-gap F.1 判定改为「无需手动操作即出现」 |
 
 ### 附：本轮决策清单（ADR 摘要）
 
@@ -542,6 +543,8 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A40 | **P0：置顶/归档 = 每客户端视图状态**，按 `remoteWorkspaceId` 存在 `WorkspaceRef` 上，不进 server | 设备偏好不该跨端同步，server 也没有该 RPC |
 | A41 | **P0：删除连接不删 server 清单条目**（其他客户端还在用），只删本地 ref/凭据/stub/shell 条目 | 一个客户端退出不该改变别人看到的世界 |
 | A42 | **P0：新增 `POST /api/cleanup-shell-workspaces`**，并在启动与 `dispose()` 自动清扫 | 共享 registry 里历史残留必须能一键回收，且要有可验证入口 |
+| A43 | **P0：可渲染的工作区行由 server 清单驱动**（不是「server ∩ 本地 ref」的 inner join）；host 在每次 `reg.list` 后**自动登记/回收 ref**（server 有本机无 → 建 ref；本机有 server 无 → 删 ref） | inner join 只渲染「本机加过的」，**另一个客户端建的工作区仍然看不到**——正是用户抱怨的现象。自动登记让两端刷新即互相可见；ref 只承载材料化与视图状态 |
+| A44 | **P0：「移除工作区」= 删 server 登记**（所有客户端消失），会话日志保留；**不做**「只在本机隐藏」 | 清单是权威；本地隐藏会被下一次自动登记复活，除非引入 hide 集合（本轮不做，记入已知缺口） |
 
 ---
 
@@ -573,11 +576,22 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | stub 目录 | **本地临时材料** | `~/.dsh/remote-workspaces/<targetId>/<sha1>` | **非权威**，可随时删除重建 |
 | 官方 shell 工作区条目 | **本地 shell**（`workspaceRegistry`，落在共享 `~/.dsh/storages/workspace.json`） | 共享存储（所有 profile/客户端共用） | **非权威**，目标是**零写入或写完即清扫**（§7.4） |
 | 置顶 / 归档 | **每客户端视图** | plugin 存储域 `workspaceRefs`（按 `remoteWorkspaceId` 存） | 视图状态，不上 server（A40） |
-| 本地 ref（`stubPath`/`officialWorkspaceId`/`sessionId`/`lastOpenedAt`） | **本地** | plugin 存储域 `workspaceRefs` | 本地材料化缓存 + UI 状态 |
+| 本地 ref（`stubPath`/`officialWorkspaceId`/`sessionId`/`lastOpenedAt`） | **本地** | plugin 存储域 `workspaceRefs` | 材料化 + UI 状态；**不决定「有没有这一行」**（见下） |
+
+**本机 ref 集合是 server 清单的投影，不是「我加过哪些工作区」**（Leader 裁决 2026-10-18，A43）：
+
+- 每次拿到某 target 的 `reg.list` 后，host **自动登记引用（auto-ref）**：
+  - **server 有、本机无 ref** → 新建一条 `WorkspaceRef`（新 `wr-xxxxxxxx`），**只写
+    `targetId` + `remoteWorkspaceId`**；**不建 stub、不写官方 shell 条目、不连主机**；
+  - **本机有 ref、server 已无该项** → 删掉该 ref（best-effort 删其 stub 目录与官方条目）。
+- 因此两个客户端刷新后**立刻互相看到**对方建的工作区，无需任何手动操作。
+- 约束：自动登记**只在已连接、且已成功拿到 `reg.list`** 的 target 上做；**绝不**为了登记/迁移去连主机。
+- 不变量：**对每个已连接 target，`workspaceRefs` 的 `remoteWorkspaceId` 集合 ⊇ `serverWorkspaces[targetId]`
+  的 id 集合**（实现上应当相等；⊇ 是下限，因为 `reg.list` 失败时保留既有 ref，避免抖动）。
 
 由此得到的三条可验证结论：
 
-1. **跨客户端同源**：A 端建的工作区，B 端连同一 server 后 `reg.list` 里就有（id 相同）。
+1. **跨客户端同源**：A 端建的工作区，B 端连同一 server 刷新后**直接出现**（id 相同、无需手动添加）。
 2. **desktop 零污染**：清单在 server，stub 只是本地临时目录，不再需要往共享 `workspace.json`
    写条目；历史残留由 §7.4 的清扫收掉。
 3. **删除不动会话**：`reg.delete` 只动清单；会话日志留在远端，重新 `reg.create` 即恢复可见（§7.2）。
@@ -637,7 +651,10 @@ export interface WorkspaceRef {
      的连接可用后（**不在启动时强行连**），调 `reg.create(path, title)`；
   2. 成功 → 写入 `remoteWorkspaceId`，清掉 `path`/`title`/`createdAt`，保留 `stubPath`/`officialWorkspaceId`；
   3. 失败（未连接 / 目录已不存在 / 旧 server 不支持）→ **只记日志**，记录原样保留，下次连上再试；
-     同一 ref 每个进程最多尝试一次。
+     同一 ref 每个进程最多尝试一次；
+  4. **迁移完成后没有单独的收尾步骤**：这批记录随后就落进 §7.1 的**自动登记流程**——下一次
+     `reg.list` 会像对待任何 server 项一样对待它们（有则留存/对齐 `remoteWorkspaceId`，server 无则删除 ref）。
+     换句话说：迁移只负责「把旧记录翻译成 server id」，**是否保留这一行由 server 清单决定**。
 - **未连接就打开工作区**：`serverWorkspaces` 为空 → 客户端只显示连接行（现状如此），
   不假装有清单（A38）。
 - `pinnedSessions`/`archivedSessions` 的键从「本地 record id」改成 **`remoteWorkspaceId`**
@@ -674,18 +691,24 @@ Gate 0 = 判定**我们到底需不需要这条官方行**。三个分支：
 
 ### 7.5 客户端视图与断线行为
 
-- `client/store.ts` 的树数据来源改为两段式：
-  - `serverWorkspaces[targetId]`：连接期由 `POST /api/state` 的 `serverWorkspaces`（= 各在线 target 的
-    `reg.list` 结果）填充；提供 `path`/`title`/`createdAt`/`sessionCount`/`updatedAt`。
-  - `workspaceRefs`：本地引用（stub/official id/`sessionId`/置顶归档/lastOpenedAt），按
-    `(targetId, remoteWorkspaceId)` 与 server 列表**join** 出可渲染的行。
+- **可渲染的工作区行 = server 清单**（Leader 裁决 2026-10-18，A43）。树的数据来源：
+  - **驱动项**：`serverWorkspaces[targetId]`（连接期由 `POST /api/state` 带回，= 各在线 target 的
+    `reg.list`），它决定「有哪些行」以及 `path`/`title`/`createdAt`/`sessionCount`/`updatedAt`；
+  - **叠加项**：`workspaceRefs`（按 `(targetId, remoteWorkspaceId)` 匹配）只提供材料化与视图状态
+    （`stubPath`/`officialWorkspaceId`/`sessionId`/置顶归档/`lastOpenedAt`）。
+  - 由于 host 会自动登记 ref（§7.1），正常情况下两者一一对应；**匹配不到 ref 的 server 项仍要渲染**
+    （用 `title`/`path` 直出，未材料化），不允许因为「本机没加过」就隐藏——那正是用户抱怨的现象。
 - 排序：工作区按 `updatedAt ?? createdAt` 倒序；置顶/归档规则不变（视图层）。
 - 断开 → 不渲染工作区行（`connected && expanded`，且没有 server 列表）——与现状一致，
   但**不再**回落到本地记录（本地已经没有人可显示的 `path`/`title`）。
 - 删除连接：删本地 ref + 凭据 + stub + 官方条目；**不动** server 清单（A41）。
-- 「移除工作区」改为 server 语义：`workspace-delete` → `reg.delete`；有会话时先弹
-  `workspace-not-empty` 提示，二次确认后 `force: true`（并明确写「会话日志会保留」）。
-- 「重命名工作区」改为 server 语义：`workspace-rename` → `reg.rename`；成功后重读 `reg.list`。
+- 「移除工作区」= **删除 server 上的登记**（`workspace-delete` → `reg.delete`），**所有客户端都会消失**；
+  有会话时先弹 `workspace-not-empty`（409），二次确认后 `force: true`，文案**必须**写明
+  「远端会话日志会保留」。本轮**不做**「只在本机隐藏」这种本地视图（见 §7.6 已知缺口）。
+- 「重命名工作区」= server `reg.rename`；成功后重读 `reg.list`。
+- **添加工作区弹窗回到单页签**（只有「浏览目录」）：「远端已注册」页签取消——自动登记之后它恒为空，
+  留着只会误导。因此 `client/workspace-join.ts` 的 `unaddedServerWorkspaces()` 也随之删除
+  （它存在的唯一理由就是那个页签）。
 
 ### 7.6 P0 对既有结论的关闭清单
 
@@ -696,3 +719,5 @@ Gate 0 = 判定**我们到底需不需要这条官方行**。三个分支：
 | §3.6 已知缺口「删除连接不清理远端 workspace 索引」 | **部分关闭**：能力有了（`reg.delete`），但删除连接**有意不用**它（A41）；单条工作区删除可用 |
 | §2.5「远端工作区在本地 shell 树里靠 stub 占位」 | 仍成立，但 stub 降级为**非权威临时材料**（§7.1） |
 | §2.6「path 来自本地记录」 | 改为「path 来自 server 列表（内存）」，routing 只用 stub 做 cwd 映射 |
+| **P0 已知缺口：不能「只在本机隐藏某个工作区」** | 本轮不做。清单是 server 权威，本地隐藏会立刻被下一次自动登记「复活」（或者要引入一套 hide 集合）；若用户需要「桌面端不想看见某台 server 的工作区」，应做成**整连接**级别（本机不连接/删除连接），而不是逐工作区隐藏 |
+| **P0 已知缺口：`/api/state` 的 ref 集合会被自动登记改写** | 任何假设「ref 只在我添加时出现」的旧逻辑（含旧测试）都必须按 A43 重写 |
