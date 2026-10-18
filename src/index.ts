@@ -75,6 +75,12 @@ const STATUS_BY_CODE: Record<string, number> = {
   'not-found': 404,
   'scan-failed': 500,
   'scan-timeout': 500,
+  // The workspace still has sessions: the client asks before forcing (contract §14.3).
+  'workspace-not-empty': 409,
+  // Workspace writes need a live channel: the client can say connect this host first.
+  'target-not-connected': 409,
+  // A v3 client met an older server plugin: the wizard shows the reconnect advice.
+  'server-protocol-mismatch': 500,
 }
 
 /** One JSON response. */
@@ -403,9 +409,19 @@ async function dispatchApi(
       if (storageFailure !== '') {
         throw new RouteError('storage-unavailable', `plugin storage failed to open: ${storageFailure}`, 500)
       }
+      // First `/api/state` of the process doubles as the shell-row sweep's safety
+      // net: by now the registry service exists, and the flag inside makes every
+      // later poll a no-op (no re-scanning the stub tree on each poll).
+      await workspaces.scrubShellWorkspacesOnce().catch(() => undefined)
       return {
         targets: workspaces.listTargets(),
-        workspaces: workspaces.listWorkspaces(),
+        // P0 (§15.2): the local list holds *references* (materialization + view
+        // state); the workspaces themselves come from the server below. The old
+        // `workspaces` field is retired together with the client — no alias.
+        workspaceRefs: workspaces.listWorkspaceRefs(),
+        // Only connected targets appear here: a missing key means "unknown", which
+        // the UI must not render as "the server has no workspaces".
+        serverWorkspaces: await workspaces.serverWorkspaceLists(),
         pluginVersion: pluginVersion(),
         defaultProfile: 'dsh-remote-server',
         // The browser does not know the host OS; this is what gates the WSL
@@ -510,12 +526,33 @@ async function dispatchApi(
       })
     }
     case 'workspace-rename': {
-      // Only the plugin's own title moves; the remote directory is never renamed
-      // (architecture A7). The title is normalized in the service, so an
-      // all-whitespace value is a 400 from there.
-      const workspace = await workspaces.renameWorkspace(requireString(body, 'workspaceId'), requireString(body, 'title'))
-      return { workspace }
+      // P0 reversal (A34): the title is server-authoritative (`reg.rename`), so the
+      // id and path never change and another client sees the new name at its next
+      // refresh. The remote directory is never moved.
+      // The service already answers `{ workspace }` (contract §4/§15: the envelope
+      // is `value.workspace = ServerWorkspace`), so it is returned as-is — wrapping
+      // it again produced `value.workspace.workspace` (alpha57 defect 2).
+      return await workspaces.renameWorkspace(
+        requireString(body, 'targetId'),
+        requireString(body, 'remoteWorkspaceId'),
+        requireString(body, 'title'),
+      )
     }
+    case 'workspace-delete': {
+      // Remove the workspace from the server registry (`reg.delete`). Without
+      // `force`, a workspace that still has sessions answers 409
+      // `workspace-not-empty`; with `force` only the entry goes away — the session
+      // logs stay on the server and come back when the path is registered again.
+      return await workspaces.deleteWorkspace(
+        requireString(body, 'targetId'),
+        requireString(body, 'remoteWorkspaceId'),
+        body.force === true,
+      )
+    }
+    case 'cleanup-shell-workspaces':
+      // QA's "desktop zero pollution" entry point: remove the official shell rows
+      // older builds left in the shared registry (Gate 0 branch A creates none).
+      return await workspaces.scrubShellWorkspaces()
     case 'package-policy-get':
       return { policy: workspaces.getPackagePolicy() }
     case 'package-policy-set': {
@@ -600,8 +637,16 @@ async function dispatchApi(
       return { workspace }
     }
     case 'forget-workspace': {
+      // Retired alias (Leader ruling 6): forgetting a workspace now means deleting
+      // it, so this forwards to `workspace-delete` with `force: false`. A ref with
+      // no server id (legacy, never migrated) still falls back to a local drop.
       const id = requireString(body, 'workspaceId')
-      return { forgotten: await workspaces.forgetWorkspace(id) }
+      const ref = workspaces.listWorkspaceRefs().find(candidate => candidate.id === id || candidate.remoteWorkspaceId === id)
+      if (ref?.remoteWorkspaceId !== undefined) {
+        const deleted = await workspaces.deleteWorkspace(ref.targetId, ref.remoteWorkspaceId, false)
+        return { forgotten: true, ...deleted }
+      }
+      return { forgotten: await workspaces.forgetWorkspace(id), removed: false, sessionCount: 0, refsDropped: ref === undefined ? [] : [ref.id] }
     }
     case 'connect': {
       // The connection node's own action: bring the channel up and report the
@@ -715,8 +760,16 @@ export function apply(ctx: Context, config: Config): void {
     storageFailure = scrubSecrets(error instanceof Error ? error.message : String(error))
     ctx.logger.error(`dsh-remote-workspace: startup failed: ${storageFailure}`)
   })
-  void storageReady.then(() => {
-    if (config.restoreTargets) return workspaces.ensureWorlds()
+  void storageReady.then(async () => {
+    // Gate 0: sweep the official shell rows older builds leaked into the SHARED
+    // registry before anything else runs. `workspaceRegistry` activates AFTER this
+    // row (and must not be injected — AGENTS 3), so wait for it instead of
+    // no-oping on the first look (alpha58's startup sweep did exactly that).
+    const swept = await workspaces.scrubWhenRegistryReady().catch(() => undefined)
+    if (swept !== undefined && swept.removed.length > 0) {
+      ctx.logger.info(`dsh-remote-workspace: removed ${swept.removed.length} leaked shell workspace row(s)`)
+    }
+    if (config.restoreTargets) await workspaces.ensureWorlds()
   }).catch((error: unknown) => {
     ctx.logger.error(`dsh-remote-workspace: target restore failed: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`)
   })

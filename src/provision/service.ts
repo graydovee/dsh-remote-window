@@ -6,7 +6,7 @@
  * preset registration, and session creation with a remote working directory.
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -350,7 +350,15 @@ interface OfficialWorkspace {
 
 interface WorkspaceRegistryLike {
   create(path: string, title?: string): Promise<OfficialWorkspace>
-  resolveByPath(path: string): OfficialWorkspace | undefined
+  /**
+   * The official registry's `resolveByPath` is **async**.
+   *
+   * Declared as possibly-async on purpose: alpha57 shipped without `await` here,
+   * so `entry` was a Promise, `entry.id` was `undefined`, and the Gate 0 sweep
+   * answered `removed: [null, null]` while deleting nothing. With this type a
+   * missing `await` is a compile error instead of a silent no-op.
+   */
+  resolveByPath(path: string): OfficialWorkspace | undefined | Promise<OfficialWorkspace | undefined>
   delete(id: string): Promise<void>
   /**
    * Optional: the official registry may expose a rename. It only changes the
@@ -371,8 +379,16 @@ export class RemoteWorkspaces {
   /** Serializes resumes per session id; see {@link resumeSession}. */
   private readonly resumeQueue = new Map<string, Promise<void>>()
   private readonly presetDisposers = new Map<string, () => Promise<void>>()
+  /** Per-target `reg.list` cache (memory only, ≤ SERVER_LIST_TTL_MS; architecture A38). */
+  private readonly serverWorkspaceCache = new Map<string, { readonly items: readonly RemoteWorkspaceSummary[]; readonly at: number }>()
+  /** Remote path per `${targetId}\0${remoteWorkspaceId}`, for the realm's stub→remote alias. */
+  private readonly workspacePaths = new Map<string, string>()
   private readonly options: Required<RemoteWorkspacesOptions>
   private bootstrap: Promise<void> | undefined
+  /** Set once a shell-row sweep actually ran in this process (see `scrubShellWorkspacesOnce`). */
+  private sweptShellWorkspaces = false
+  /** The in-flight sweep, shared by concurrent callers. */
+  private sweepingShellWorkspaces: Promise<{ removed: string[]; kept: string[] }> | undefined
 
   constructor(private readonly ctx: Context, private readonly store: TargetStore, options: RemoteWorkspacesOptions) {
     this.options = { browseIdleMs: 0, ...options }
@@ -460,6 +476,9 @@ export class RemoteWorkspaces {
       })).catch(() => {})
     }
     this.channels.set(targetId, result.channel)
+    // A fresh connection invalidates the server workspace list (contract §15.2):
+    // the next /api/state must read it from THIS server, not a stale copy.
+    this.invalidateServerWorkspaces(targetId)
     // Attach the browsing client immediately: nothing renews this channel's
     // lease between 连接 and the first directory/session operation, and the
     // remote server exits when the lease lapses — which the next operation then
@@ -541,9 +560,143 @@ export class RemoteWorkspaces {
     })
   }
 
-  /** Every stored remote workspace. */
+  /**
+   * Every local workspace reference (P0 model, architecture §15.1).
+   *
+   * A ref carries only this client's materialization and view state; the path and
+   * title come from the server list (`serverWorkspaceLists`).
+   */
+  listWorkspaceRefs(): RemoteWorkspaceRecord[] {
+    return this.store.listWorkspaces()
+  }
+
+  /** @deprecated P0: use {@link listWorkspaceRefs}; kept for internal call sites. */
   listWorkspaces(): RemoteWorkspaceRecord[] {
     return this.store.listWorkspaces()
+  }
+
+  /**
+   * The server-authoritative workspace list for every **connected** target.
+   *
+   * Keys are present only when the list could actually be read: a missing key
+   * means "unknown", which the UI must not render as "server has no workspaces"
+   * (contract §15.2).
+   */
+  async serverWorkspaceLists(): Promise<Record<string, RemoteWorkspaceSummary[]>> {
+    const out: Record<string, RemoteWorkspaceSummary[]> = {}
+    for (const targetId of [...this.channels.keys()]) {
+      try {
+        // `/api/state` is polled by the tree, so a target whose channel died must
+        // not stall the whole response while it reprovisions. A timed-out target
+        // simply omits its key (same meaning as "unreadable").
+        out[targetId] = await Promise.race([
+          this.serverWorkspacesOf(targetId),
+          new Promise<never>((_resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('reg.list timed out')), STATE_LIST_TIMEOUT_MS)
+            timer.unref?.()
+          }),
+        ])
+      } catch (error) {
+        console.error(`[dsh-remote-workspace] reg.list failed for "${targetId}": ${scrubSecrets(error instanceof Error ? error.message : String(error))}`)
+      }
+    }
+    return out
+  }
+
+  /**
+   * One target's `reg.list`, memoized for {@link SERVER_LIST_TTL_MS}.
+   *
+   * Never persisted: the server is the authority, this is a short-lived copy so
+   * `/api/state` polling does not issue one RPC per target per frame (A38). Every
+   * workspace write invalidates it explicitly.
+   */
+  private async serverWorkspacesOf(targetId: string, options: { refresh?: boolean } = {}): Promise<RemoteWorkspaceSummary[]> {
+    const cached = this.serverWorkspaceCache.get(targetId)
+    if (options.refresh !== true && cached !== undefined && Date.now() - cached.at < SERVER_LIST_TTL_MS) return [...cached.items]
+    const items = await this.listRemoteWorkspaces(targetId)
+    this.serverWorkspaceCache.set(targetId, { items, at: Date.now() })
+    for (const item of items) this.workspacePaths.set(`${targetId}\u0000${String(item.id)}`, item.path)
+    // Keep the local refs in step with what the server says exists: this is where
+    // another client's workspace becomes visible here, and where its deletion
+    // here follows the server (architecture §7.5 as revised by the Leader).
+    await this.reconcileWorkspaceRefs(targetId, items).catch((error: unknown) => {
+      console.error(`[dsh-remote-workspace] reconciling workspace refs for "${targetId}" failed: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`)
+    })
+    return [...items]
+  }
+
+  /**
+   * One local ref by **local id or server workspace id**.
+   *
+   * Since P0 the visible identity of a workspace is the server's 16-hex id, while
+   * the ref keeps its own `wr-…` id for the tree, so both are legal keys on the
+   * wire — resolving here keeps every caller (sessions, flags, delete) honest
+   * without depending on which one the client happened to send.
+   */
+  private refOf(key: string): RemoteWorkspaceRecord | undefined {
+    const direct = this.store.workspace(key)
+    if (direct !== undefined) return direct
+    return this.store.listWorkspaces().find(record => record.remoteWorkspaceId === key)
+  }
+  /** Drop one target's cached server list after any workspace write. */
+  private invalidateServerWorkspaces(targetId: string): void {
+    this.serverWorkspaceCache.delete(targetId)
+  }
+
+  /**
+   * Align this client's refs with one target's server list.
+   *
+   * Three cases, all required by "two clients see each other's workspaces":
+   *
+   * 1. **server has it, this client does not** → create a bare ref
+   *    (`targetId` + `remoteWorkspaceId` only): no stub, no shell row, nothing
+   *    fetched — opening it later materializes those.
+   * 2. **this client has it, the server does not** → the workspace was deleted
+   *    elsewhere; drop the ref and its stub directory (the session logs on the
+   *    server are untouched by design).
+   * 3. **legacy ref** (`remoteWorkspaceId` absent but `path` present) → adopt the
+   *    server's id for that path, or `reg.create` it once, then clear the legacy
+   *    fields. This is the P0 migration; it runs only when a connection exists, so
+   *    startup never dials a host just to migrate.
+   * @param targetId - connected target.
+   * @param items - its freshly read `reg.list`.
+   */
+  async reconcileWorkspaceRefs(targetId: string, items: readonly RemoteWorkspaceSummary[]): Promise<void> {
+    const refs = this.store.listWorkspaces(targetId)
+    const idByPath = new Map(items.map(item => [item.path, String(item.id)] as const))
+    const serverIds = new Set(items.map(item => String(item.id)))
+    for (const ref of refs) {
+      if (ref.remoteWorkspaceId === undefined) {
+        // Legacy ref: adopt the server id (or register the path once).
+        let id = ref.path === undefined ? undefined : idByPath.get(ref.path)
+        if (id === undefined && ref.path !== undefined) {
+          const created = await this.ensureRemoteWorkspace(targetId, ref.path, ref.title)
+          id = String(created.id)
+          idByPath.set(ref.path, id)
+          serverIds.add(id)
+          this.workspacePaths.set(`${targetId}\u0000${id}`, ref.path)
+        }
+        if (id === undefined) {
+          // Neither an id nor a path: nothing can ever resolve this ref.
+          await this.store.deleteWorkspace(ref.id)
+          continue
+        }
+        const { path: _legacyPath, title: _legacyTitle, createdAt: _legacyCreatedAt, serverId: _legacyServer, ...rest } = ref
+        await this.store.putWorkspace({ ...rest, remoteWorkspaceId: id })
+        continue
+      }
+      if (serverIds.has(String(ref.remoteWorkspaceId))) continue
+      // 2: deleted on the server (possibly by another client).
+      await this.store.deleteWorkspace(ref.id)
+      this.workspacePaths.delete(`${targetId}\u0000${String(ref.remoteWorkspaceId)}`)
+      if (ref.stubPath !== undefined) await rm(ref.stubPath, { recursive: true, force: true }).catch(() => {})
+    }
+    // 1: workspaces this client has never seen.
+    const known = new Set(this.store.listWorkspaces(targetId).map(ref => String(ref.remoteWorkspaceId ?? '')))
+    for (const item of items) {
+      if (known.has(String(item.id))) continue
+      await this.store.putWorkspace({ id: `wr-${randomUUID().slice(0, 8)}`, targetId, remoteWorkspaceId: String(item.id) })
+    }
   }
 
   /** The plugin-wide package-source policy and release mirror. */
@@ -679,6 +832,7 @@ export class RemoteWorkspaces {
     }
     await this.store.putTarget(draft)
     this.channels.set(draft.id, provisioned.channel)
+    this.invalidateServerWorkspaces(draft.id)
     await this.registerPreset(draft)
     // A successful connection records the alias for next time.
     return publicTarget(draft, this.store)
@@ -844,33 +998,100 @@ export class RemoteWorkspaces {
   }
 
   /**
-   * Rename one stored remote workspace (api-contract §4, architecture A7).
+   * Rename one workspace **on the server** (`reg.rename`, contract §14.2).
    *
-   * Only the plugin's own `title` changes, plus a best-effort retitle of the
-   * shell's row. The remote directory is **never** moved: the remote log headers
-   * carry the remote path, and an `mv` across the network has no rollback story.
-   * @param workspaceId - the plugin's workspace record id.
+   * P0 reversal (A34): the title is server-authoritative, so another client sees
+   * the new name, and the id/path never change. Nothing is moved on disk — the
+   * remote directory keeps its name and the session logs keep their cwd, so
+   * history stays reachable.
+   * @param targetId - stored target (must be connected).
+   * @param remoteWorkspaceId - server workspace id (16 hex).
    * @param title - raw user input; normalized with the official rules.
-   * @returns the updated record.
    */
-  async renameWorkspace(workspaceId: string, title: string): Promise<RemoteWorkspaceRecord> {
-    const record = this.store.workspace(workspaceId)
-    if (record === undefined) throw codedError('not-found', `unknown remote workspace "${workspaceId}"`)
+  async renameWorkspace(targetId: string, remoteWorkspaceId: string, title: string): Promise<{ workspace: RemoteWorkspaceSummary }> {
     const normalized = this.normalizeTitle(title)
     if (normalized === '') throw codedError('bad-request', 'workspace title must contain visible characters')
-    // Best effort: keep the official shell row in step so a future unhide of our
-    // rows cannot show two different names. Swallowed by design — the shell is
-    // free not to expose `rename`.
-    if (record.officialWorkspaceId !== undefined) {
-      const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
-      const label = this.store.target(record.targetId)?.label ?? ''
-      const shellTitle = label === '' ? normalized : `${normalized} · ${label}`
-      try {
-        await registry?.rename?.(record.officialWorkspaceId, shellTitle)
-      } catch {}
+    this.requireConnectedForWrite(targetId, 'renaming a workspace')
+    const renamed = await this.withBrowser(targetId, async client =>
+      await client.request(
+        'reg.rename',
+        { id: remoteWorkspaceId, title: normalized },
+        z.object({ id: z.string().length(16), title: z.string() }),
+        AbortSignal.timeout(20_000),
+      ))
+    this.invalidateServerWorkspaces(targetId)
+    // Answer with the **same item shape `reg.list` reports**. Building a
+    // placeholder here (empty `createdAt`, `sessionCount: 0`) made the renamed row
+    // jump to the bottom of the tree — the client sorts on
+    // `updatedAt ?? createdAt`, and an empty createdAt is skipped — and briefly
+    // displayed "0 sessions" (alpha57).
+    const items = await this.serverWorkspacesOf(targetId, { refresh: true })
+    const found = items.find(item => String(item.id) === String(remoteWorkspaceId))
+    return {
+      workspace: found ?? {
+        id: renamed.id as WorkspaceId,
+        path: this.workspacePaths.get(`${targetId}\u0000${String(remoteWorkspaceId)}`) ?? '',
+        title: renamed.title,
+        createdAt: '',
+        sessionCount: 0,
+      },
     }
-    return await this.store.updateWorkspace(workspaceId, current => ({ ...current, title: normalized }))
   }
+
+  /**
+   * Remove one workspace **from the server registry** (`reg.delete`, A35).
+   *
+   * `force: false` refuses a workspace that still has sessions
+   * (`workspace-not-empty <n>`, mapped to HTTP 409); `force: true` removes the
+   * entry only — the session logs stay on the server, so re-adding the path
+   * brings its history back. This client's ref and stub directory go away either
+   * way.
+   * @param targetId - stored target (must be connected).
+   * @param remoteWorkspaceId - server workspace id (16 hex).
+   * @param force - delete even when the workspace still has sessions.
+   */
+  async deleteWorkspace(
+    targetId: string,
+    remoteWorkspaceId: string,
+    force = false,
+  ): Promise<{ removed: boolean; sessionCount: number; refsDropped: string[] }> {
+    this.requireConnectedForWrite(targetId, 'removing a workspace')
+    let result: { removed: boolean; sessionCount: number }
+    try {
+      result = await this.withBrowser(targetId, async client =>
+        await client.request(
+          'reg.delete',
+          { id: remoteWorkspaceId, ...(force ? { force: true } : {}) },
+          z.object({ removed: z.boolean(), sessionCount: z.number() }),
+          AbortSignal.timeout(20_000),
+        ))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // The transport carries whole sentences; the actionable one gets its own
+      // code so the route can answer 409 instead of a generic 500.
+      const notEmpty = /workspace-not-empty (\d+)/.exec(message)
+      if (notEmpty !== null) throw codedError('workspace-not-empty', `workspace-not-empty ${notEmpty[1] ?? '0'}`)
+      throw error
+    }
+    this.invalidateServerWorkspaces(targetId)
+    this.workspacePaths.delete(`${targetId}\u0000${String(remoteWorkspaceId)}`)
+    const refsDropped: string[] = []
+    for (const ref of this.store.listWorkspaces(targetId)) {
+      if (String(ref.remoteWorkspaceId ?? '') !== String(remoteWorkspaceId)) continue
+      await this.dropRefLocally(ref)
+      refsDropped.push(ref.id)
+    }
+    return { ...result, refsDropped }
+  }
+
+  /** Drop one local ref and its stub directory (never the server's session logs). */
+  private async dropRefLocally(ref: RemoteWorkspaceRecord): Promise<void> {
+    const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
+    if (ref.officialWorkspaceId !== undefined) await Promise.resolve(registry?.delete?.(ref.officialWorkspaceId)).catch(() => {})
+    if (ref.stubPath !== undefined) await rm(ref.stubPath, { recursive: true, force: true }).catch(() => {})
+    await this.store.deleteWorkspace(ref.id)
+  }
+
 
   /** Create a directory on a target, for step 4's "new folder". */
   async createDirectory(targetId: string, path: string): Promise<void> {
@@ -1041,12 +1262,33 @@ export class RemoteWorkspaces {
     return await RemoteClient.open(channel, '/', this.options.leaseMs)
   }
 
-  /** stub → remote aliases for every opened workspace of one target. */
+  /**
+   * stub → remote aliases for every materialized workspace of one target.
+   *
+   * The remote path is **not** stored on the ref any more (the server owns it), so
+   * it comes from the path this process learned — `reg.list`, or the
+   * `openWorkspace`/session call that carried it. A ref with an unknown path is
+   * absent from the alias list on purpose: rewriting a stub path into a path that
+   * does not exist on the remote would run tools in the wrong directory.
+   */
   pathAliases(targetId: string): { stub: string; remote: string }[] {
-    return this.store
-      .listWorkspaces(targetId)
-      .filter(record => record.stubPath !== undefined)
-      .map(record => ({ stub: record.stubPath as string, remote: record.path }))
+    const aliases: { stub: string; remote: string }[] = []
+    for (const record of this.store.listWorkspaces(targetId)) {
+      if (record.stubPath === undefined) continue
+      const remote = this.remotePathOf(targetId, record)
+      if (remote === undefined) continue
+      aliases.push({ stub: record.stubPath, remote })
+    }
+    return aliases
+  }
+
+  /** The remote path of one ref: learned this process, or the legacy field. */
+  private remotePathOf(targetId: string, record: RemoteWorkspaceRecord): string | undefined {
+    if (record.remoteWorkspaceId !== undefined) {
+      const known = this.workspacePaths.get(`${targetId}\u0000${String(record.remoteWorkspaceId)}`)
+      if (known !== undefined) return known
+    }
+    return record.path
   }
 
   /**
@@ -1070,9 +1312,12 @@ export class RemoteWorkspaces {
    * server plugin: every workspace that dsh knows about can be adopted here
    * without browsing the filesystem.
    */
-  async listRemoteWorkspaces(targetId: string): Promise<RemoteWorkspaceSummary[]> {
+  async listRemoteWorkspaces(targetId: string, includeActivity = true): Promise<RemoteWorkspaceSummary[]> {
     return await this.withBrowser(targetId, async client => {
-      const rows = await client.request('reg.list', {}, z.array(workspaceSummarySchema), AbortSignal.timeout(20_000))
+      // `includeActivity` makes the server fold each workspace's latest session
+      // activity (`updatedAt`, memoized by log size there) so the tree can sort by
+      // recency; the plain list is one RPC cheaper.
+      const rows = await client.request('reg.list', includeActivity ? { includeActivity: true } : {}, z.array(workspaceSummarySchema), AbortSignal.timeout(20_000))
       return rows.map(row => ({
         id: row.id as WorkspaceId,
         path: row.path,
@@ -1090,7 +1335,7 @@ export class RemoteWorkspaces {
    * @param workspaceRecordId - the plugin's own workspace record id.
    */
   async listRemoteSessions(targetId: string, workspaceRecordId: string): Promise<RemoteSessionEntry[]> {
-    const record = this.store.workspace(workspaceRecordId)
+    const record = this.refOf(workspaceRecordId)
     if (record === undefined) throw new Error(`unknown remote workspace "${workspaceRecordId}"`)
     const workspaceId = record.remoteWorkspaceId
     // Never opened on this machine: the remote has no workspace id to list yet.
@@ -1178,7 +1423,10 @@ export class RemoteWorkspaces {
       if (!/unknown remote workspace/i.test(message) || typeof workspaceId !== 'string') throw error
       const record = this.store.listWorkspaces(targetId).find(candidate => candidate.remoteWorkspaceId === workspaceId)
       if (record === undefined) throw error
-      await this.ensureRemoteWorkspace(targetId, record.path, record.title).catch(() => {})
+      const path = this.remotePathOf(targetId, record)
+      if (path === undefined) throw error
+      await this.ensureRemoteWorkspace(targetId, path, record.title).catch(() => {})
+      this.invalidateServerWorkspaces(targetId)
       return await call()
     }
   }
@@ -1197,9 +1445,13 @@ export class RemoteWorkspaces {
     // is refused outright rather than degraded.
     await assertRemoteRealm(this.ctx, targetId)
     const target = this.requireConnectedTarget(targetId, 'creating a session')
-    // Validate the directory on the remote host before any session exists.
+    // Validate the directory on the remote host before any session exists, then
+    // register it on the server (idempotent) so the id is server-authoritative.
     const listing = await this.listDirectory(targetId, path)
-    const materialized = await this.materializeWorkspace(target, listing.path, title)
+    const remote = await this.ensureRemoteWorkspace(targetId, listing.path, title)
+    this.workspacePaths.set(`${targetId}\u0000${String(remote.id)}`, listing.path)
+    this.invalidateServerWorkspaces(targetId)
+    const materialized = await this.materializeWorkspace(target, { path: listing.path, remoteWorkspaceId: String(remote.id) })
     const opened = await openSessionInRealm('create', targetId, () => openRemoteSession(this.ctx, {
       targetId,
       // The session's shell-side cwd is the stub (official attachSession
@@ -1262,7 +1514,12 @@ export class RemoteWorkspaces {
     assertLiveSessionInRealm(this.ctx, targetId, sessionId)
     const target = this.requireConnectedTarget(targetId, 'continuing a session')
     const listing = await this.listDirectory(targetId, path)
-    const materialized = await this.materializeWorkspace(target, listing.path, title)
+    // The id is server-authoritative: resolve it by path (create only when the
+    // server genuinely does not know the directory any more).
+    const remote = await this.ensureRemoteWorkspace(targetId, listing.path, title)
+    this.workspacePaths.set(`${targetId}\u0000${String(remote.id)}`, listing.path)
+    this.invalidateServerWorkspaces(targetId)
+    const materialized = await this.materializeWorkspace(target, { path: listing.path, remoteWorkspaceId: String(remote.id) })
     const opened = await openSessionInRealm('resume', targetId, () => resumeRemoteSession(this.ctx, { targetId, sessionId }))
     assertRealmComposed(this.ctx, targetId, opened.sessionId)
     return await this.finishOpen(materialized, opened.sessionId)
@@ -1281,6 +1538,27 @@ export class RemoteWorkspaces {
   }
 
   /**
+   * Same gate for a **workspace write** (`reg.rename` / `reg.delete`).
+   *
+   * These go to the server, so a stopped target cannot serve them; answering a
+   * bare 500 ("internal") gave the user nothing to act on (alpha58). The client
+   * gets `409 target-not-connected` and can say "connect this host first".
+   * @param targetId - stored target.
+   * @param action - what was refused, for the message.
+   */
+  private requireConnectedForWrite(targetId: string, action: string): RemoteTargetRecord {
+    try {
+      return this.requireConnectedTarget(targetId, action)
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'not-connected') throw error
+      throw codedError(
+        'target-not-connected',
+        `remote target "${targetId}" is not connected; connect the host first (请先连接该主机) before ${action}`,
+      )
+    }
+  }
+
+  /**
    * Everything a session needs to exist for a remote directory: the server-side
    * workspace entry, the local stub directory, the shell-tree workspace and the
    * plugin's own record — in that order, and **persisted before any session is
@@ -1288,11 +1566,17 @@ export class RemoteWorkspaces {
    * re-anchors `open()` headers through this record, so an unmaterialized stub
    * would leave the session unroutable).
    */
-  private async materializeWorkspace(target: RemoteTargetRecord, path: string, title?: string): Promise<MaterializedWorkspace> {
-    const existing = this.store.listWorkspaces(target.id).find(record => record.path === path)
+  private async materializeWorkspace(
+    target: RemoteTargetRecord,
+    options: { readonly path: string; readonly remoteWorkspaceId: string },
+  ): Promise<MaterializedWorkspace> {
+    // P0: the caller has already asked the server (idempotent `reg.create`) for
+    // this workspace, so the ref is keyed by the server id and stores no
+    // path/title of its own.
+    const { path, remoteWorkspaceId } = options
+    const existing = this.store.listWorkspaces(target.id).find(record => record.remoteWorkspaceId === remoteWorkspaceId)
     const now = new Date().toISOString()
-    const displayTitle = title ?? (path === '/' ? target.label : path.split('/').filter(Boolean).at(-1) ?? target.label)
-    const remoteWorkspace = await this.ensureRemoteWorkspace(target.id, path, displayTitle)
+    const displayTitle = path === '/' ? target.label : path.split('/').filter(Boolean).at(-1) ?? target.label
 
     // A *local stub directory* stands in for the remote path: official workspaces
     // are local-realpath'd, so this is the only way a remote path could appear in
@@ -1315,17 +1599,10 @@ export class RemoteWorkspaces {
       shellTitle: `${displayTitle} · ${target.label}`,
     })
 
-    const base: RemoteWorkspaceRecord = existing === undefined
-      ? {
-          id: `rw-${randomUUID().slice(0, 8)}`,
-          targetId: target.id,
-          path,
-          title: displayTitle,
-          createdAt: now,
-        }
-      : existing
     const record: RemoteWorkspaceRecord = {
-      ...base,
+      id: existing?.id ?? `wr-${randomUUID().slice(0, 8)}`,
+      targetId: target.id,
+      remoteWorkspaceId,
       // `stubPath` is ours, not the shell's: the routing persistence resolves a
       // session's cwd against it, and `forgetWorkspace` removes the directory.
       // It used to be copied from the official entry, so a *failed* shell
@@ -1333,8 +1610,10 @@ export class RemoteWorkspaces {
       // routed; now it is always the stub we just materialized.
       stubPath: official?.path ?? canonicalStub,
       ...(official === undefined ? {} : { officialWorkspaceId: official.id }),
-      remoteWorkspaceId: remoteWorkspace.id,
-      ...(remoteWorkspace.serverId === undefined ? {} : { serverId: remoteWorkspace.serverId }),
+      ...(existing?.pinnedSessions === undefined ? {} : { pinnedSessions: existing.pinnedSessions }),
+      ...(existing?.archivedSessions === undefined ? {} : { archivedSessions: existing.archivedSessions }),
+      ...(existing?.lastOpenedAt === undefined ? {} : { lastOpenedAt: existing.lastOpenedAt }),
+      ...(existing?.sessionId === undefined ? {} : { sessionId: existing.sessionId }),
     }
     await this.store.putWorkspace(record)
     return { record, official, stub: canonicalStub, now }
@@ -1433,7 +1712,7 @@ export class RemoteWorkspaces {
    * @returns the updated record.
    */
   async setSessionFlag(workspaceId: string, sessionId: string, flag: 'pinned' | 'archived', on: boolean): Promise<RemoteWorkspaceRecord> {
-    const record = this.store.workspace(workspaceId)
+    const record = this.refOf(workspaceId)
     if (record === undefined) throw new Error(`unknown remote workspace "${workspaceId}"`)
     const key = flag === 'pinned' ? 'pinnedSessions' : 'archivedSessions'
     const current = record[key] ?? []
@@ -1455,29 +1734,92 @@ export class RemoteWorkspaces {
     return updated
   }
 
-  /** Forget one stored remote workspace record (and its shell-tree entry). */
+  /**
+   * Forget one workspace **locally only**.
+   *
+   * P2: the `forget-workspace` route is an alias of `workspace-delete`, so this
+   * method is the fallback used when the server cannot be asked (offline target,
+   * or a legacy ref with no server id): drop the ref and its stub, never the
+   * server's session logs.
+   */
   async forgetWorkspace(workspaceId: string): Promise<boolean> {
-    const record = this.store.workspace(workspaceId)
-    // `ctx.get`, not `ctx.workspaceRegistry`: property access on a cordis context
-    // requires the service in `inject`, and the plugin deliberately does not
-    // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
-    const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
-    if (record?.officialWorkspaceId !== undefined) {
-      await registry?.delete(record.officialWorkspaceId).catch(() => {})
-    }
-    if (record?.stubPath !== undefined) {
-      await rm(record.stubPath, { recursive: true, force: true }).catch(() => {})
-    }
-    return await this.store.deleteWorkspace(workspaceId)
+    const record = this.refOf(workspaceId)
+    if (record === undefined) return false
+    await this.dropRefLocally(record)
+    return true
   }
 
-  /** Close every channel and browsing session. */
+  /** Close every channel and browsing session, then scrub leaked shell rows. */
   async dispose(): Promise<void> {
     for (const targetId of [...this.browsers.keys()]) await this.retireBrowser(targetId)
     for (const channel of this.channels.values()) await channel.close().catch(() => {})
     this.channels.clear()
     for (const ticket of this.tickets.values()) ticket.confirm?.('')
     this.tickets.clear()
+    // Branch A never creates shell rows; this catches rows older builds left in
+    // the shared registry (Gate 0). Best effort — unload must not fail on it.
+    await scrubShellWorkspaces(this.ctx).catch(() => {})
+  }
+
+  /**
+   * Run the shell-row sweep on demand (`POST /api/cleanup-shell-workspaces`).
+   *
+   * Always runs: it is the operator's explicit repair action, so the
+   * once-per-process flag must not suppress it.
+   */
+  async scrubShellWorkspaces(options: { root?: string } = {}): Promise<{ removed: string[]; kept: string[] }> {
+    return await scrubShellWorkspaces(this.ctx, options)
+  }
+
+  /**
+   * Sweep **at most once per process**, and only when the shell registry exists.
+   *
+   * This is the startup / first-`/api/state` safety net (alpha59).
+   * `workspaceRegistry` is deliberately not injected (AGENTS 3: that edge
+   * deadlocks against `sessionPersistence`), so at `storageReady` time it can still
+   * be `undefined` — alpha58's startup sweep silently took the no-op branch and the
+   * leaked rows survived until someone hit the route. The flag is set only after a
+   * sweep actually ran, so a missing registry leaves the work for a later caller
+   * (and a second caller in the same process never re-scans).
+   */
+  async scrubShellWorkspacesOnce(options: { root?: string } = {}): Promise<{ removed: string[]; kept: string[] }> {
+    if (this.sweptShellWorkspaces) return { removed: [], kept: [] }
+    if (this.ctx.get('workspaceRegistry') === undefined) return { removed: [], kept: [] }
+    // One in-flight sweep shared by concurrent callers (startup poll + first state).
+    const run = this.sweepingShellWorkspaces ?? (async () => {
+      try {
+        const result = await scrubShellWorkspaces(this.ctx, options)
+        this.sweptShellWorkspaces = true
+        return result
+      } finally {
+        this.sweepingShellWorkspaces = undefined
+      }
+    })()
+    this.sweepingShellWorkspaces = run
+    return await run
+  }
+
+  /**
+   * Wait (bounded) for the shell registry, then sweep once.
+   *
+   * The registry service finishes activating *after* this row, so the startup
+   * sweep has to wait for it rather than give up on the first look. Polling beats
+   * `inject`: declaring that edge deadlocks the boot tree (AGENTS 3).
+   * @param options - poll budget; tests shrink both numbers.
+   * @returns the sweep result, or undefined when the registry never appeared.
+   */
+  async scrubWhenRegistryReady(options: { timeoutMs?: number; intervalMs?: number; root?: string } = {}): Promise<{ removed: string[]; kept: string[] } | undefined> {
+    const timeoutMs = options.timeoutMs ?? 20_000
+    const intervalMs = options.intervalMs ?? 500
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      if (this.ctx.get('workspaceRegistry') !== undefined) return await this.scrubShellWorkspacesOnce(options)
+      if (Date.now() >= deadline) return undefined
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, intervalMs)
+        timer.unref?.()
+      })
+    }
   }
 }
 
@@ -1606,6 +1948,71 @@ export function publicTarget(record: RemoteTargetRecord, store: TargetStore): Pu
   }
 }
 
+/** How long /api/state waits for one target's `reg.list` before omitting its key. */
+const STATE_LIST_TIMEOUT_MS = 3_000
+
+/** How long one target's `reg.list` answer is reused by `/api/state` (A38: memory only). */
+const SERVER_LIST_TTL_MS = 2_000
+
+/**
+ * Delete the official shell workspace rows this plugin's stubs created.
+ *
+ * Gate 0 left them in the **shared** `~/.dsh/storages/workspace.json` (every dsh on
+ * the machine reads that file, so an unpatched desktop displayed rows like
+ * `…\.dsh\remote-workspaces\rt-…\…`). Branch A stopped creating them; this removes
+ * the historical ones and any a forced run left behind.
+ *
+ * Scope is deliberately narrow: only the entries whose path is a stub under
+ * `<root>/<targetId>/<key>` are touched. Other workspaces, the stub directories
+ * and our own refs are never modified; a failure on one entry never stops the
+ * rest (best effort, startup and unload both call it).
+ * @param ctx - host context (only `workspaceRegistry` is used).
+ * @param options - stub root override (tests); defaults to `~/.dsh/remote-workspaces`.
+ * @returns the removed entry ids and the stub paths that had no entry.
+ */
+export async function scrubShellWorkspaces(
+  ctx: Context,
+  options: { readonly root?: string } = {},
+): Promise<{ removed: string[]; kept: string[] }> {
+  const removed: string[] = []
+  const kept: string[] = []
+  const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
+  if (registry === undefined) return { removed, kept }
+  const root = options.root ?? join(homedir(), '.dsh', 'remote-workspaces')
+  const targets = await readdir(root, { withFileTypes: true }).catch(() => [])
+  for (const target of targets) {
+    if (!target.isDirectory()) continue
+    const targetDir = join(root, target.name)
+    const stubs = await readdir(targetDir, { withFileTypes: true }).catch(() => [])
+    for (const stub of stubs) {
+      if (!stub.isDirectory()) continue
+      let canonical: string
+      try {
+        canonical = await realpath(join(targetDir, stub.name))
+      } catch {
+        continue
+      }
+      // The official resolveByPath is async; awaiting it is the whole point of
+      // the union return type below (alpha57 shipped without this await and the
+      // sweep answered `removed: [null, null]` while deleting nothing).
+      const entry = await registry.resolveByPath(canonical)
+      if (entry === undefined) {
+        kept.push(canonical)
+        continue
+      }
+      try {
+        await registry.delete(entry.id)
+        removed.push(entry.id)
+      } catch (error) {
+        // Leave it for the next pass rather than aborting the sweep.
+        console.error('[dsh-remote-workspace] removing a leaked shell workspace failed', scrubSecrets(error instanceof Error ? error.message : String(error)))
+        kept.push(canonical)
+      }
+    }
+  }
+  return { removed, kept }
+}
+
 /** The scan's overall budget (api-contract §2.4: `scan-timeout` past 60 s). */
 const SCAN_TIMEOUT_MS = 60_000
 
@@ -1673,7 +2080,7 @@ export async function officialWorkspaceFor(options: {
   if (!shouldRegisterShellWorkspaces()) return undefined
   const { registry } = options
   if (registry === undefined) return undefined
-  const existing = registry.resolveByPath(options.canonicalStub)
+  const existing = await registry.resolveByPath(options.canonicalStub)
   if (existing !== undefined) return existing
   return await registry.create(options.canonicalStub, options.shellTitle).catch((error: unknown) => {
     // Best effort by design: a registry that refuses the row must not stop a

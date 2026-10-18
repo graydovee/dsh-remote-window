@@ -124,19 +124,31 @@ export interface RemoteRuntimeRecord {
   readonly plugins: readonly string[]
 }
 
-/** One remote workspace: a directory on a target, not a local directory. */
+/**
+ * One remote workspace as *this client* remembers it: materialization + view state.
+ *
+ * **The server is the authority** (architecture §7): `path`/`title`/`createdAt`
+ * now come from `reg.list` and are no longer stored here. What stays local is the
+ * stub directory, the official shell entry id (cleanup only), the session pointer
+ * and the per-client pin/archive sets — keyed by `remoteWorkspaceId`, so a rename
+ * made on another device is consistent everywhere.
+ *
+ * P0 made `path`/`title`/`createdAt` **legacy optional**: an old document must
+ * load unchanged (storage domain stays at version 1), and the startup migration
+ * clears them once the server list has confirmed the id.
+ */
 export interface RemoteWorkspaceRecord {
   readonly id: string
   readonly targetId: string
-  /** Absolute POSIX path on the target. */
-  readonly path: string
+  /** Server-authoritative workspace id (16 hex); absent until the ref is migrated. */
+  readonly remoteWorkspaceId?: string
   /**
    * Local stub directory anchoring this remote path in the shell's workspace
-   * tree (official workspaces are local-realpath'd; a remote path never can
-   * be). Absent on records created before stubs existed.
+   * tree. Non-authoritative: it may be deleted and rebuilt at any time, and a
+   * ref created from `reg.list` has none until the workspace is opened.
    */
   readonly stubPath?: string
-  /** The official workspace id the stub is registered under, when known. */
+  /** The official workspace id this stub is registered under, when known (cleanup only). */
   readonly officialWorkspaceId?: string
   /**
    * Session ids this workspace's user pinned, most recently pinned first.
@@ -147,15 +159,21 @@ export interface RemoteWorkspaceRecord {
   readonly pinnedSessions?: string[]
   /** Session ids this workspace's user archived (grayed, not openable). */
   readonly archivedSessions?: string[]
-  readonly title: string
-  readonly createdAt: string
   readonly lastOpenedAt?: string
   /** Session created for this workspace, when one exists. */
   readonly sessionId?: string
-  /** Stable workspace identity returned by the remote server. */
-  readonly remoteWorkspaceId?: string
+  /** @deprecated P0 legacy: the path now comes from `reg.list`; cleared by migration. */
+  readonly path?: string
+  /** @deprecated P0 legacy: the title now comes from `reg.list`; cleared by migration. */
+  readonly title?: string
+  /** @deprecated P0 legacy: `createdAt` now comes from `reg.list`; cleared by migration. */
+  readonly createdAt?: string
+  /** @deprecated P0 legacy: the server id is reported by `server.hello`. */
   readonly serverId?: string
 }
+
+/** The P0 name for {@link RemoteWorkspaceRecord}: a local reference, not a workspace. */
+export type WorkspaceRef = RemoteWorkspaceRecord
 
 /** One protocol channel to a remote server. */
 export interface RemoteChannel {
@@ -309,22 +327,30 @@ export const targetRecordSchema = z.object({
  * domain version at 1. */
 const sessionFlagSchema = z.array(z.string()).optional()
 
+/**
+ * Local workspace reference (P0, architecture §15.1).
+ *
+ * A strict **union** of the old record and the new one: `path`/`title`/
+ * `createdAt`/`serverId` stay accepted so old documents validate, but nothing
+ * writes them any more — `workspaceRefs` holds only what is genuinely local.
+ */
 export const workspaceRecordSchema = z.object({
   id: z.string().min(1),
   targetId: z.string().min(1),
-  path: z.string().startsWith('/'),
+  remoteWorkspaceId: z.string().length(16).optional(),
   stubPath: z.string().min(1).optional(),
   officialWorkspaceId: z.string().min(1).optional(),
-  title: z.string().min(1),
-  createdAt: z.string().min(1),
   lastOpenedAt: z.string().optional(),
   sessionId: z.string().min(1).optional(),
-  remoteWorkspaceId: z.string().length(16).optional(),
-  serverId: z.string().min(1).optional(),
   /** Session ids the user pinned in this remote workspace, most recent first. */
   pinnedSessions: sessionFlagSchema,
   /** Session ids the user archived in this remote workspace. */
   archivedSessions: sessionFlagSchema,
+  // ── legacy P0 fields: read-only, cleared by the startup migration ──────────
+  path: z.string().startsWith('/').optional(),
+  title: z.string().min(1).optional(),
+  createdAt: z.string().min(1).optional(),
+  serverId: z.string().min(1).optional(),
 }).strict()
 
 /** Create-time payload for a target; the id and fingerprint are assigned by the caller. */

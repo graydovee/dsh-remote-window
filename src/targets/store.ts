@@ -116,17 +116,22 @@ export class TargetStore {
     await this.targets().delete(id)
   }
 
-  /** Every stored remote workspace, optionally for one target. */
+  /** Every stored remote workspace ref, newest activity first. */
   listWorkspaces(targetId?: string): RemoteWorkspaceRecord[] {
     return [...this.workspaces().entries()]
       .map(([, value]) => value)
       .filter(record => targetId === undefined || record.targetId === targetId)
-      .sort((left, right) => (right.lastOpenedAt ?? right.createdAt).localeCompare(left.lastOpenedAt ?? left.createdAt))
+      // `createdAt` is a legacy P0 field (the server owns path/title/createdAt now),
+      // so the order falls back to the local activity stamp and finally the id —
+      // a missing key must never make the order unstable.
+      .sort((left, right) => (right.lastOpenedAt ?? right.createdAt ?? right.id).localeCompare(left.lastOpenedAt ?? left.createdAt ?? left.id))
   }
 
-  /** One workspace, or undefined. */
+  /** One workspace ref by local id, or by its server workspace id (P2: both keys are legal). */
   workspace(id: string): RemoteWorkspaceRecord | undefined {
-    return this.workspaces().get(id)
+    const direct = this.workspaces().get(id)
+    if (direct !== undefined) return direct
+    return [...this.workspaces().entries()].map(([, value]) => value).find(record => record.remoteWorkspaceId === id)
   }
 
   /** Insert or replace a workspace record. */
