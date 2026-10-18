@@ -29,7 +29,7 @@ import type { RemoteTransport } from './transport.ts'
 import { methodAvailable } from '../targets/methods.ts'
 import { scrubSecrets, type PackagePolicySettings, type PublicTarget, type RemoteAuthKind, type RemoteChannel, type RemotePackageSource, type RemoteRuntimeRecord, type RemoteTargetKind, type RemoteTargetRecord, type RemoteWorkspaceRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
-import type { WorkspaceId, RemoteSessionSummary, RemoteSessionTitle, RemoteWorkspaceSummary } from '../protocol.ts'
+import { REMOTE_SESSION_PROTOCOL, type WorkspaceId, type RemoteSessionSummary, type RemoteSessionTitle, type RemoteWorkspaceSummary } from '../protocol.ts'
 
 /**
  * How long a browsing client may sit idle before it is retired.
@@ -108,6 +108,22 @@ export interface DshScanRequest {
   /** Remote `DSH_HOME` (`~/.dsh` by default), expanded on the far side. */
   readonly dshHome?: string
 }
+
+/**
+ * One `reg.list` / `reg.create` item, parsed tolerantly (contract §14.1).
+ *
+ * `createdAt`/`sessionCount` are optional in the wire contract, and `updatedAt`
+ * exists only with `includeActivity: true` — so a row must never be dropped (or
+ * the whole call failed) just because a server of another version left one out.
+ */
+const workspaceSummarySchema = z.object({
+  id: z.string().length(16),
+  path: z.string(),
+  title: z.string(),
+  createdAt: z.string().optional(),
+  sessionCount: z.number().optional(),
+  updatedAt: z.string().optional(),
+})
 
 /** One directory listing entry as the browser needs it. */
 export interface DirEntry {
@@ -236,9 +252,24 @@ class RemoteClient {
         leaseMs,
       }, helloSchema, AbortSignal.timeout(20_000))
       if (process.env.DSH_RW_DEBUG === '1') console.error(`[dsh-rw] browse attach hello in +${Date.now() - startedAt}ms`)
-      const serverInfo = await peer.request('server.hello', { protocol: 2, clientVersion: '0.1.0-alpha50' }, z.object({
-        protocol: z.literal(2), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
-      }), AbortSignal.timeout(20_000)).catch(() => undefined)
+      // Protocol v3 (doc/api-contract.md §14.4): the server speaks 3 and rejects
+      // a 2 client with a readable sentence. A mismatch is surfaced, never
+      // silently downgraded — a downgraded client would turn `reg.rename` into a
+      // fake success/failure.
+      const serverInfo = await peer.request('server.hello', { protocol: REMOTE_SESSION_PROTOCOL, clientVersion: '0.1.0-alpha50' }, z.object({
+        protocol: z.literal(REMOTE_SESSION_PROTOCOL), serverId: z.string(), installationId: z.string(), version: z.string(), workspacesRoot: z.string(), home: z.string().optional(),
+      }), AbortSignal.timeout(20_000)).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        if (/unsupported remote session protocol/i.test(message)) {
+          throw codedError(
+            'server-protocol-mismatch',
+            `${message}; the remote server plugin is older than this client — reconnect the target (the plugin is redeployed automatically) or use 「上传 server 包」`,
+          )
+        }
+        // Any other failure keeps the old tolerant behaviour: the browsing plane
+        // works without `server.hello` (a server that predates it).
+        return undefined
+      })
       const client = new RemoteClient(mux, peer, channel, serverInfo?.home ?? hello.workspace, serverInfo, startHeartbeat(), {
         hash: hello.hash,
         root: hello.root,
@@ -879,9 +910,8 @@ export class RemoteWorkspaces {
   /** Discover or create the official remote workspace record for a path. */
   async ensureRemoteWorkspace(targetId: string, path: string, title?: string): Promise<{ id: WorkspaceId; serverId?: string }> {
     return await this.withBrowser(targetId, async client => {
-      const schema = z.array(z.object({ id: z.string().length(16), path: z.string(), title: z.string(), sessionCount: z.number(), createdAt: z.string() }))
-      const existing = (await client.request('reg.list', {}, schema, AbortSignal.timeout(20_000))).find(item => item.path === path)
-      const created = existing ?? await client.request('reg.create', { path, ...(title === undefined ? {} : { title }) }, schema.element, AbortSignal.timeout(20_000))
+      const existing = (await client.request('reg.list', {}, z.array(workspaceSummarySchema), AbortSignal.timeout(20_000))).find(item => item.path === path)
+      const created = existing ?? await client.request('reg.create', { path, ...(title === undefined ? {} : { title }) }, workspaceSummarySchema, AbortSignal.timeout(20_000))
       return { id: created.id as WorkspaceId, ...(client.serverInfo === undefined ? {} : { serverId: client.serverInfo.serverId }) }
     })
   }
@@ -1041,19 +1071,17 @@ export class RemoteWorkspaces {
    * without browsing the filesystem.
    */
   async listRemoteWorkspaces(targetId: string): Promise<RemoteWorkspaceSummary[]> {
-    return await this.withBrowser(targetId, async client =>
-      await client.request(
-        'reg.list',
-        {},
-        z.array(z.object({
-          id: z.string().length(16),
-          path: z.string(),
-          title: z.string(),
-          sessionCount: z.number(),
-          createdAt: z.string(),
-        })),
-        AbortSignal.timeout(20_000),
-      ) as RemoteWorkspaceSummary[])
+    return await this.withBrowser(targetId, async client => {
+      const rows = await client.request('reg.list', {}, z.array(workspaceSummarySchema), AbortSignal.timeout(20_000))
+      return rows.map(row => ({
+        id: row.id as WorkspaceId,
+        path: row.path,
+        title: row.title,
+        createdAt: row.createdAt ?? '',
+        sessionCount: row.sessionCount ?? 0,
+        ...(row.updatedAt === undefined ? {} : { updatedAt: row.updatedAt }),
+      }))
+    })
   }
 
   /**
@@ -1267,9 +1295,11 @@ export class RemoteWorkspaces {
     const remoteWorkspace = await this.ensureRemoteWorkspace(target.id, path, displayTitle)
 
     // A *local stub directory* stands in for the remote path: official workspaces
-    // are local-realpath'd, so this is the only way a remote path can appear in
+    // are local-realpath'd, so this is the only way a remote path could appear in
     // the shell's tree at all. Whether we ALSO register it as an official shell
-    // workspace is decided by `shouldRegisterShellWorkspaces()` (see Gate 0).
+    // workspace is decided by `shouldRegisterShellWorkspaces()` — **off by
+    // default** (Gate 0 branch A: the row is not needed and it leaks through the
+    // shared registry file).
     // `ctx.get`, not `ctx.workspaceRegistry`: property access on a cordis context
     // requires the service in `inject`, and the plugin deliberately does not
     // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
@@ -1581,34 +1611,47 @@ const SCAN_TIMEOUT_MS = 60_000
 
 /**
  * Whether this process may register official **shell** workspace rows for remote
- * stubs. `DSH_RW_NO_SHELL_WORKSPACES=1` turns it off.
+ * stubs.
  *
- * This is a supported switch, not a debugging hack:
+ * **Default: off (Gate 0 branch A).** `DSH_RW_FORCE_SHELL_WORKSPACES=1` restores
+ * the old behaviour (register the stub in the shell registry and attach sessions
+ * to it).
  *
- * 1. **Gate 0 / server-authoritative workspaces.** The official registry lives in
- *    a single shared file (`~/.dsh/storages/workspace.json`) that every dsh on the
- *    machine reads — including a desktop install that has no plugin. Registering a
- *    stub there leaks rows like `C:\Users\…\.dsh\remote-workspaces\rt-…\…` into
- *    unrelated clients, and nothing ever removes them. The refactor makes the
- *    remote server the workspace authority, so the stub row must go away.
- * 2. **Operational escape hatch.** If a machine ends up with a broken/foreign
- *    registry (or the shell's tree misbehaves around our stubs), the operator can
- *    start dsh with this variable and still create, open and resume remote
- *    sessions — the plugin's own area lists them.
+ * Why off by default:
  *
- * What it costs when disabled: **only** the shell's own workspace tree entry.
- * Sessions, remote logs, routing, rename/pin/archive and resume are unaffected —
- * see `tests/gate0-shell-workspaces.test.ts`, which pins that the open path never
- * needs the entry, and the note on `officialWorkspaceFor`.
+ * 1. **Nothing needs the row.** `attachSession` is the only official call on our
+ *    open path and it is skipped when the row is absent; registry membership is a
+ *    *filter* (`candidateMatches` warns and drops a session, it never throws);
+ *    `ctx.agents.create`/`resume` never read `workspaceRegistry` (grep of the
+ *    shipped tree: `dsh-api-workspace-controller`, `dsh-workspace`,
+ *    `dsh-api-session-controller` — none of which is on our path, since
+ *    `openRemoteSession` composes through `ctx.agents.create` directly). The row
+ *    buys exactly one thing: a row in the shell's own workspace tree.
+ * 2. **The row leaks.** The registry is one shared file
+ *    (`~/.dsh/storages/workspace.json`) that every dsh on the machine reads —
+ *    including a desktop install with no plugin, which then shows
+ *    `…\.dsh\remote-workspaces\rt-…\…` rows that nothing ever removes. The
+ *    server-authoritative refactor makes the remote the workspace authority, so
+ *    these stub rows must not be created at all.
+ *
+ * Why the escape hatch stays: the shell could start treating registry membership
+ * as enforcement (or a machine could carry a registry that demands the row). The
+ * variable flips all of it back in one restart without a code change.
+ *
+ * Cost when off: only the shell's own tree row. Sessions, remote logs, routing,
+ * rename/pin/archive and resume are unaffected — see
+ * `tests/gate0-shell-workspaces.test.ts`.
  * @param env - environment to read (injectable for tests).
  */
 export function shouldRegisterShellWorkspaces(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = (env.DSH_RW_NO_SHELL_WORKSPACES ?? '').trim().toLowerCase()
-  return !(raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on')
+  const raw = (env.DSH_RW_FORCE_SHELL_WORKSPACES ?? '').trim().toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
 }
 
 /**
- * The official shell workspace standing for one stub, when shell rows are enabled.
+ * The official shell workspace standing for one stub, when shell rows are enabled
+ * (`DSH_RW_FORCE_SHELL_WORKSPACES=1`; off by default — see
+ * `shouldRegisterShellWorkspaces`).
  *
  * Gate 0 finding: nothing in the **open** path needs it. `attachSession` is the
  * only official call we make, it validates `realpath(header.cwd) === path` and is
@@ -1617,7 +1660,8 @@ export function shouldRegisterShellWorkspaces(env: NodeJS.ProcessEnv = process.e
  * thin-client session-controller — the only other `workspaceRegistry` consumer —
  * is not on our path because `openRemoteSession` composes through
  * `ctx.agents.create` directly. So the entry buys exactly one thing: a row in the
- * shell's workspace tree.
+ * shell's workspace tree (which is also the thing that leaks into unrelated
+ * clients through the shared `storages/workspace.json`).
  * @param options - registry (may be absent), the canonical stub and its row title.
  * @returns the entry, or undefined when rows are disabled or registration failed.
  */

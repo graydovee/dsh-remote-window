@@ -23,7 +23,9 @@
  * comes from the caller.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { officialWorkspaceFor, shouldRegisterShellWorkspaces } from '../src/provision/service.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import { officialWorkspaceFor, RemoteWorkspaces, shouldRegisterShellWorkspaces } from '../src/provision/service.ts'
+import type { TargetStore } from '../src/targets/store.ts'
 
 /** A registry stand-in that records what the plugin asks of it. */
 function fakeRegistry(options: { existing?: { id: string; path: string; attachSession: (sessionId: string) => Promise<void> }; createFails?: boolean } = {}): {
@@ -46,39 +48,43 @@ afterEach(() => {
 })
 
 describe('shouldRegisterShellWorkspaces', () => {
-  it('registers by default (current behaviour)', () => {
-    expect(shouldRegisterShellWorkspaces({})).toBe(true)
-    expect(shouldRegisterShellWorkspaces({ DSH_RW_NO_SHELL_WORKSPACES: '' })).toBe(true)
-    expect(shouldRegisterShellWorkspaces({ DSH_RW_NO_SHELL_WORKSPACES: '0' })).toBe(true)
-    expect(shouldRegisterShellWorkspaces({ DSH_RW_NO_SHELL_WORKSPACES: 'false' })).toBe(true)
+  it('is OFF by default (Gate 0 branch A: no shell rows)', () => {
+    expect(shouldRegisterShellWorkspaces({})).toBe(false)
+    expect(shouldRegisterShellWorkspaces({ DSH_RW_FORCE_SHELL_WORKSPACES: '' })).toBe(false)
+    expect(shouldRegisterShellWorkspaces({ DSH_RW_FORCE_SHELL_WORKSPACES: '0' })).toBe(false)
+    expect(shouldRegisterShellWorkspaces({ DSH_RW_FORCE_SHELL_WORKSPACES: 'false' })).toBe(false)
   })
 
-  it('turns off for the documented truthy spellings', () => {
+  it('the escape hatch restores the old behaviour', () => {
     for (const value of ['1', 'true', 'TRUE', ' yes ', 'on']) {
-      expect(shouldRegisterShellWorkspaces({ DSH_RW_NO_SHELL_WORKSPACES: value })).toBe(false)
+      expect(shouldRegisterShellWorkspaces({ DSH_RW_FORCE_SHELL_WORKSPACES: value })).toBe(true)
     }
   })
 })
 
+describe('routing without a shell row', () => {
+  it('routes a stub-cwd session from our own record fields (no officialWorkspaceId needed)', async () => {
+    const { RemoteWorkspaces } = await import('../src/provision/service.ts')
+    // A record as the switch-on path writes it: `stubPath` ours, no official id.
+    const record = {
+      id: 'rw-1',
+      targetId: 'rt-1',
+      path: '/home/graydove/projects',
+      stubPath: 'C:\\Users\\grayd\\.dsh\\remote-workspaces\\rt-1\\abcd1234',
+      remoteWorkspaceId: '0123456789abcdef',
+      title: 'projects',
+      createdAt: '2026-10-18T00:00:00.000Z',
+    }
+    const store = { listWorkspaces: () => [record] } as unknown as TargetStore
+    const ctx = { get: () => undefined } as unknown as Context
+    const service = new RemoteWorkspaces(ctx, store, { packageRoot: process.cwd(), leaseMs: 30_000, maxProcesses: 4 })
+    expect(service.routeForCwd(record.stubPath)).toEqual({ targetId: 'rt-1', workspaceId: '0123456789abcdef' })
+    expect(service.stubForWorkspace('0123456789abcdef')).toBe(record.stubPath)
+  })
+})
+
 describe('officialWorkspaceFor', () => {
-  it('reuses an entry that already stands for the stub', async () => {
-    const existing = { id: 'official-0', path: '/stub', title: 'w', attachSession: async () => {} }
-    const { registry } = fakeRegistry({ existing })
-    const official = await officialWorkspaceFor({ registry, canonicalStub: '/stub', shellTitle: 'w · target' })
-    expect(official).toBe(existing)
-    expect(registry.create).not.toHaveBeenCalled()
-  })
-
-  it('creates the row with the canonical stub and the display title', async () => {
-    const { registry } = fakeRegistry()
-    const official = await officialWorkspaceFor({ registry, canonicalStub: '/home/u/.dsh/remote-workspaces/rt-1/abcd', shellTitle: 'projects · box' })
-    expect(registry.create).toHaveBeenCalledTimes(1)
-    expect(registry.create).toHaveBeenCalledWith('/home/u/.dsh/remote-workspaces/rt-1/abcd', 'projects · box')
-    expect(official?.id).toBe('official-1')
-  })
-
-  it('never touches the registry when the switch is on', async () => {
-    vi.stubEnv('DSH_RW_NO_SHELL_WORKSPACES', '1')
+  it('does not touch the registry by default (branch A)', async () => {
     const { registry } = fakeRegistry()
     const official = await officialWorkspaceFor({ registry, canonicalStub: '/stub', shellTitle: 'w · target' })
     expect(official).toBeUndefined()
@@ -86,12 +92,32 @@ describe('officialWorkspaceFor', () => {
     expect(registry.create).not.toHaveBeenCalled()
   })
 
+  it('reuses an entry that already stands for the stub (escape hatch on)', async () => {
+    vi.stubEnv('DSH_RW_FORCE_SHELL_WORKSPACES', '1')
+    const existing = { id: 'official-0', path: '/stub', title: 'w', attachSession: async () => {} }
+    const { registry } = fakeRegistry({ existing })
+    const official = await officialWorkspaceFor({ registry, canonicalStub: '/stub', shellTitle: 'w · target' })
+    expect(official).toBe(existing)
+    expect(registry.create).not.toHaveBeenCalled()
+  })
+
+  it('creates the row with the canonical stub and the display title (escape hatch on)', async () => {
+    vi.stubEnv('DSH_RW_FORCE_SHELL_WORKSPACES', '1')
+    const { registry } = fakeRegistry()
+    const official = await officialWorkspaceFor({ registry, canonicalStub: '/home/u/.dsh/remote-workspaces/rt-1/abcd', shellTitle: 'projects · box' })
+    expect(registry.create).toHaveBeenCalledTimes(1)
+    expect(registry.create).toHaveBeenCalledWith('/home/u/.dsh/remote-workspaces/rt-1/abcd', 'projects · box')
+    expect(official?.id).toBe('official-1')
+  })
+
   it('tolerates a missing registry (no shell service in this host)', async () => {
+    vi.stubEnv('DSH_RW_FORCE_SHELL_WORKSPACES', '1')
     const official = await officialWorkspaceFor({ registry: undefined, canonicalStub: '/stub', shellTitle: 'w · target' })
     expect(official).toBeUndefined()
   })
 
   it('treats a refusing registry as "no row", not as an open failure', async () => {
+    vi.stubEnv('DSH_RW_FORCE_SHELL_WORKSPACES', '1')
     const { registry } = fakeRegistry({ createFails: true })
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
