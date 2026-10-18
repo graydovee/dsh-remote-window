@@ -193,6 +193,7 @@ export interface SessionListState {
  */
 export interface ConfirmState {
   readonly kind: 'forget-connection' | 'workspace-delete' | 'workspace-delete-force'
+  /** The dialog's **heading** — copy, not data (see `workspaceTitle`). */
   readonly title: string
   readonly message: string
   readonly confirmLabel: string
@@ -201,6 +202,14 @@ export interface ConfirmState {
   readonly workspaceId?: string
   /** Server workspace id — what `workspace-delete` addresses. */
   readonly remoteWorkspaceId?: string
+  /**
+   * The workspace's own title, carried as **data**.
+   *
+   * `title` above is the dialog heading ("该工作区还有会话，仍要移除？"); using it as a
+   * name produced `已从远端清单移除工作区「该工作区还有会话，仍要移除？」` (alpha59).
+   * Every sentence about the workspace itself takes this field instead.
+   */
+  readonly workspaceTitle?: string
   /** Sessions the server reported for that workspace (the 409 body carries it). */
   readonly sessionCount?: number
 }
@@ -950,6 +959,7 @@ function requestDeleteWorkspace(workspace: WorkspaceRow): void {
       targetId: workspace.targetId,
       workspaceId: workspace.id,
       remoteWorkspaceId: workspace.remoteWorkspaceId,
+      workspaceTitle: workspace.title,
       ...(workspace.sessionCount === undefined ? {} : { sessionCount: workspace.sessionCount }),
     },
   })
@@ -975,10 +985,25 @@ async function acceptConfirm(): Promise<void> {
     pending.targetId,
     pending.remoteWorkspaceId,
     pending.kind === 'workspace-delete-force',
-    pending.title,
+    // The workspace's OWN title — never `pending.title`, which is the dialog
+    // heading (alpha59: the toast named the workspace
+    // 「该工作区还有会话，仍要移除？」). Fall back to the joined row, then to the ids.
+    pending.workspaceTitle ?? workspaceTitleOf(pending.targetId, pending.remoteWorkspaceId) ?? pending.workspaceId ?? pending.remoteWorkspaceId,
     pending.workspaceId,
     pending.sessionCount,
   )
+}
+
+/**
+ * The title of one workspace from the current row data.
+ * @param targetId - the connection owning it.
+ * @param remoteWorkspaceId - server workspace id.
+ * @returns the joined row's title, or undefined when the row is gone.
+ */
+function workspaceTitleOf(targetId: string, remoteWorkspaceId: string): string | undefined {
+  return state.workspaces.find(
+    row => row.targetId === targetId && row.remoteWorkspaceId === remoteWorkspaceId,
+  )?.title
 }
 
 /** The session count the 409 body carries (`workspace-not-empty 5 …`), if any. */
@@ -1006,7 +1031,7 @@ async function deleteWorkspace(
   targetId: string,
   remoteWorkspaceId: string,
   force: boolean,
-  title: string,
+  workspaceTitle: string,
   workspaceId: string | undefined,
   knownCount: number | undefined,
 ): Promise<void> {
@@ -1022,8 +1047,8 @@ async function deleteWorkspace(
       notice: {
         kind: 'success',
         text: force
-          ? t('tree.workspace.deletedWithSessions', { title, count: result.sessionCount })
-          : t('tree.workspace.deleted', { title }),
+          ? t('tree.workspace.deletedWithSessions', { title: workspaceTitle, count: result.sessionCount })
+          : t('tree.workspace.deleted', { title: workspaceTitle }),
       },
     })
     await refreshState()
@@ -1041,12 +1066,13 @@ async function deleteWorkspace(
           kind: 'workspace-delete-force',
           title: t('tree.workspace.delete.force.title'),
           message: t('tree.workspace.delete.force.message', {
-            title,
+            title: workspaceTitle,
             count: count === undefined ? t('common.unknown') : count,
           }),
           confirmLabel: t('tree.workspace.delete.force.confirm'),
           targetId,
           remoteWorkspaceId,
+          workspaceTitle,
           ...(count === undefined ? {} : { sessionCount: count }),
           ...(workspaceId === undefined ? {} : { workspaceId }),
         },
