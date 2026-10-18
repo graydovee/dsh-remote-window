@@ -1266,9 +1266,10 @@ export class RemoteWorkspaces {
     const displayTitle = title ?? (path === '/' ? target.label : path.split('/').filter(Boolean).at(-1) ?? target.label)
     const remoteWorkspace = await this.ensureRemoteWorkspace(target.id, path, displayTitle)
 
-    // Anchor the remote path in the shell's workspace tree: official
-    // workspaces are local-realpath'd, so a *local stub directory* stands in
-    // for the remote path and the tree shows the entry like any local one.
+    // A *local stub directory* stands in for the remote path: official workspaces
+    // are local-realpath'd, so this is the only way a remote path can appear in
+    // the shell's tree at all. Whether we ALSO register it as an official shell
+    // workspace is decided by `shouldRegisterShellWorkspaces()` (see Gate 0).
     // `ctx.get`, not `ctx.workspaceRegistry`: property access on a cordis context
     // requires the service in `inject`, and the plugin deliberately does not
     // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
@@ -1278,13 +1279,11 @@ export class RemoteWorkspaces {
     const stub = join(stubRoot, key)
     await mkdir(stub, { recursive: true })
     const canonicalStub = await realpath(stub)
-    let official = await registry?.resolveByPath(canonicalStub)
-    official ??= registry === undefined
-      ? undefined
-      : await registry.create(canonicalStub, `${displayTitle} · ${target.label}`).catch((error: unknown) => {
-          console.error('[dsh-remote-workspace] registering the workspace in the shell tree failed', error)
-          return undefined
-        })
+    const official = await officialWorkspaceFor({
+      registry,
+      canonicalStub,
+      shellTitle: `${displayTitle} · ${target.label}`,
+    })
 
     const base: RemoteWorkspaceRecord = existing === undefined
       ? {
@@ -1297,7 +1296,13 @@ export class RemoteWorkspaces {
       : existing
     const record: RemoteWorkspaceRecord = {
       ...base,
-      ...(official === undefined ? {} : { stubPath: official.path, officialWorkspaceId: official.id }),
+      // `stubPath` is ours, not the shell's: the routing persistence resolves a
+      // session's cwd against it, and `forgetWorkspace` removes the directory.
+      // It used to be copied from the official entry, so a *failed* shell
+      // registration silently produced a workspace whose sessions could never be
+      // routed; now it is always the stub we just materialized.
+      stubPath: official?.path ?? canonicalStub,
+      ...(official === undefined ? {} : { officialWorkspaceId: official.id }),
       remoteWorkspaceId: remoteWorkspace.id,
       ...(remoteWorkspace.serverId === undefined ? {} : { serverId: remoteWorkspace.serverId }),
     }
@@ -1307,6 +1312,8 @@ export class RemoteWorkspaces {
 
   /** Attach the session to the shell workspace, remember it, and report it back. */
   private async finishOpen(materialized: MaterializedWorkspace, sessionId: string): Promise<{ workspace: RemoteWorkspaceRecord; sessionId: string }> {
+    // No shell entry (Gate 0 switch, or a registration that failed) simply means
+    // there is nothing to attach to; the session is complete either way.
     await materialized.official?.attachSession(sessionId).catch((error: unknown) => {
       console.error('[dsh-remote-workspace] attaching the session to the shell workspace failed', error)
     })
@@ -1571,6 +1578,66 @@ export function publicTarget(record: RemoteTargetRecord, store: TargetStore): Pu
 
 /** The scan's overall budget (api-contract §2.4: `scan-timeout` past 60 s). */
 const SCAN_TIMEOUT_MS = 60_000
+
+/**
+ * Whether this process may register official **shell** workspace rows for remote
+ * stubs. `DSH_RW_NO_SHELL_WORKSPACES=1` turns it off.
+ *
+ * This is a supported switch, not a debugging hack:
+ *
+ * 1. **Gate 0 / server-authoritative workspaces.** The official registry lives in
+ *    a single shared file (`~/.dsh/storages/workspace.json`) that every dsh on the
+ *    machine reads — including a desktop install that has no plugin. Registering a
+ *    stub there leaks rows like `C:\Users\…\.dsh\remote-workspaces\rt-…\…` into
+ *    unrelated clients, and nothing ever removes them. The refactor makes the
+ *    remote server the workspace authority, so the stub row must go away.
+ * 2. **Operational escape hatch.** If a machine ends up with a broken/foreign
+ *    registry (or the shell's tree misbehaves around our stubs), the operator can
+ *    start dsh with this variable and still create, open and resume remote
+ *    sessions — the plugin's own area lists them.
+ *
+ * What it costs when disabled: **only** the shell's own workspace tree entry.
+ * Sessions, remote logs, routing, rename/pin/archive and resume are unaffected —
+ * see `tests/gate0-shell-workspaces.test.ts`, which pins that the open path never
+ * needs the entry, and the note on `officialWorkspaceFor`.
+ * @param env - environment to read (injectable for tests).
+ */
+export function shouldRegisterShellWorkspaces(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.DSH_RW_NO_SHELL_WORKSPACES ?? '').trim().toLowerCase()
+  return !(raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on')
+}
+
+/**
+ * The official shell workspace standing for one stub, when shell rows are enabled.
+ *
+ * Gate 0 finding: nothing in the **open** path needs it. `attachSession` is the
+ * only official call we make, it validates `realpath(header.cwd) === path` and is
+ * skipped entirely when absent; membership is a *filter* on the registry side
+ * (`candidateMatches` warns and drops a session, never throws); and the
+ * thin-client session-controller — the only other `workspaceRegistry` consumer —
+ * is not on our path because `openRemoteSession` composes through
+ * `ctx.agents.create` directly. So the entry buys exactly one thing: a row in the
+ * shell's workspace tree.
+ * @param options - registry (may be absent), the canonical stub and its row title.
+ * @returns the entry, or undefined when rows are disabled or registration failed.
+ */
+export async function officialWorkspaceFor(options: {
+  readonly registry: WorkspaceRegistryLike | undefined
+  readonly canonicalStub: string
+  readonly shellTitle: string
+}): Promise<OfficialWorkspace | undefined> {
+  if (!shouldRegisterShellWorkspaces()) return undefined
+  const { registry } = options
+  if (registry === undefined) return undefined
+  const existing = registry.resolveByPath(options.canonicalStub)
+  if (existing !== undefined) return existing
+  return await registry.create(options.canonicalStub, options.shellTitle).catch((error: unknown) => {
+    // Best effort by design: a registry that refuses the row must not stop a
+    // remote session from opening (that is the whole point of the switch).
+    console.error('[dsh-remote-workspace] registering the workspace in the shell tree failed', error)
+    return undefined
+  })
+}
 
 /**
  * The preset-registry face the realm guards below use.

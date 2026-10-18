@@ -35,6 +35,14 @@
 > ⑫ §11 补三个记录字段的生产约束（`provisionedHints()` 唯一生产、`publicTarget` 全部带出、不含凭据）；
 > ⑬ §3.1/§10 的记录改成**现实现**：路由层缺参 = HTTP 400 + code `bad-request`，
 > `reuse-launcher-missing` 只作执行期兜底（差异见 §10「实现对齐说明」）。
+>
+> **修订 v6（2026-10-18，阶段 P0：server 权威重构）**：
+> ⑭ 新增 **§14 协议 v3**（`reg.list` 扩展 / `reg.rename` / `reg.delete` / 握手矩阵，逐字可照抄）；
+> ⑮ 新增 **§15 本地数据模型**（`WorkspaceRef`、`/api/state` 新形状、迁移算法、`api.ts` 增补）；
+> ⑯ §1 路由表：`state` 改形状、`workspace-rename` 改语义、新增 `workspace-delete` 与
+> `cleanup-shell-workspaces`、`forget-workspace` 退役；
+> ⑰ §4 重写为「工作区写操作」；§10 增 `workspace-not-empty`(409)/`server-protocol-mismatch`/
+> `cleanup-failed`/`invalid-workspace-id`。
 
 ---
 
@@ -308,26 +316,64 @@ data: {"type":"done","target":{ …PublicTarget… }}
 
 ---
 
-## 4. `workspace-rename`（新增）
+## 4. 工作区写操作（P0 改为 server 权威）
 
-`POST /dsh-remote-workspace/api/workspace-rename`
+工作区的 `path`/`title`/`createdAt`/`sessionCount` 都在 server（架构 §7.1），因此「改名 / 移除」
+必须走远端 RPC（§14）。host 侧这三个路由只做「转成 RPC + 刷新」；**本地不再写 title/path**。
+
+### 4.1 `workspace-rename`（语义变更）与 `workspace-delete`（新增）
+
+**`POST /dsh-remote-workspace/api/workspace-rename`**
 
 ```jsonc
 // request
-{ "workspaceId": "rw-1a2b3c4d", "title": "后端服务" }
+{ "targetId": "rt-1a2b3c4d", "remoteWorkspaceId": "3f9a1c0b7e2d4a68", "title": "后端服务" }
 // response
-{ "ok": true, "value": { "workspace": { /* RemoteWorkspace，见 §5 */ } } }
+{ "ok": true, "value": { "workspace": { /* ServerWorkspace，见 §14.1 */ } } }
 ```
 
-规则：
-- `title` 用官方 `normalizeSessionTitle` 同款归一化（`service.renameSession` 里的 `normalizeTitle`，
-  `service.ts:1152-1157`），归一化后为空 = `400 bad-request`。
-- 只改 `RemoteWorkspaceRecord.title`；**不改远端目录名**、不改远端 registry 标题（架构 A7）。
-- best effort：若 `ctx.get('workspaceRegistry')` 暴露 `rename(id, title)` 就一并改（`try/catch` 吞错）。
-- 未知 `workspaceId` = `404 not-found`。
+- `title` 用官方 `normalizeSessionTitle` 同款归一化（`service.ts::normalizeTitle`）；归一化后为空 =
+  `400 bad-request`（`code: 'bad-request'`，message 点名 `title`）。
+- 转发为 `reg.rename { id: remoteWorkspaceId, title }`；**id 与远端目录名都不变**（架构 A34）。
+- 成功后 host 重读 `reg.list` 并回填 `/api/state` 的 `serverWorkspaces`。
+- 未知 target = `404 not-found`；target 未连接 = `400 not-connected`；server 说没有该 id =
+  `404 not-found`（把 RPC 的 `unknown remote workspace "<id>"` 映射成 404）。
 
-客户端弹窗：`src/client/workspace-rename-dialog.tsx`（形状照 `rename-dialog.tsx`），
-入口是工作区行 `⋮` 的 `rename` 槽（当前是「刷新会话列表」，`tree.tsx:94`）。
+**`POST /dsh-remote-workspace/api/workspace-delete`（新增）**
+
+```jsonc
+// request
+{ "targetId": "rt-1a2b3c4d", "remoteWorkspaceId": "3f9a1c0b7e2d4a68" }
+{ "targetId": "rt-1a2b3c4d", "remoteWorkspaceId": "3f9a1c0b7e2d4a68", "force": true }
+// response
+{ "ok": true, "value": { "removed": true, "sessionCount": 5, "refsDropped": ["wr-1a2b3c4d"] } }
+```
+
+- 转发为 `reg.delete { id, force? }`（§14.2）。
+- **`force` 省略/false 且 `sessionCount > 0`** → **HTTP `409`**，
+  `error.code = 'workspace-not-empty'`，`error.message` 里带数字（便于 UI 直接展示「还有 N 个会话」）。
+- `force: true` → 删 server 清单条目；**远端会话日志一律保留**（架构 A35）。响应 `sessionCount`
+  是删除前统计，用于提示与 QA 取证。
+- 成功（或幂等：本来就没有）后，host 删掉本地 `WorkspaceRef`（含 stub 目录与官方 shell 条目，
+  走 `forgetWorkspace` 的清理路径），`refsDropped` 列出被删的本地 ref id。
+- `forget-workspace` 路由**退役**：清单在 server，不存在「只在本机忘记」；旧的 `forget-workspace`
+  可保留一版作为别名（转调 `workspace-delete`，`force: false`），但 UI 不得再用它。
+
+### 4.2 `cleanup-shell-workspaces`（新增，P0）
+
+`POST /dsh-remote-workspace/api/cleanup-shell-workspaces`，body `{}`。
+
+```jsonc
+{ "ok": true, "value": { "removed": ["ws-official-1", "ws-official-2"], "kept": ["ws-official-3"] } }
+```
+
+- 清扫**共享** `~/.dsh/storages/workspace.json` 里本插件的残留：官方 registry 中 `path` 落在
+  `~/.dsh/remote-workspaces/`（stub 根）下的条目。
+- `removed` = 已删；`kept` = 因为有活跃会话/正在使用而保留（架构 §7.4 第 2 条）。
+- 同时删除对应 stub 目录（空目录也删）。
+- 失败（registry 不可用）→ `500 cleanup-failed`，message 过 `scrubSecrets`。
+- 幂等：没有可删条目时返回 `{ removed: [], kept: [] }`。
+- 这是 QA 证明「desktop 零污染」的操作入口；启动与 `dispose()` 会自动跑同一逻辑。
 
 ---
 
@@ -830,7 +876,11 @@ DSH_HOME=<dshHome> PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> --profil
 | `reuse-node-missing` | 同上 | node 脚本启动器且我们也没能部署 Node | 提示改用上传 |
 | `reuse-boot-failed` | 同上 | 复用启动器 8 s 存活窗口内退出（含插件挂载失败） | 展示 stderr 尾巴 + 建议改用上传 |
 | **`realm-unavailable`** | **500** | `open-workspace` / `open-session` 的 realm 守卫（`service.ts:1611/1646/1665`）拒绝：`agentPresets` 不可用、预设未注册、解析出的 id ≠ `remote:<targetId>`、`broken` 有诊断、会话记录非 live、会话建好但 realm 未组合 | 错误横幅，消息含 targetId + 预设 id + 原始原因；**绝不允许**降级成本地执行世界 |
-| `not-connected` | 500 | 会话操作要求已有通道 | 现有行为 |
+| **`workspace-not-empty`** | **409** | `workspace-delete`（`force` 省略/false）且 server 报 `workspace-not-empty <n>` | 二次确认弹窗：「该工作区还有 N 个会话；强制移除只会删掉清单条目，会话日志保留在远端」→ `force: true` 重试 |
+| **`server-protocol-mismatch`** | 500（SSE `error` 帧 / 路由错误） | 握手时 `server.hello` 的 protocol 不是 3（两种方向都可能，见 §14.4） | 提示「远端 server 插件与本机不匹配」：重连（会自动重部署）或改用上传 server 包；**不自动降级** |
+| **`cleanup-failed`** | 500 | `cleanup-shell-workspaces` 时官方 registry 不可用 | 错误横幅 + 保留原因（已 scrub） |
+| **`invalid-workspace-id`** | 400 | `workspace-rename`/`workspace-delete` 的 `remoteWorkspaceId` 不是 16 hex | 错误横幅（说明「清单可能已变化，请刷新」） |
+| `not-connected` | 500 | 会话/工作区操作要求已有通道（含 P0 的 `reg.*` 代理） | 现有行为 |
 | `internal` | 500 | 兜底 | 错误横幅 |
 
 > 分两层报错（Leader 2026-10-18 口径）：
@@ -897,7 +947,8 @@ export const targetRecordSchema = z.object({
   「上次部署的包」与「上次 probe 的架构」互相覆盖。`plan`/`scan` 只读它们作提示。
 - `publicTarget()`（`service.ts:1560-1566`）**带出全部三个字段**（`serverPackage` 也要带，
   它是 UI 徽标与排障的唯一来源），且**不含任何凭据字段**（`credentialKey` 永不出线）。
-- `RemoteWorkspaceRecord` **零变更**（重命名复用现有 `title`）。
+- **`RemoteWorkspaceRecord` 已被 P0 的 `WorkspaceRef` 取代**（见 §15.1）：`path`/`title`/`createdAt`
+  不再由本地持有（server 权威）；存储域版本仍为 1，旧字段在 schema 里保留为 optional 供迁移读取。
 
 ---
 
@@ -1006,6 +1057,254 @@ export const targetRecordSchema = z.object({
 - [ ] 工作区行菜单文本 = 重命名工作区 / 移除工作区；重命名后行文本变化
 - [ ] 未连接时点「添加工作区」→ 弹窗里出现连接中状态并最终列出目录（不白屏、不卡死）
 
-**QA（E2E，浏览器 + 远端）**：按 `doc/acceptance-gap.md` B 节 §1–§8 逐条取证；
+**QA（E2E，浏览器 + 远端）**：按 `doc/acceptance-gap.md` B 节 §1–§8 与 **F 节（P0）** 逐条取证；
 WSL 目标 = 本机 `Ubuntu-22.04`，SSH 目标 = 真实主机 `graydove@192.168.10.210:22`（密码认证，
 登录后是 WSL；别名由 QA 自行加进 `~/.ssh/config`），见 architecture §5 与 acceptance-gap E 节。
+
+---
+
+## 14. 协议 v3：`reg.*` 远端 RPC（逐字契约，P0）
+
+> 这些 RPC 走**协议通道**（不是 HTTP）。`REMOTE_SESSION_PROTOCOL` **2 → 3**。
+> 文件归属：`src/protocol.ts`（常量/类型/方法名）+ `src/server/session-store.ts`（实现）
+> + `src/server/controller.ts`（分发）。三处都在「两仓逐字节相同」集合内 —— **必须两边同步**。
+
+### 14.0 通用
+
+- 请求/响应都是 JSON；远端 zod 一律 `.strict()`（多字段即拒）。
+- **RPC 错误只有 message 字符串**（`SshRpcPeer` 的 `error` 帧没有 code 字段），因此本节用
+  **message 前缀**当错误码：客户端按正则匹配，匹配不到就当普通失败。
+- 所有 `id` 都是 16 位小写 hex：`sha256(serverId + "\0" + path)` 取前 16 字符
+  （`session-store.ts:95-97`）。
+
+### 14.1 `reg.list`（v3 扩展字段，向后兼容）
+
+**Request**（对象，可空）：
+```jsonc
+{}                                   // 等价于 { "includeActivity": false }
+{ "includeActivity": true }          // 额外计算 updatedAt（会读会话日志，按 sizeBytes 记忆化）
+```
+
+**Response**（数组，每项）：
+```jsonc
+[
+  {
+    "id": "3f9a1c0b7e2d4a68",          // 必填，16 hex
+    "path": "/home/u/project",          // 必填，远端绝对路径
+    "title": "project",                 // 必填，server 权威标题（reg.rename 改它）
+    "createdAt": "2026-10-18T06:00:00.000Z",   // 必填，ISO
+    "sessionCount": 5,                  // 必填，>= 0；按 header.cwd === path 统计
+    "updatedAt": "2026-10-18T07:12:33.000Z"    // 可选；includeActivity=false 时省略
+  }
+]
+```
+
+- **向后解析**：客户端 zod 写成 `createdAt: z.string().optional()`、`sessionCount: z.number().optional()`、
+  `updatedAt: z.string().optional()`；缺字段 → UI 用 `—` / 按 `path` 字典序排序，
+  **不得**因此报错或丢弃整项。
+- `updatedAt` 语义：该项目内**所有**会话日志最后一条事件的 `time` 的最大值；没有会话时省略。
+- 旧 server（v2）忽略 `includeActivity` 并返回缺 `updatedAt` 的项 —— 这正是「向后可解析」的场景。
+
+### 14.2 `reg.rename`（v3 新增）
+
+**Request**
+```jsonc
+{ "id": "3f9a1c0b7e2d4a68", "title": "后端服务" }
+```
+- `title`：非空字符串（调用方已用官方 `normalizeSessionTitle` 归一化）。
+- **id 与 path 不变**；只改标题。
+
+**Response**
+```jsonc
+{ "id": "3f9a1c0b7e2d4a68", "title": "后端服务" }
+```
+
+**错误（message 前缀）**
+
+| message | 触发 | 客户端映射 |
+|---|---|---|
+| `invalid-workspace-id "<raw>"` | id 不是 16 hex | 400 `bad-request` |
+| `invalid-title` | 归一化后为空 / 非字符串 | 400 `bad-request` |
+| `unknown remote workspace "<id>"` | id 合法但清单里没有 | 404 `not-found` |
+
+**实现要点（server 侧）**：远端 `workspaceRegistry` 只保证 `list()`/`create()`
+（`session-store.ts:22-25`），因此标题覆盖必须**由 server 自己持久化**：
+在 `workspaceIndex`（默认 `~/.dsh/remote-server/workspaces.json`）里写
+`{ "<id>": { "title": "...", "updatedAt": "..." } }` 覆盖层；`list()` 时 `title` 取
+`覆盖层 ?? registry.title`。这样即使官方 registry 没有 rename API、或 registry 被重建，
+改名结果也不丢（架构 A34）。
+
+### 14.3 `reg.delete`（v3 新增）
+
+**Request**
+```jsonc
+{ "id": "3f9a1c0b7e2d4a68" }                  // force 省略 = false
+{ "id": "3f9a1c0b7e2d4a68", "force": true }
+```
+
+**Response**
+```jsonc
+{ "removed": true,  "sessionCount": 5 }        // 删掉了（force 或本来就没有会话）
+{ "removed": false, "sessionCount": 0 }        // 幂等：本来就不在清单里
+```
+
+**错误（message 前缀）**
+
+| message | 触发 | 客户端映射 |
+|---|---|---|
+| `workspace-not-empty <count>` | `force` 省略/false 且 `sessionCount > 0` | **409 `workspace-not-empty`** |
+| `invalid-workspace-id "<raw>"` | id 不是 16 hex | 400 `bad-request` |
+
+- **未知 id 不报错**：返回 `{ removed: false, sessionCount: 0 }`（删除要幂等，重试安全）。
+- **连带语义（A35，本轮落地）**：
+  - 只删**清单条目**（registry 条目 + server 覆盖层/索引里的该条）。
+  - **绝不删除** `~/.dsh/remote-server-sessions/**` 下的任何会话日志目录。
+  - 因此被删工作区的会话成为 orphan；同路径再 `reg.create` 时 `sessionCount` **立即恢复**
+    （会话按 `header.cwd` 归属），这就是「删除不动会话日志」的自动化证据。
+  - 本轮**不提供** `purgeSessions`；将来若要回收磁盘，必须另加 RPC 并在客户端做二次确认。
+- **幂等**：重复删除同一 id 第二次返回 `removed: false`。
+
+### 14.4 `server.hello` / 协议版本
+
+**Request**
+```jsonc
+{ "protocol": 3, "clientVersion": "0.1.0-alphaNN" }
+```
+
+**Response**
+```jsonc
+{
+  "protocol": 3,
+  "serverId": "…",
+  "installationId": "…",
+  "version": "0.1.0-alphaNN",
+  "workspacesRoot": "/home/u",
+  "home": "/home/u"
+}
+```
+
+**握手失败（双向，都必须是可读句子）**
+
+| 情形 | server 侧 message | client 侧表现 |
+|---|---|---|
+| v3 client → v2 server | 旧 server 自己抛 `unsupported remote session protocol 3` | `server-protocol-mismatch`：提示「远端 server 插件过旧，请重连（会自动重部署）或改用上传 server 包」 |
+| v2 client → v3 server | `unsupported remote session protocol 2; this server speaks 3 (upgrade the client plugin)` | 旧客户端直接把这句话显示出来 |
+
+- v3 server **必须**先读 `raw.protocol` 的数字再比，**不要**只靠 zod `literal(3)` ——
+  否则旧客户端只能看到 `Invalid input: expected 3`（不可行动）。
+- 客户端 `openRemoteClient` 的 `server.hello` schema 是 `z.literal(3)`；收到 `2` 时
+  **不要**重试成 v2（静默降级会让「改名成功」之类操作变成假的失败/假的成功）。
+
+### 14.5 `reg.create`（不变，v3 语义重申）
+
+**Request** `{ "path": "/home/u/project", "title": "可选" }` →
+**Response** 与 `reg.list` 单项同形（含 `id`/`path`/`title`/`createdAt`/`sessionCount: 0`）。
+- **幂等**：同 `path` 已存在时返回既有项（不重复创建、不清标题覆盖、**清除 `reg.delete` 的删除标记**）。
+
+---
+
+## 15. 本地数据模型（P0）：`WorkspaceRef`、`/api/state`、迁移
+
+### 15.1 `WorkspaceRef`（替代 `RemoteWorkspaceRecord`）
+
+**存储域版本仍是 1**（`store.ts:35`）；schema 是「旧字段 optional 保留 + 新字段 optional」的并集，
+保证旧文档原样通过：
+
+```ts
+/** 本地引用：只存「本机材料化 + 视图状态」，不存 path/title（那是 server 的）。 */
+export const workspaceRefSchema = z.object({
+  id: z.string().min(1),                       // 本地 ref id（`wr-xxxxxxxx`），UI 节点 key
+  targetId: z.string().min(1),
+  remoteWorkspaceId: z.string().length(16).optional(),  // server 权威 id；迁移前可缺
+  stubPath: z.string().min(1).optional(),
+  officialWorkspaceId: z.string().min(1).optional(),
+  pinnedSessions: z.array(z.string()).optional(),
+  archivedSessions: z.array(z.string()).optional(),
+  lastOpenedAt: z.string().optional(),
+  sessionId: z.string().min(1).optional(),
+  // —— 以下三个是**旧记录的遗留字段**，只读不写；迁移成功后清空 ——
+  path: z.string().optional(),
+  title: z.string().optional(),
+  createdAt: z.string().optional(),
+}).strict()
+```
+
+### 15.2 `/api/state`（P0 形状）
+
+```jsonc
+{
+  "targets": [ /* PublicTarget[]，见 §5 */ ],
+  "workspaceRefs": [ /* WorkspaceRef[]，全部 target 的本地引用 */ ],
+  "serverWorkspaces": {            // 只有**在线** target 才有键；离线 target 没有条目
+    "rt-1a2b3c4d": [ /* ServerWorkspace[]，= reg.list 的结果，见 §14.1 */ ]
+  },
+  "pluginVersion": "0.1.0-alphaNN",
+  "defaultProfile": "dsh-remote-server",
+  "platform": "win32"
+}
+```
+
+- **`workspaces` 字段退役**（改名为 `workspaceRefs`）；客户端与 host 同版本发布，不需要兼容层。
+- `serverWorkspaces` 由 host 对每个**已连接** target 调 `reg.list` 拼出；某个 target 的读取失败时
+  该键缺省（不要塞空数组——空数组意味着「server 说没有工作区」）。
+- **性能约束**：`/api/state` 不得每次轮询都串行打 N 个 `reg.list`。host 侧按 target 缓存该结果
+  （写操作 `workspace-rename`/`workspace-delete`/`open-workspace`/`connect` 后失效；或 TTL ≤ 2 s），
+  缓存只是同一权威的短期副本，**不得**落盘。
+
+### 15.3 迁移算法（旧 `RemoteWorkspaceRecord` → `WorkspaceRef`）
+
+1. 启动、存储域打开后（`store.open()` 之后、`ensureWorlds()` 之内）逐条扫描 `workspaceRefs`；
+2. 若 `remoteWorkspaceId === undefined` 且 `path !== undefined`：
+   - target **未连接** → 跳过（**不**为了迁移去连主机），本进程不再尝试；
+   - target 已连接 → 调 `reg.create(path, title)`；
+     - 成功 → 写入 `remoteWorkspaceId`，删掉 `path`/`title`/`createdAt`（保留 stub/official/sessionId）；
+     - 失败 → `console.warn` 一条（过 `scrubSecrets`），记录原样保留，下次连上再试；
+3. `pinnedSessions`/`archivedSessions` 本来就是远端 sessionId，**不需要搬**，只是键从本地 ref id
+   换成 `remoteWorkspaceId`（视图层按新键查找）；
+4. 迁移**不**删除 stub 目录、**不**注册官方 shell 条目（那是 §7.4 的清扫/材料化职责）。
+
+### 15.4 客户端 `api.ts` 增补（B 照抄）
+
+```ts
+/** server 权威的工作区清单项（= reg.list 单项）。 */
+export interface ServerWorkspace {
+  id: string
+  path: string
+  title: string
+  createdAt?: string      // 旧 server 可能缺
+  sessionCount?: number   // 旧 server 可能缺
+  updatedAt?: string      // 仅 includeActivity=true 时存在
+}
+
+/** 本地引用（不含 path/title）。 */
+export interface WorkspaceRef {
+  id: string
+  targetId: string
+  remoteWorkspaceId?: string
+  stubPath?: string
+  officialWorkspaceId?: string
+  pinnedSessions?: string[]
+  archivedSessions?: string[]
+  lastOpenedAt?: string
+  sessionId?: string
+}
+
+export interface StateResult {
+  targets: PublicTarget[]
+  workspaceRefs: WorkspaceRef[]
+  serverWorkspaces: Record<string, ServerWorkspace[]>
+  pluginVersion: string
+  defaultProfile: string
+  platform?: string
+}
+```
+
+`api` 对象增补：
+
+```ts
+workspaceRename(targetId: string, remoteWorkspaceId: string, title: string): Promise<{ workspace: ServerWorkspace }>
+workspaceDelete(targetId: string, remoteWorkspaceId: string, force?: boolean):
+  Promise<{ removed: boolean; sessionCount: number; refsDropped: string[] }>
+cleanupShellWorkspaces(): Promise<{ removed: string[]; kept: string[] }>
+remoteWorkspaces(targetId: string): Promise<{ workspaces: ServerWorkspace[] }>   // 项类型换 ServerWorkspace
+```
