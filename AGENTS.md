@@ -555,6 +555,36 @@ WSL 目标只在 Windows 上存在，所以 **linux 包常常是在 Windows 上�
 不产生盒子，布局逐字节不变）。连接行由此可点（点一下即展开/连接）；工作区与会话行的
 可点击性仍不完整（展开后其真实按钮会出现，但行本身时有时无），**这是已知缺口**。
 
+## server 包的 release 与「远程下载」（alpha63 起）
+
+**发布**：`.github/workflows/server-release.yml`，`push: tags: ['v*']` 触发，矩阵
+`linux-x64-gnu / linux-arm64-gnu / darwin-x64 / darwin-arm64`，每个组合产出
+`dsh-remote-server-<dshVersion>-<tag>.tar.gz` + `.sha256` + `.manifest.json`，同一个 job
+把它们挂到**两个** release：
+
+- 被推的那个 tag（例如 `v0.1.0-alpha1`，人类可读的插件里程碑）；
+- `server-v<dshVersion>`（`server-v0.2.1-rc.2`）—— 包是按 **dsh 版本**构建的，客户端优先查这个。
+
+**没有 Windows 矩阵项**：远端执行世界是 POSIX —— 部署脚本全是 `/bin/sh` + `tar` + `chmod`，
+`artifactTag()` 的类型也只接受 `linux | darwin`。Windows 远端需要独立部署器，不属于本插件。
+
+**下载**（`src/provision/assets.ts`）：候选 tag 顺序 `server-v<dshVersion>` → `v<pluginVersion>`；
+每个 tag 内部两种传输，按序尝试：
+
+1. `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`（官方语义）；
+2. `api.github.com` REST：`/releases/tags/<tag>` 按 `assets[].name` 找到 id →
+   `/releases/assets/<id>` 带 `Accept: application/octet-stream` 落盘。
+
+第二条是**实测必需**：这台机器上 `github.com:443` 会整段不可达（`curl (28)` 连接超时 /
+`(56)` 被 reset），而 `api.github.com` 一直可用；`gh release download` 能成功正是因为它走 API。
+`mirror` 一旦配置就**只**试镜像（镜像未必是 GitHub）。`.sha256` 永远与成功的那次传输、那个
+tag 同源；摘要不一致是硬错，不换 tag 也不换传输。curl 统一
+`-fL --retry 3 --retry-connrefused --connect-timeout 20`。
+
+验证口径（端到端）：把 `~/.dsh/remote-assets/<artifact>.tar.gz{,.ready,.sha256,.manifest.json}`
+挪走 → 新建连接选「远程下载」→ 进度里必须出现 `server package downloaded from release …`，
+随后 `server package ready via download` → 上传 → `ready`；缓存 `.ready` 内容必须逐字符等于
+release 里那份 `.sha256`。
 ## 版本策略
 
 未正式发版前一律 `0.1.0-alphaN`（不要 `0.x.y`）。**每次部署必须 bump**
