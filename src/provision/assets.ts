@@ -310,51 +310,241 @@ export async function buildDshRuntimePackage(options: {
   return { path: built.file, sha256, size: built.size, version: options.version }
 }
 
-/** The GitHub release asset base for one version. */
-function releaseAssetBase(mirror: string, version: string): string {
-  const base = mirror.replace(/\/+$/, '') || 'https://github.com'
-  return `${base}/graydovee/dsh-remote-workspace/releases/download/server-v${version}`
+/**
+ * How one `curl` fetch is executed.
+ *
+ * Injectable for the same reason `packStage` takes a `TarRunner`: the tag
+ * fallback (404 → API → next tag), the API asset lookup and the `.sha256`
+ * verification must be testable without network access or a real `curl`.
+ * `output` is omitted for the JSON lookups, where the body comes back on stdout.
+ */
+export type CurlRunner = (options: {
+  readonly url: string
+  readonly output?: string
+  readonly headers?: readonly string[]
+}) => Promise<{ readonly code: number; readonly stderr: string; readonly stdout: string }>
+
+/**
+ * The argv one `curl` fetch runs with.
+ *
+ * `--retry 3 --retry-connrefused` are load-bearing on networks that reset
+ * connections to `github.com:443`: measured on the QA host, the first attempt
+ * fails with `curl: (56) Recv failure: Connection was reset` / `(28) Failed to
+ * connect`, while a retried request succeeds. Exported so the flags are asserted
+ * instead of assumed.
+ * @param options - target url, optional output file and extra headers.
+ */
+export function curlArgs(options: { readonly url: string; readonly output?: string; readonly headers?: readonly string[] }): string[] {
+  return [
+    '-fL',
+    '--retry', '3',
+    '--retry-connrefused',
+    '--connect-timeout', '20',
+    '-m', '900',
+    ...(options.headers ?? []).flatMap(header => ['-H', header]),
+    ...(options.output === undefined ? [] : ['-o', options.output]),
+    options.url,
+  ]
 }
 
-/** Download the release-built server package and verify it against its .sha256. */
+/** The production runner: `curl -fL` into a file (or stdout), bounded by a timeout. */
+export const runCurl: CurlRunner = async (options) => {
+  const result = await execLocal('curl', curlArgs(options), 920_000)
+  return { code: result.code, stderr: result.stderr, stdout: result.stdout }
+}
+
+/** GitHub coordinates of the release that carries the server packages. */
+const RELEASE_OWNER = 'graydovee'
+const RELEASE_REPO = 'dsh-remote-workspace'
+/** Browser-style release asset URL for one tag (the official, documented path). */
+const HTML_BASE = 'https://github.com'
+/** REST base: reachable even where `github.com:443` is blocked (measured). */
+const API_BASE = 'https://api.github.com'
+
+/**
+ * The release tags a server package may live under, in the order to try.
+ *
+ * Two names are legitimate, and neither is wrong:
+ *
+ * 1. `server-v<dshVersion>` — the long-term convention: the artifact is built for
+ *    one dsh release train, so the tag names that version.
+ * 2. `v<pluginVersion>` — releases cut with the plugin itself (the user tags
+ *    `v0.1.0-alphaN` and hangs the CI matrix on it). Without this candidate a
+ *    published release would be invisible to every client, because the client
+ *    looks up the *dsh* version, not the plugin's.
+ *
+ * The first candidate that answers wins; `.sha256` is fetched from the same tag as
+ * the artifact, never from a different one.
+ * @param dshVersion - the dsh release the package is built for.
+ * @param pluginVersion - this plugin's own version, when known.
+ */
+export function releaseTagsFor(dshVersion: string, pluginVersion?: string): string[] {
+  const tags = [`server-v${dshVersion}`]
+  const plugin = pluginVersion?.trim() ?? ''
+  if (plugin !== '' && !tags.includes(`v${plugin}`)) tags.push(`v${plugin}`)
+  return tags
+}
+
+/** The GitHub release asset base for one tag under a given host. */
+function releaseAssetBase(host: string, tag: string): string {
+  return `${host}/${RELEASE_OWNER}/${RELEASE_REPO}/releases/download/${tag}`
+}
+
+/** One transport's failure, kept short for the aggregated error message. */
+function reasonOf(result: { code: number; stderr: string }): string {
+  return (result.stderr || `curl exit ${result.code}`).trim().split('\n').at(-1)?.slice(-160) ?? `curl exit ${result.code}`
+}
+
+/** Download one file and report success/failure without throwing. */
+async function fetchTo(runner: CurlRunner, url: string, output: string, headers?: readonly string[]): Promise<boolean> {
+  const result = await runner({ url, output, ...(headers === undefined ? {} : { headers }) })
+  if (result.code === 0) return true
+  await rm(output, { force: true })
+  return false
+}
+
+/**
+ * Verify a downloaded artifact against its companion and mark the cache ready.
+ *
+ * A body that does not match its own `.sha256` is a **hard failure**: the tag
+ * exists and its companion disagrees, so trying another transport (or tag) would
+ * only hide a bad publish.
+ */
+async function verifyDownload(cached: string, shaFile: string, releaseTag: string, transport: string): Promise<CachedAsset> {
+  const expected = (await readFile(shaFile, 'utf8')).trim().split(/\s+/)[0] ?? ''
+  await rm(shaFile, { force: true })
+  const actual = await sha256File(cached)
+  if (expected.length !== 64 || expected !== actual) {
+    await rm(cached, { force: true })
+    throw new Error(`downloaded server package sha256 mismatch for release ${releaseTag} via ${transport} (expected ${expected || 'none'}, got ${actual})`)
+  }
+  const info = await stat(cached)
+  await writeFile(`${cached}.ready`, `${actual}\n`)
+  return { path: cached, sha256: actual, size: info.size, version: '' }
+}
+
+/** One release asset as the GitHub REST API reports it. */
+interface ReleaseAsset {
+  readonly id: number
+  readonly name: string
+}
+
+/** The subset of the release JSON this module reads. */
+function assetsOf(json: string): ReleaseAsset[] | undefined {
+  try {
+    const parsed = JSON.parse(json) as { assets?: unknown }
+    if (!Array.isArray(parsed.assets)) return undefined
+    return parsed.assets
+      .filter((asset): asset is { id: number; name: string } =>
+        typeof asset === 'object' && asset !== null &&
+        typeof (asset as { id?: unknown }).id === 'number' &&
+        typeof (asset as { name?: unknown }).name === 'string')
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Download the release-built server package and verify it against its `.sha256`.
+ *
+ * Two transports are tried **per candidate tag**, because a published release is
+ * only useful if the client can actually reach it:
+ *
+ * 1. the browser-style release URL on `github.com` (the documented path);
+ * 2. the REST API (`/releases/tags/<tag>` → `assets[].id` → `/releases/assets/<id>`
+ *    with `Accept: application/octet-stream`). Measured on the QA host:
+ *    `github.com:443` times out there while `api.github.com` answers 200
+ *    unauthenticated.
+ *
+ * A configured `mirror` disables the API transport: a mirror is not necessarily
+ * GitHub, so only the mirror URL is tried.
+ * @param options - release/arch, mirror, tag candidates and test seams.
+ */
 export async function downloadServerPackage(options: {
   version: string
   platform: 'linux' | 'darwin'
   arch: 'x64' | 'arm64'
   libc: '' | 'gnu' | 'musl'
   mirror: string
+  /** This plugin's version, for the `v<pluginVersion>` candidate. */
+  pluginVersion?: string
+  /** Explicit candidate list (tests); defaults to {@link releaseTagsFor}. */
+  releaseTags?: readonly string[]
+  /** Cache directory override (tests); defaults to `~/.dsh/remote-assets`. */
+  cacheDir?: string
+  /** curl substitution (tests). */
+  runner?: CurlRunner
   onProgress?: (message: string, detail?: string) => void
 }): Promise<CachedAsset> {
   const notify = options.onProgress ?? (() => {})
+  const runner = options.runner ?? runCurl
   const tag = artifactTag(options.platform, options.arch, options.libc)
   const name = artifactName(options.version, tag)
-  const dir = remoteAssetsCacheDir()
+  const dir = options.cacheDir ?? remoteAssetsCacheDir()
   await mkdir(dir, { recursive: true })
   const cached = join(dir, name)
-  const base = releaseAssetBase(options.mirror, options.version)
-  notify(`downloading server package ${name} from ${new URL(`${base}/${name}`).host}`)
-  const download = await execLocal('curl', ['-fL', '--retry', '2', '--connect-timeout', '20', '-m', '900', '-o', cached, `${base}/${name}`], 920_000)
-  if (download.code !== 0) {
-    await rm(cached, { force: true })
-    throw new Error(`release download failed: ${(download.stderr || `curl exit ${download.code}`).trim().slice(-300)}`)
-  }
   const shaFile = `${cached}.dsh-sha`
-  const shaFetch = await execLocal('curl', ['-fL', '--retry', '2', '--connect-timeout', '20', '-m', '60', '-o', shaFile, `${base}/${name}.sha256`], 80_000)
-  if (shaFetch.code !== 0) {
-    await rm(cached, { force: true })
-    throw new Error('release download succeeded but its .sha256 companion is missing; refusing an unverifiable package')
+  const tags = options.releaseTags ?? releaseTagsFor(options.version, options.pluginVersion)
+  const mirror = options.mirror.replace(/\/+$/, '')
+  const failures: string[] = []
+  for (const releaseTag of tags) {
+    const attempts: string[] = []
+    const hosts = mirror === '' ? [HTML_BASE] : [mirror]
+    // 1. release-page (or mirror) URL
+    for (const host of hosts) {
+      const base = releaseAssetBase(host, releaseTag)
+      notify(`downloading server package ${name} from ${host} (release ${releaseTag})`)
+      const artifact = await runner({ url: `${base}/${name}`, output: cached })
+      if (artifact.code !== 0) {
+        attempts.push(`html: ${reasonOf(artifact)}`)
+        await rm(cached, { force: true })
+        continue
+      }
+      if (!await fetchTo(runner, `${base}/${name}.sha256`, shaFile)) {
+        attempts.push(`html: .sha256 companion missing`)
+        await rm(cached, { force: true })
+        continue
+      }
+      const verified = await verifyDownload(cached, shaFile, releaseTag, 'html')
+      notify(`server package downloaded from release ${releaseTag} (${(verified.size / 1024 / 1024).toFixed(1)} MB)`)
+      return { ...verified, version: options.version }
+    }
+    // 2. REST API transport (only for GitHub itself)
+    if (mirror === '') {
+      notify(`release page unreachable for ${releaseTag}; trying the GitHub API`)
+      const releaseUrl = `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/tags/${encodeURIComponent(releaseTag)}`
+      const listing = await runner({ url: releaseUrl, headers: ['Accept: application/vnd.github+json'] })
+      if (listing.code !== 0) {
+        attempts.push(`api: ${reasonOf(listing)}`)
+      } else {
+        const assets = assetsOf(listing.stdout)
+        const artifactAsset = assets?.find(asset => asset.name === name)
+        const shaAsset = assets?.find(asset => asset.name === `${name}.sha256`)
+        if (artifactAsset === undefined || shaAsset === undefined) {
+          // The tag exists but carries no package for this architecture.
+          attempts.push(`api: asset ${name} not in release`)
+        } else {
+          const download = async (asset: ReleaseAsset, output: string): Promise<boolean> =>
+            await fetchTo(runner, `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/assets/${asset.id}`, output, ['Accept: application/octet-stream'])
+          if (!await download(artifactAsset, cached)) {
+            attempts.push('api: asset download failed')
+            await rm(cached, { force: true })
+          } else if (!await download(shaAsset, shaFile)) {
+            attempts.push('api: .sha256 asset download failed')
+            await rm(cached, { force: true })
+          } else {
+            const verified = await verifyDownload(cached, shaFile, releaseTag, 'api')
+            notify(`server package downloaded from release ${releaseTag} via the GitHub API (${(verified.size / 1024 / 1024).toFixed(1)} MB)`)
+            return { ...verified, version: options.version }
+          }
+        }
+      }
+    }
+    failures.push(`${releaseTag} (${attempts.join('; ') || 'not found'})`)
   }
-  const expected = (await readFile(shaFile, 'utf8')).trim().split(/\s+/)[0] ?? ''
-  await rm(shaFile, { force: true })
-  const actual = await sha256File(cached)
-  if (expected.length !== 64 || expected !== actual) {
-    await rm(cached, { force: true })
-    throw new Error(`downloaded server package sha256 mismatch (expected ${expected || 'none'}, got ${actual})`)
-  }
-  const info = await stat(cached)
-  await writeFile(`${cached}.ready`, `${actual}\n`)
-  notify(`server package downloaded (${(info.size / 1024 / 1024).toFixed(1)} MB)`)
-  return { path: cached, sha256: actual, size: info.size, version: options.version }
+  throw new Error(
+    `release download failed: no server package found for ${failures.join(', ')}; publish a release (tag ${tags.at(-1) ?? ''}) or switch the package source to upload`,
+  )
 }
 
 /** The package-source resolution order for one policy. */
@@ -407,6 +597,12 @@ export async function resolveServerPackage(options: {
   libc: '' | 'gnu' | 'musl'
   policy: 'auto' | 'download' | 'upload' | 'reuse'
   mirror: string
+  /** This plugin's version, so the `v<pluginVersion>` release tag is tried too. */
+  pluginVersion?: string
+  /** Cache directory override (tests); defaults to `~/.dsh/remote-assets`. */
+  cacheDir?: string
+  /** curl substitution (tests). */
+  runner?: CurlRunner
   onProgress?: (message: string, detail?: string) => void
 }): Promise<{ asset: CachedAsset; via: 'cache' | 'download' | 'build' }> {
   if (options.policy === 'reuse') {
@@ -414,7 +610,7 @@ export async function resolveServerPackage(options: {
   }
   const notify = options.onProgress ?? (() => {})
   const tag = artifactTag(options.platform, options.arch, options.libc)
-  const dir = remoteAssetsCacheDir()
+  const dir = options.cacheDir ?? remoteAssetsCacheDir()
   const cached = join(dir, artifactName(options.version, tag))
   const hit = await cachedAssetIfReady(cached)
   if (hit !== undefined) {
@@ -428,11 +624,19 @@ export async function resolveServerPackage(options: {
       if (source === 'download') {
         return { asset: await downloadServerPackage({ ...options }), via: 'download' }
       }
-      return { asset: await buildDshRuntimePackage({ ...options }), via: 'build' }
+      return { asset: await buildDshRuntimePackage({ ...options, onProgress: notify }), via: 'build' }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       errors.push(`${source}: ${message}`)
-      notify(`${source === 'download' ? 'release download' : 'local build'} failed; trying the next source`, message)
+      // The wording matters: with `download` still followed by `build`, the user
+      // must be able to see that the release was missing *and* that a local build
+      // took over (api-contract §3.3's `server package ready via build|cache`).
+      notify(
+        source === 'download'
+          ? `release download failed: ${message}; falling back to a local build`
+          : `local build failed; trying the next source`,
+        message,
+      )
     }
   }
   throw new Error(`could not obtain the server package ${artifactName(options.version, tag)}; attempts: ${errors.join(' ;; ')}`)

@@ -470,6 +470,10 @@ export async function provisionOver(transport: RemoteTransport, request: Provisi
       libc: env.libc,
       policy: effective,
       mirror: policy.mirror,
+      // Lets the release lookup try `v<pluginVersion>` after `server-v<dshVersion>`:
+      // releases are tagged with the plugin version, while the artifact name
+      // follows the dsh release it was built for.
+      ...(pluginVersion === '' ? {} : { pluginVersion }),
       onProgress: (message, detail) => notify('upload', message, detail),
     })
     notify('upload', `server package ready via ${pkgVia}`)

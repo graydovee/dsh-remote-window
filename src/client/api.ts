@@ -191,13 +191,14 @@ export interface ConnectStartRequest {
 /**
  * The three-way choice of wizard step 3.
  *
- * `download` is rendered this round but never selectable (the card is
- * disabled): the server-package releases it would fetch do not exist yet.
+ * All three are selectable now that server-package releases exist:
+ * `reuse` (an existing dsh on the host), `upload` (this machine's package) and
+ * `download` (fetch the release for the remote architecture).
  */
 export type ConnectionMode = 'reuse' | 'upload' | 'download'
 
 /** Per-target package source; `''` = follow the global policy. */
-export type PackageSourceInput = '' | 'upload' | 'reuse'
+export type PackageSourceInput = '' | 'upload' | 'reuse' | 'download'
 
 /* --------------------------------------------------------------- dsh scan */
 

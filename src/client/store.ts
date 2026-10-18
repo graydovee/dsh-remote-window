@@ -23,6 +23,7 @@ import type {
 } from './api.ts'
 import type { ClientContext } from './context.ts'
 import { draftFromAlias } from './alias-prefill.ts'
+import { choiceReady, packageSourceOf } from './connect-mode.ts'
 import { joinWorkspaces } from './workspace-join.ts'
 import type { WorkspaceRow } from './workspace-join.ts'
 import { methodAvailable } from '../targets/methods.ts'
@@ -1451,9 +1452,9 @@ function setConnectionMode(mode: '' | ConnectionMode): void {
   // NOT `patchConfig`: that drops the held secret, and switching reuse→upload
   // after the password was entered would then demand it again for no reason.
   commit(previous => ({ config: { ...previous.config, connectionMode: mode }, error: undefined }))
-  // Both remaining methods need the scan: reuse lists the candidates, upload
-  // shows the architecture and whether the package is already cached locally.
-  if ((mode === 'reuse' || mode === 'upload') && state.dshScan.status === 'idle' && state.dshScan.fingerprint === undefined) {
+  // Every mode needs the scan: reuse lists the candidates, upload and download
+  // both show the remote architecture plus whether the package is already cached.
+  if (mode !== '' && state.dshScan.status === 'idle' && state.dshScan.fingerprint === undefined) {
     void scanDsh()
   }
 }
@@ -1608,13 +1609,12 @@ async function startConnect(): Promise<void> {
     return
   }
   // Step 3's choice is the only thing that decides how the server side is
-  // provisioned; `download` never reaches here (its card is disabled).
-  if (draft.connectionMode === '' || draft.connectionMode === 'download') {
-    commit({ view: 'wizard', step: 'connect', error: validation('connect.mode.required') })
-    return
-  }
-  if (draft.connectionMode === 'reuse' && draft.reuseLauncherPath.trim() === '') {
-    commit({ view: 'wizard', step: 'connect', error: validation('connect.mode.reuse.required') })
+  // provisioned; it becomes exactly one `packageSource` value (`connect-mode.ts`).
+  if (!choiceReady(draft.connectionMode, draft.reuseLauncherPath)) {
+    const key: LocaleKey = draft.connectionMode === 'reuse'
+      ? 'connect.mode.reuse.required'
+      : 'connect.mode.required'
+    commit({ view: 'wizard', step: 'connect', error: validation(key) })
     return
   }
   // A WSL target has no credentials at all: the transport is a local process.
@@ -1656,11 +1656,12 @@ async function startConnect(): Promise<void> {
   }
   const remote = buildRemote(draft)
   if (remote !== undefined) request.remote = remote
-  if (draft.connectionMode === 'reuse') {
-    request.packageSource = 'reuse'
-    request.reuseLauncherPath = draft.reuseLauncherPath.trim()
-  } else if (draft.connectionMode === 'upload') {
-    request.packageSource = 'upload'
+  // One card, one wire value. `reuse` also carries the launcher the user picked;
+  // `upload`/`download` are fully described by the source itself.
+  const packageSource = packageSourceOf(draft.connectionMode)
+  if (packageSource !== undefined) {
+    request.packageSource = packageSource
+    if (packageSource === 'reuse') request.reuseLauncherPath = draft.reuseLauncherPath.trim()
   }
 
   setPendingSecret(resolved.secret)

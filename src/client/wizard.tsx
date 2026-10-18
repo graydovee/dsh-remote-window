@@ -25,6 +25,7 @@ import {
 import type { MenuEntry, StateDotState, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AuthKind, ConnectionMode, ConnectStep, DshCandidate, SshAlias, WslDistro } from './api.ts'
 import { EmptyState, ErrorBanner, Field, LoadingLine } from './common.tsx'
+import { choiceReady } from './connect-mode.ts'
 import { t } from './locales.ts'
 import { offeredMethods } from './method-cards.ts'
 import type { AppState, StepState, WizardStep } from './store.ts'
@@ -57,17 +58,17 @@ const METHOD_DESCRIPTION_KEYS = {
 } as const
 
 /**
- * Step 3's three cards.
+ * Step 3's three cards — all selectable.
  *
- * `download` is rendered but never selectable: it would fetch a released server
- * package, and there is no release yet (its copy says exactly that). Only the
- * *card* is unavailable — `assets.downloadServerPackage` still serves the
- * `auto` policy of pre-existing targets.
+ * `download` fetches the released server package for the remote architecture
+ * (host side: GitHub Release, tag candidates `server-v<dshVersion>` then
+ * `v<pluginVersion>`), falling back to a local build when no release matches.
+ * The card carries no `disabled` state any more; only a live attempt locks them.
  */
-const MODE_CARDS: readonly { id: ConnectionMode; disabled?: boolean }[] = [
+const MODE_CARDS: readonly { id: ConnectionMode }[] = [
   { id: 'reuse' },
   { id: 'upload' },
-  { id: 'download', disabled: true },
+  { id: 'download' },
 ]
 
 /** Localized name/description key per connection-method card. */
@@ -697,15 +698,28 @@ function ReusePanel(props: { state: AppState }): ReactElement | null {
 }
 
 /**
- * Step 3's upload panel: which package the remote architecture needs and whether
- * it is already cached locally (then it is uploaded as is) or has to be built
- * here (minutes). The facts come from the same `dsh-scan` the reuse list uses.
+ * Step 3's package panel: which package the remote architecture needs, and what
+ * this choice will do with it.
+ *
+ * Shared facts (probe tag, artifact name, whether the package is already cached)
+ * come from the same `dsh-scan` the reuse list uses; only the outcome line is
+ * mode-specific:
+ *  - `upload` — cached ⇒ upload as is, otherwise build it here (minutes);
+ *  - `download` — cached ⇒ use it, otherwise fetch the release for this arch
+ *    (host side falls back to a local build when no release matches).
  */
-function UploadPanel(props: { state: AppState }): ReactElement | null {
+function PackagePanel(props: { state: AppState; mode: 'upload' | 'download' }): ReactElement | null {
   const { dshScan } = props.state
   const scanning = dshScan.status === 'scanning'
   const probe = dshScan.probe
   const pkg = dshScan.package
+  const outcome = props.mode === 'upload'
+    ? (pkg?.cached === true
+      ? t('connect.upload.cached', { size: formatSize(pkg.sizeBytes) })
+      : t('connect.upload.build'))
+    : (pkg?.cached === true
+      ? t('connect.download.cached', { size: formatSize(pkg.sizeBytes) })
+      : t('connect.download.fetch', { artifact: pkg?.artifact ?? t('common.unknown') }))
   return (
     <div className="dsh-rw-scan">
       <div className="dsh-rw-inline">
@@ -719,22 +733,18 @@ function UploadPanel(props: { state: AppState }): ReactElement | null {
           {t('connect.scan.retry')}
         </Button>
       </div>
-      {scanning && <LoadingLine text={t('connect.upload.checking')} />}
+      {scanning && <LoadingLine text={t('connect.package.checking')} />}
       {dshScan.status === 'unavailable' && (
         <ErrorBanner error={{ code: 'scan-failed', message: t('connect.scan.failed', { message: dshScan.error ?? '' }) }} />
       )}
       {!scanning && probe === undefined && dshScan.status !== 'unavailable' && (
-        <p className="dsh-rw-hint">{t('connect.upload.unknown')}</p>
+        <p className="dsh-rw-hint">{t('connect.package.unknown')}</p>
       )}
       {probe !== undefined && (
         <>
-          <p className="dsh-rw-hint">{t('connect.upload.probe', { tag: probe.tag })}</p>
-          {pkg !== undefined && <p className="dsh-rw-hint">{t('connect.upload.artifact', { artifact: pkg.artifact })}</p>}
-          <p className="dsh-rw-hint">
-            {pkg?.cached === true
-              ? t('connect.upload.cached', { size: formatSize(pkg.sizeBytes) })
-              : t('connect.upload.build')}
-          </p>
+          <p className="dsh-rw-hint">{t('connect.package.probe', { tag: probe.tag })}</p>
+          {pkg !== undefined && <p className="dsh-rw-hint">{t('connect.package.artifact', { artifact: pkg.artifact })}</p>}
+          <p className="dsh-rw-hint">{outcome}</p>
         </>
       )}
     </div>
@@ -767,7 +777,8 @@ function ConnectStep(props: { state: AppState }): ReactElement | null {
       <div className="dsh-rw-methods" role="radiogroup" aria-label={t('connect.mode.title')}>
         {MODE_CARDS.map((card, index) => {
           const selected = config.connectionMode === card.id
-          const disabled = card.disabled === true || busy
+          // Only a live attempt locks the cards; no card is permanently disabled.
+          const disabled = busy
           return (
             <button
               key={card.id}
@@ -789,19 +800,19 @@ function ConnectStep(props: { state: AppState }): ReactElement | null {
                 {selected && <Tag tone="info">{t('connect.mode.selected')}</Tag>}
               </span>
               <span className="dsh-rw-method-description">{t(MODE_DESCRIPTION_KEYS[card.id])}</span>
-              {card.disabled === true && <span className="dsh-rw-method-state">{t('connect.mode.download.disabled')}</span>}
             </button>
           )
         })}
       </div>
 
       {config.connectionMode === 'reuse' && <ReusePanel state={props.state} />}
-      {config.connectionMode === 'upload' && <UploadPanel state={props.state} />}
+      {config.connectionMode === 'upload' && <PackagePanel state={props.state} mode="upload" />}
+      {config.connectionMode === 'download' && <PackagePanel state={props.state} mode="download" />}
 
       <h3 className="dsh-rw-section-title">{t('connect.title')}</h3>
       <p className="dsh-rw-hint">
         {dshScan.status === 'ready' && dshScan.probe !== undefined
-          ? t('connect.upload.probe', { tag: dshScan.probe.tag })
+          ? t('connect.package.probe', { tag: dshScan.probe.tag })
           : t('connect.description')}
       </p>
 
@@ -946,9 +957,10 @@ export function WizardFooter(): ReactElement | null {
 
   // Step 3: starting and retrying are the same call; the primary is disabled
   // until the choice is complete (a mode is picked, and reuse has a launcher).
-  const chosen = config.connectionMode === 'reuse'
-    ? config.reuseLauncherPath !== ''
-    : config.connectionMode === 'upload'
+  const chosen = choiceReady(config.connectionMode, config.reuseLauncherPath)
+  // Selecting 远程下载 when no package is cached here means this press really
+  // downloads ~40 MB from the release — say so on the button.
+  const downloads = config.connectionMode === 'download' && state.dshScan.package?.cached === false
   return (
     <div className="dsh-rw-footer-actions">
       <span className="dsh-rw-footer-group">
@@ -976,7 +988,9 @@ export function WizardFooter(): ReactElement | null {
           disabled={pending || busy || !chosen}
           onClick={() => { void store.startConnect() }}
         >
-          {connect.phase === 'failed' ? t('common.retry') : t('config.connect')}
+          {connect.phase === 'failed'
+            ? t('common.retry')
+            : downloads ? t('connect.download.button') : t('config.connect')}
         </Button>
       </span>
     </div>
