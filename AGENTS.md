@@ -87,7 +87,7 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
 
 ## 与 server 项目的同步契约（最重要的规则）
 
-`src/protocol.ts`、`src/server/`、`src/frame/` 三处与
+`src/protocol.ts`、`src/server/`、`src/frame/`、`src/provision/package-build.ts` 四处与
 `../dsh-remote-workspace-server` 里的同名文件**逐字节相同**（已验证）。改任何一处
 必须两边同步改。原因：client 的 provisioner 部署的是**自己构建的**
 `lib/server.js`（来自 `src/server/` 副本），而 conformance 测试也用副本在内存里
@@ -557,13 +557,18 @@ WSL 目标只在 Windows 上存在，所以 **linux 包常常是在 Windows 上�
 
 ## server 包的 release 与「远程下载」（alpha63 起）
 
-**发布**：`.github/workflows/server-release.yml`，`push: tags: ['v*']` 触发，矩阵
+**发布**：**在 `dsh-remote-workspace-server` 仓库**（不是本仓库！这些 tarball 是那个项目的
+产物），`.github/workflows/server-release.yml`，`push: tags: ['server-v*']` 触发，矩阵
 `linux-x64-gnu / linux-arm64-gnu / darwin-x64 / darwin-arm64`，每个组合产出
 `dsh-remote-server-<dshVersion>-<tag>.tar.gz` + `.sha256` + `.manifest.json`，同一个 job
 把它们挂到**两个** release：
 
-- 被推的那个 tag（例如 `v0.1.0-alpha1`，人类可读的插件里程碑）；
-- `server-v<dshVersion>`（`server-v0.2.1-rc.2`）—— 包是按 **dsh 版本**构建的，客户端优先查这个。
+被推的 tag，即 `server-v<dshVersion>`（如 `server-v0.2.1-rc.2`）—— 包是按 **dsh 版本**构建的，
+客户端第一个候选就是它。插件自己的 tag（`v0.1.0-alphaN`）留在本仓库，**不挂 server 包**。
+
+历史教训（2026-10-19）：曾经把 server 包发在本仓库的 release 里，因为客户端 URL 硬编码成了
+`dsh-remote-workspace`；那是把另一个项目的产物挂在本项目的发布页上。现在
+`assets.ts::RELEASE_REPO = 'dsh-remote-workspace-server'`，构建与发布都在 server 仓库。
 
 **没有 Windows 矩阵项**：远端执行世界是 POSIX —— 部署脚本全是 `/bin/sh` + `tar` + `chmod`，
 `artifactTag()` 的类型也只接受 `linux | darwin`。Windows 远端需要独立部署器，不属于本插件。
@@ -590,7 +595,7 @@ release 里那份 `.sha256`。
 未正式发版前一律 `0.1.0-alphaN`（不要 `0.x.y`）。**每次部署必须 bump**
 （插件批量 URL 带 `&rev=<hash>`，不 bump 浏览器吃旧缓存）；版本同时出现在
 `package.json`、`/api/state` 的 `pluginVersion` 与远端 `server.hello.version`。
-已打 tag/release：client 仓库 `v0.1.0-alpha1`（首个带 release 的 tag，release 里是 server 包）；server 包另有一份 `server-v<dshVersion>` 的 release（客户端优先按它查找）。
+已打 tag：client 仓库 `v0.1.0-alpha1`（插件里程碑，**不带** server 包）；server 包只在 `dsh-remote-workspace-server` 仓库按 `server-v<dshVersion>` 打 tag 并发 release。
 
 ## 已知缺口（alpha）
 
