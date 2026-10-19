@@ -609,6 +609,9 @@ release 里那份 `.sha256`。
 
 提进仓库就等于把调试号当成发布版本，也等于让同一版本号对应两份不同内容。
 
+**这套修订后缀只写在本文件（开发约定）。README 面向使用者，只讲发布版本与 tag，不要出现
+`0.1.0-alpha1.x` 这类开发号。**
+
 已打 tag：client 仓库 `v0.1.0-alpha1`（插件里程碑，**不带** server 包）；server 包只在
 `dsh-remote-workspace-server` 仓库按 `server-v<dshVersion>` 打 tag 并发 release。
 

@@ -187,18 +187,10 @@ allowBuilds:
 
 ## Versioning and releases
 
-- **仓库里的版本就是发布版本 `v0.1.0-alpha1`。** 提交进仓库的一切——`package.json`、内嵌的
-  remote-server 版本串、`lib/`——都带这个号。
-- **本地部署加的是修订后缀，不是另一个版本号：** `0.1.0-alpha1.1`、`0.1.0-alpha1.2`……
-  部署循环在**执行部署的那台机器**上把后缀 +1，好让插件批量 URL（`&rev=<hash>`）破掉浏览器
-  缓存；同一字符串也出现在 `/api/state` 的 `pluginVersion` 与远端 `server.hello.version` 里。
-  后缀要在 `pnpm build` **之前** 加（server 的兜底版本号会被编译进 `lib/server.js`）。它
-  **从不提交**：部署完用 `git checkout -- package.json src/server/index.ts && pnpm build`
-  把工作树还原。
-- 新的公开里程碑才打新 tag（`v0.1.0-alphaN`），后缀从 `.1` 重新开始。
-- **精确的 `engines.dsh` 跟着 harness 走，不跟着时间走**：接受一个新的 DSH 版本 = 发一个新的
-  插件版本，其 `devDependencies` 与 `engines.dsh` 同时指向它；在那样一版发出来之前，当前版本
-  继续拒绝其它宿主，而不是去猜。
+- **仓库里的版本就是发布版本 `v0.1.0-alpha1`**；新的公开里程碑才打新 tag（`v0.1.0-alphaN`）。
+- **精确的 `engines.dsh` 跟着 harness 走，不跟着时间走**：接受一个新的 DSH 版本 = 发一个新发布，
+  其 `devDependencies` 与 `engines.dsh` 同时指向它；在那样一版发出来之前，当前版本继续拒绝
+  其它宿主，而不是去猜。
 - server **运行时包**由 server 仓库构建并发布，tag 为 `server-v<dsh 版本>`（例如
   `server-v0.2.1-rc.2`）。插件先找 `server-v<dshVersion>`，再找 `v<pluginVersion>`，并对实际
   成功的那次传输校验 `.sha256`。

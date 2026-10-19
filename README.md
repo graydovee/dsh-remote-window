@@ -206,18 +206,10 @@ install root.
 
 ## Versioning and releases
 
-- **The repository version is the release, `v0.1.0-alpha1`.** Everything committed —
-  `package.json`, the embedded remote-server version strings and `lib/` — carries it.
-- **A local deployment adds a revision suffix instead of inventing a new number:**
-  `0.1.0-alpha1.1`, `0.1.0-alpha1.2`, … The deploy loop raises the suffix on the machine that
-  deploys, so the plugin bundle URL (`&rev=<hash>`) busts the browser cache; the same string
-  shows up in `/api/state` (`pluginVersion`) and the remote `server.hello.version`. Bump
-  **before** `pnpm build` — the server's fallback version is compiled into `lib/server.js`.
-  It is never committed: after the deploy the tree goes back with
-  `git checkout -- package.json src/server/index.ts && pnpm build`.
-- A new public milestone is a new tag (`v0.1.0-alphaN`), and the suffix restarts at `.1`.
+- **The repository version is the release, `v0.1.0-alpha1`**; a new public milestone is a new
+  tag `v0.1.0-alphaN`.
 - **The exact `engines.dsh` moves with the harness, not with time.** Accepting a new DSH
-  release means a new plugin version whose `devDependencies` and `engines.dsh` both name it;
+  release means a new plugin release whose `devDependencies` and `engines.dsh` both name it;
   until that release exists, the current one keeps refusing other hosts instead of guessing.
 - The server *runtime packages* are built and released **from the server repository**, tagged
   `server-v<dsh version>` (for example `server-v0.2.1-rc.2`). The plugin looks for
