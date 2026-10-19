@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { API_TIMEOUT_S, curlArgs, downloadServerPackage, releaseTagsFor, RELEASE_PAGE_MEMORY_MS, RELEASE_PAGE_TIMEOUT_S, resetReleasePageMemory, type CurlRunner } from '../src/provision/assets.ts'
+import { API_TIMEOUT_S, curlArgs, downloadServerPackage, releaseTagsFor, RELEASE_PAGE_MEMORY_MS, RELEASE_PAGE_TIMEOUT_S, resetReleasePageMemory, resolveServerPackage, sourceOrder, type CurlRunner } from '../src/provision/assets.ts'
 
 const VERSION = '0.2.1-rc.2'
 const PLUGIN = '0.1.0-alpha62'
@@ -307,6 +307,96 @@ describe('download progress and slow links', () => {
     expect(progress.some(message => /\d+\.\d+ \/ 40\.0 MB$/u.test(message))).toBe(true)
     // Nothing was reported before any bytes arrived.
     expect(progress[0]).not.toMatch(/^server package download progress: 0\.0/u)
+  })
+})
+describe('resume and explicit download (alpha66)', () => {
+  /** A runner that serves the artifact with `-C -` semantics over a partial file. */
+  function resumingRunner(state: { size: number; failAfterBytes?: number }): { runner: CurlRunner; calls: { url: string; output?: string; resume?: boolean }[] } {
+    const calls: { url: string; output?: string; resume?: boolean }[] = []
+    const body = Buffer.alloc(state.size, 7)
+    const sha = createHash('sha256').update(body).digest('hex')
+    const runner: CurlRunner = async options => {
+      calls.push({ url: options.url, ...(options.output === undefined ? {} : { output: options.output }), ...(options.resume === true ? { resume: true } : {}) })
+      if (options.url.includes('/releases/download/')) {
+        if (options.output !== undefined) await writeFile(options.output, '')
+        return { code: 28, stderr: 'curl: (28) Operation timed out', stdout: '' }
+      }
+      if (options.url.includes('/releases/tags/')) {
+        return { code: 0, stderr: '', stdout: JSON.stringify({ assets: [{ id: 7, name: ARTIFACT, size: body.length }, { id: 8, name: `${ARTIFACT}.sha256` }] }) }
+      }
+      if (options.url.endsWith('/releases/assets/8')) {
+        if (options.output === undefined) return { code: 22, stderr: '404', stdout: '' }
+        await writeFile(options.output, `${sha}  ${ARTIFACT}\n`)
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      if (options.url.endsWith('/releases/assets/7')) {
+        if (options.output === undefined) return { code: 22, stderr: '404', stdout: '' }
+        // A failing attempt writes only part of the body, like a broken link.
+        const already = options.resume === true ? (await readFile(options.output)).length : 0
+        const limit = state.failAfterBytes === undefined ? body.length : Math.min(body.length, already + state.failAfterBytes)
+        await writeFile(options.output, body.subarray(0, limit))
+        if (limit < body.length) return { code: 28, stderr: 'curl: (28) Operation timed out', stdout: '' }
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      return { code: 22, stderr: 'curl: (22) 404', stdout: '' }
+    }
+    return { runner, calls }
+  }
+
+  it('resumes a partial artifact with -C - instead of restarting it', async () => {
+    const state: { size: number; failAfterBytes?: number } = { size: 4096, failAfterBytes: 1024 }
+    const first = resumingRunner(state)
+    await downloadServerPackage(request({ releaseTags: [`server-v${VERSION}`] }, first.runner)).catch(() => undefined)
+    // The broken attempt left a partial file behind on purpose.
+    expect((await readFile(join(cacheDir, ARTIFACT))).length).toBe(1024)
+
+    // Second run: same file, network fine now.
+    state.failAfterBytes = undefined
+    const second = resumingRunner(state)
+    const asset = await downloadServerPackage(request({ releaseTags: [`server-v${VERSION}`] }, second.runner))
+    const artifactCall = second.calls.find(call => call.url.endsWith('/releases/assets/7'))
+    expect(artifactCall?.resume).toBe(true)
+    expect(asset.size).toBe(4096)
+
+    // curl's argv carries the flag itself.
+    expect(curlArgs({ url: 'https://x/y', output: 'f', resume: true })).toEqual(expect.arrayContaining(['-C', '-']))
+  })
+
+  it('deletes the file when the final size does not match the published asset', async () => {
+    // Server reports 4096 bytes but only ever yields 1000: not resumable content.
+    const body = Buffer.alloc(4096, 7)
+    const sha = createHash('sha256').update(body).digest('hex')
+    const runner: CurlRunner = async options => {
+      if (options.url.includes('/releases/download/')) return { code: 28, stderr: 'curl: (28) timed out', stdout: '' }
+      if (options.url.includes('/releases/tags/')) return { code: 0, stderr: '', stdout: JSON.stringify({ assets: [{ id: 7, name: ARTIFACT, size: 4096 }, { id: 8, name: `${ARTIFACT}.sha256` }] }) }
+      if (options.url.endsWith('/assets/7') && options.output !== undefined) {
+        await writeFile(options.output, Buffer.alloc(1000, 7))
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      if (options.url.endsWith('/assets/8') && options.output !== undefined) {
+        await writeFile(options.output, `${sha}  x\n`)
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      return { code: 22, stderr: '404', stdout: '' }
+    }
+    const failure = await downloadServerPackage(request({ releaseTags: [`server-v${VERSION}`] }, runner)).then(() => undefined, (error: unknown) => error as Error)
+    expect(failure?.message).toContain('incomplete (1000 / 4096 bytes)')
+    expect((await readdir(cacheDir).catch(() => [])).filter(name => name.endsWith('.tar.gz'))).toEqual([])
+  })
+
+  it('an explicit download source never falls back to a local build', async () => {
+    // Pure proof: the build step is not even in the order for `download`.
+    expect(sourceOrder('download')).toEqual(['cache', 'download'])
+    expect(sourceOrder('auto')).toEqual(['cache', 'download', 'build'])
+    expect(sourceOrder('upload')).toEqual(['cache', 'build'])
+
+    const { runner } = network({})
+    const failure = await resolveServerPackage({ ...request({}, runner), policy: 'download' }).then(() => undefined, (error: unknown) => error as Error)
+    expect(failure?.message).toContain('release download failed')
+    expect(failure?.message).toContain('switch the package source to upload')
+    // No staging ever started: a build in this environment would have failed with
+    // a pnpm/runtime error, and the message above is the download's.
+    expect(failure?.message).not.toContain('local build')
   })
 })
 describe('curlArgs', () => {

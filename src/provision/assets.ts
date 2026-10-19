@@ -324,6 +324,8 @@ export type CurlRunner = (options: {
   readonly headers?: readonly string[]
   /** Whole-request budget in seconds; the transports get different ones. */
   readonly maxTimeSeconds?: number
+  /** Continue an existing partial file (`-C -`) instead of restarting it. */
+  readonly resume?: boolean
 }) => Promise<{ readonly code: number; readonly stderr: string; readonly stdout: string }>
 
 /**
@@ -365,6 +367,7 @@ export function curlArgs(options: {
   readonly output?: string
   readonly headers?: readonly string[]
   readonly maxTimeSeconds?: number
+  readonly resume?: boolean
 }): string[] {
   return [
     '-fL',
@@ -374,6 +377,9 @@ export function curlArgs(options: {
     '--speed-limit', '1024',
     '--speed-time', '30',
     '-m', String(options.maxTimeSeconds ?? RELEASE_PAGE_TIMEOUT_S),
+    // Resume a partial artifact: a 40-minute download must not restart from zero
+    // because the link hiccuped at 99.8% (alpha66).
+    ...(options.resume === true ? ['-C', '-'] : []),
     ...(options.headers ?? []).flatMap(header => ['-H', header]),
     ...(options.output === undefined ? [] : ['-o', options.output]),
     options.url,
@@ -523,6 +529,10 @@ async function fetchTo(
     totalBytes?: number
     onProgress?: (transferred: number, totalBytes: number | undefined) => void
     progressIntervalMs?: number
+    /** Continue an existing partial file instead of restarting it. */
+    resume?: boolean
+    /** Keep a partial file on failure (resume needs it); default removes it. */
+    keepPartial?: boolean
   } = {},
 ): Promise<{ ok: boolean; result: { code: number; stderr: string; stdout: string } }> {
   let finished = false
@@ -564,12 +574,14 @@ async function fetchTo(
       output,
       ...(options.headers === undefined ? {} : { headers: options.headers }),
       ...(options.maxTimeSeconds === undefined ? {} : { maxTimeSeconds: options.maxTimeSeconds }),
+      ...(options.resume === true ? { resume: true } : {}),
     })
     if (result.code === 0) return { ok: true, result }
-    // A failed transfer must not survive as a 0-byte "cached" artifact: the cache
-    // reader trusts `.ready`+size, but a half file on disk is still a trap for
-    // anything that looks at the filename (alpha64 left one behind for ten minutes).
-    await rm(output, { force: true })
+    // A *transport* failure of the artifact keeps what already arrived: the next
+    // attempt resumes with `-C -` (alpha66 lost 40 minutes at 99.8%). Everything
+    // else (and any caller that did not ask) still cleans up, so a 0-byte file
+    // can never masquerade as a cached artifact.
+    if (options.keepPartial !== true) await rm(output, { force: true })
     return { ok: false, result }
   } finally {
     finished = true
@@ -689,27 +701,76 @@ export async function downloadServerPackage(options: {
     onProgress: progress,
     ...(options.progressIntervalMs === undefined ? {} : { progressIntervalMs: options.progressIntervalMs }),
   }
+  /**
+   * Fetch the artifact body, resuming a partial file when there is one.
+   *
+   * `curl -C -` is what turns a hiccup at 99.8% into a retry instead of a lost
+   * 40-minute download (alpha66). A failed transfer KEEPS the partial: the next
+   * transport or tag continues it. A 404 deletes it (that tag does not exist),
+   * and so does a size/sha mismatch (the bytes are not the published ones).
+   */
+  const fetchArtifact = async (url: string, options: {
+    headers?: readonly string[]
+    maxTimeSeconds: number
+    totalBytes?: number
+  }): Promise<{ ok: true } | { ok: false; reason: string; code: number; stderr: string }> => {
+    const existing = await stat(cached).then(info => info.size, () => 0)
+    const total = options.totalBytes
+    // Already complete (a previous attempt got the whole body, e.g. the sha step failed).
+    if (total !== undefined && existing === total) return { ok: true }
+    // Longer than the published asset: stale or mixed bytes, start over.
+    if (total !== undefined && existing > total) await rm(cached, { force: true })
+    const resume = existing > 0 && (total === undefined || existing < total)
+    if (resume) notify(`resuming the server package download at ${megabytes(existing)}${total === undefined ? '' : ` / ${megabytes(total)}`} MB`)
+    const result = await fetchTo(runner, url, cached, {
+      ...(options.headers === undefined ? {} : { headers: options.headers }),
+      maxTimeSeconds: options.maxTimeSeconds,
+      ...(total === undefined ? {} : { totalBytes: total }),
+      ...progressOptions,
+      ...(resume ? { resume: true } : {}),
+      // Keep what arrived; the next attempt resumes it.
+      keepPartial: true,
+    })
+    if (!result.ok) {
+      // 404: this tag/asset is not there, so the partial belongs to nothing.
+      if (result.result.code === 22) await rm(cached, { force: true })
+      return { ok: false, reason: reasonOf(result.result), code: result.result.code, stderr: result.result.stderr }
+    }
+    if (total !== undefined) {
+      const size = await stat(cached).then(info => info.size, () => 0)
+      if (size !== total) {
+        // A short body after a successful curl is not resumable safely: drop it.
+        await rm(cached, { force: true })
+        return { ok: false, reason: `incomplete (${size} / ${total} bytes)`, code: 0, stderr: '' }
+      }
+    }
+    return { ok: true }
+  }
+
   for (const releaseTag of tags) {
     const attempts: string[] = []
     const hosts = skipHtml ? [] : mirror === '' ? [HTML_BASE] : [mirror]
+    // The REST listing reports the asset sizes; remember them so a resumed
+    // attempt knows what "complete" means.
+    let assetSizes: Map<string, number> | undefined
     // 1. release-page (or mirror) URL
     for (const host of hosts) {
       const base = releaseAssetBase(host, releaseTag)
+      const total = assetSizes?.get(name)
       notify(`downloading server package ${name} from ${host} (release ${releaseTag})`)
-      const artifact = await fetchTo(runner, `${base}/${name}`, cached, { maxTimeSeconds: RELEASE_PAGE_TIMEOUT_S, ...progressOptions })
+      const artifact = await fetchArtifact(`${base}/${name}`, { maxTimeSeconds: RELEASE_PAGE_TIMEOUT_S, ...(total === undefined ? {} : { totalBytes: total }) })
       if (!artifact.ok) {
-        attempts.push(`html: ${reasonOf(artifact.result)}`)
-        if (host === HTML_BASE && isReleasePageUnreachable(artifact.result)) markReleasePageUnreachable(HTML_BASE, now())
+        attempts.push(`html: ${artifact.reason}`)
+        if (host === HTML_BASE && isReleasePageUnreachable({ code: artifact.code, stderr: artifact.stderr })) markReleasePageUnreachable(HTML_BASE, now())
         continue
       }
       const sha = await fetchTo(runner, `${base}/${name}.sha256`, shaFile, { maxTimeSeconds: RELEASE_PAGE_TIMEOUT_S })
       if (!sha.ok) {
         attempts.push(`html: .sha256 companion missing`)
-        await rm(cached, { force: true })
         continue
       }
       const verified = await verifyDownload(cached, shaFile, releaseTag, 'html')
-      notify(`server package downloaded from release ${releaseTag} (${(verified.size / 1024 / 1024).toFixed(1)} MB)`)
+      notify(`server package downloaded from release ${releaseTag} (${megabytes(verified.size)} MB)`)
       return { ...verified, version: options.version }
     }
     // 2. REST API transport (only for GitHub itself)
@@ -721,30 +782,37 @@ export async function downloadServerPackage(options: {
         attempts.push(`api: ${reasonOf(listing)}`)
       } else {
         const assets = assetsOf(listing.stdout)
+        assetSizes = new Map((assets ?? []).filter(asset => asset.size !== undefined).map(asset => [asset.name, asset.size as number] as const))
         const artifactAsset = assets?.find(asset => asset.name === name)
         const shaAsset = assets?.find(asset => asset.name === `${name}.sha256`)
         if (artifactAsset === undefined || shaAsset === undefined) {
           // The tag exists but carries no package for this architecture.
           attempts.push(`api: asset ${name} not in release`)
         } else {
-          const download = async (asset: ReleaseAsset, output: string): Promise<boolean> =>
-            (await fetchTo(runner, `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/assets/${asset.id}`, output, {
+          const artifact = await fetchArtifact(
+            `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/assets/${artifactAsset.id}`,
+            {
               headers: ['Accept: application/octet-stream'],
               maxTimeSeconds: API_TIMEOUT_S,
-              // The listing reports the size, so progress reads `x / 121.2 MB`.
-              ...(asset.size === undefined ? {} : { totalBytes: asset.size }),
-              ...progressOptions,
-            })).ok
-          if (!await download(artifactAsset, cached)) {
-            attempts.push('api: asset download failed')
-            await rm(cached, { force: true })
-          } else if (!await download(shaAsset, shaFile)) {
-            attempts.push('api: .sha256 asset download failed')
-            await rm(cached, { force: true })
+              // The listing reports the size, so progress reads `x / 121.2 MB` and
+              // a resume knows how much is missing.
+              ...(artifactAsset.size === undefined ? {} : { totalBytes: artifactAsset.size }),
+            },
+          )
+          if (!artifact.ok) {
+            attempts.push(`api: ${artifact.reason}`)
           } else {
-            const verified = await verifyDownload(cached, shaFile, releaseTag, 'api')
-            notify(`server package downloaded from release ${releaseTag} via the GitHub API (${(verified.size / 1024 / 1024).toFixed(1)} MB)`)
-            return { ...verified, version: options.version }
+            const sha = await fetchTo(runner, `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/assets/${shaAsset.id}`, shaFile, {
+              headers: ['Accept: application/octet-stream'],
+              maxTimeSeconds: API_TIMEOUT_S,
+            })
+            if (!sha.ok) {
+              attempts.push(`api: .sha256 asset download failed`)
+            } else {
+              const verified = await verifyDownload(cached, shaFile, releaseTag, 'api')
+              notify(`server package downloaded from release ${releaseTag} via the GitHub API (${megabytes(verified.size)} MB)`)
+              return { ...verified, version: options.version }
+            }
           }
         }
       }
@@ -758,7 +826,10 @@ export async function downloadServerPackage(options: {
 
 /** The package-source resolution order for one policy. */
 export function sourceOrder(policy: 'auto' | 'download' | 'upload'): readonly ('cache' | 'download' | 'build')[] {
-  if (policy === 'download') return ['cache', 'download', 'build'] as const
+  // `download` is an *explicit* choice: if both transports fail, say so and stop.
+  // Silently staging a local build would tell the user "downloaded" when nothing
+  // was downloaded (alpha66). Only `auto` keeps the build fallback.
+  if (policy === 'download') return ['cache', 'download'] as const
   if (policy === 'upload') return ['cache', 'build'] as const
   return ['cache', 'download', 'build'] as const
 }
