@@ -5,8 +5,8 @@
  * authentication *decision*. It used to force `authKind: 'privateKey'` whenever
  * the alias named an `IdentityFile`, which silently flipped a user who had
  * already chosen 密码 onto key auth: picking
- * `dshtest-wsl — graydove@192.168.10.210` then failed with
- * `cannot reach 192.168.10.210:22: All configured authentication methods failed`
+ * `dshtest-wsl — tester@203.0.113.10` then failed with
+ * `cannot reach 203.0.113.10:22: All configured authentication methods failed`
  * (alpha55 defect). The prefill therefore only ever fills *fields*: the identity
  * file still lands in `privateKeyPath` (so switching to 私钥 is one click once
  * the user decides to), but the selected auth kind is never touched.

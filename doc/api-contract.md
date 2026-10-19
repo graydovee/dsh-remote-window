@@ -116,14 +116,14 @@
   "kind": "ssh",                       // 可选，默认 "ssh"；"wsl" 仅 Windows
   "host": "10.0.0.12",                 // ssh 必填
   "port": 22,                          // ssh 必填（1..65535）
-  "username": "graydove",              // ssh 必填
+  "username": "tester",              // ssh 必填
   "authKind": "password",              // "password" | "privateKey" | "agent"
   "secret": "…",                       // password 或私钥口令；可省略（agent / 已确认指纹的前提）
   "privateKeyPath": "~/.ssh/id_ed25519",
   "sshConfigAlias": "dev-box",
   "hostKeyFingerprint": "SHA256:…",    // 首次接触省略
   "wslDistro": "Ubuntu-22.04",         // wsl 必填
-  "wslUser": "graydove",               // wsl 可选
+  "wslUser": "tester",               // wsl 可选
   "profile": "dsh-remote-server",      // 可选，默认取 target.remote.profile
   "dshHome": "~/.dsh"                  // 可选，默认取 target.remote.dshHome（扫描插件时用它展开）
 }
@@ -149,7 +149,7 @@
       "libc": "gnu",                   // "" | gnu | musl（非 linux 恒 ""）
       "platformArch": "linux-arm64",
       "tag": "linux-arm64-gnu",        // artifactTag(platform, arch, libc)
-      "home": "/home/graydove",
+      "home": "/home/user",
       "tools": { "tar": true, "sha256sum": true, "curl": false, "wget": true }
     },
     "package": {
@@ -159,16 +159,16 @@
       "sha256": "…",                   // cached=true 时给
       "sizeBytes": 41943040            // cached=true 时给
     },
-    "dshHome": "/home/graydove/.dsh",
+    "dshHome": "/home/user/.dsh",
     "profiles": ["dsh-remote-server", "web"],
     "candidates": [
       {
-        "path": "/home/graydove/.nvm/versions/node/v24.4.0/bin/dsh",
-        "realPath": "/home/graydove/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js",
+        "path": "/home/user/.nvm/versions/node/v24.4.0/bin/dsh",
+        "realPath": "/home/user/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js",
         "version": "0.2.1-rc.2",
         "compatible": true,
         "executable": true,
-        "nodePath": "/home/graydove/.nvm/versions/node/v24.4.0/bin/node",
+        "nodePath": "/home/user/.nvm/versions/node/v24.4.0/bin/node",
         "selfContained": false,
         "profile": {
           "name": "dsh-remote-server",
@@ -1068,7 +1068,7 @@ export const targetRecordSchema = z.object({
 - [ ] 未连接时点「添加工作区」→ 弹窗里出现连接中状态并最终列出目录（不白屏、不卡死）
 
 **QA（E2E，浏览器 + 远端）**：按 `doc/acceptance-gap.md` B 节 §1–§8 与 **F 节（P0）** 逐条取证；
-WSL 目标 = 本机 `Ubuntu-22.04`，SSH 目标 = 真实主机 `graydove@192.168.10.210:22`（密码认证，
+WSL 目标 = 本机 `Ubuntu-22.04`，SSH 目标 = 真实主机 `tester@203.0.113.10:22`（密码认证，
 登录后是 WSL；别名由 QA 自行加进 `~/.ssh/config`），见 architecture §5 与 acceptance-gap E 节。
 
 ---

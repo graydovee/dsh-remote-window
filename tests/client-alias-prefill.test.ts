@@ -23,9 +23,9 @@ const draft = {
 /** The alias QA used: it names an IdentityFile, but the host only accepts a password. */
 const aliasWithKey: AliasPrefill = {
   alias: 'dshtest-wsl',
-  host: '192.168.10.210',
+  host: '203.0.113.10',
   port: 22,
-  username: 'graydove',
+  username: 'tester',
   identityFile: '~/.ssh/id_ed25519',
   source: 'config-file',
 }
@@ -46,9 +46,9 @@ describe('draftFromAlias', () => {
   it('fills the address facts the alias resolved', () => {
     expect(draftFromAlias(aliasWithKey, draft)).toMatchObject({
       sshConfigAlias: 'dshtest-wsl',
-      host: '192.168.10.210',
+      host: '203.0.113.10',
       port: '22',
-      username: 'graydove',
+      username: 'tester',
       label: 'my-box',
     })
   })

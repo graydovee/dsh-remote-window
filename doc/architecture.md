@@ -474,7 +474,7 @@ start    ── reuse 用 `PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> 
 | 用途 | 资源 | 状态与注意 |
 |---|---|---|
 | **WSL 路径的验收目标** | 本机 `Ubuntu-22.04` 发行版 | 已确认存在 `~/.dsh/server/{dsh,node,staging}` 与 `~/.dsh/profiles/dsh-remote-server/.dsh-rw-plugin.json`（即**打包路径已部署过**）。因此这台既是「上传包」的现成目标，也是「复用刚部署实例」的现成用例（见 api-contract §2.3/§7.2 的 PATH 前缀纠正）。WSL 无 host key，指纹恒 `''`。 |
-| **SSH 路径的验收目标** | **真实主机 `graydove@192.168.10.210:22`**，**密码认证** | 登录后即一台 WSL（发行版由 `uname -a` 确认）。`~/.ssh/config` 的别名读取由 QA 自行加一条别名指向该主机来验证；首次连接必然触发未知指纹确认。密码只出现在 `/api/connect/start`、`/api/dsh-scan` 的 body，**不得进报告/截图**。 |
+| **SSH 路径的验收目标** | **真实主机 `tester@203.0.113.10:22`**，**密码认证** | 登录后即一台 WSL（发行版由 `uname -a` 确认）。`~/.ssh/config` 的别名读取由 QA 自行加一条别名指向该主机来验证；首次连接必然触发未知指纹确认。密码只出现在 `/api/connect/start`、`/api/dsh-scan` 的 body，**不得进报告/截图**。 |
 | 复用方式的「不兼容」负例 | 同上主机：`PATH` 指向打印 `0.1.9` 的假启动器，或装一个旧版 dsh | 用于验证 `dsh-incompatible` 错误码与「改用上传 server 包并重试」按钮（裁决 4），并证明**没有自动开始上传**。 |
 | host-key 未确认的正例 | 上述主机的 host key 对本机是**新的**，首次连接必触发 | 正好覆盖硬约束 2 与 `dsh-scan` 的 `stage:'host-key'`；确认后指纹进内存 `state.trusted`，重测需重启 `dsh web`。 |
 
@@ -527,7 +527,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A23 | 扫描**不 pin** 指纹；确认后指纹进内存 `state.trusted`，`connect/start` 复用它**不二次弹窗**，pin 只在连接成功时发生 | 扫描是只读探路，不该产生持久信任；又不能让用户两次确认同一台机器 |
 | A24 | 草稿字段 `ConnectDraft.packageSource` 退役，第 3 步 `connectionMode` **独占** wire 字段 `packageSource` | 一份真相；旧的第 2 步选择器是双入口缺陷 |
 | A25 | 所有弹窗（含新浏览弹窗、工作区重命名）必须 `useSingleHost(<kind>)`（`common.tsx:134`） | 左栏与面板同时挂载 `RemoteTree`，不接入就是双弹窗 |
-| A26 | SSH 验收资源 = 真实主机 `graydove@192.168.10.210:22`（密码认证）；自建 sshd 夹具作废 | 夹具脚本不存在，QA 会找不到；真实主机还能顺带验 `~/.ssh/config` 别名与 host-key 确认 |
+| A26 | SSH 验收资源 = 真实主机 `tester@203.0.113.10:22`（密码认证）；自建 sshd 夹具作废 | 夹具脚本不存在，QA 会找不到；真实主机还能顺带验 `~/.ssh/config` 别名与 host-key 确认 |
 | A27 | **撤销**「部署实例排在 PATH 命中之后」与 `DshCandidate.origin`（Leader 裁决 (b)，2026-10-18） | 部署实例本身就是最可靠的复用候选（自带 node、插件状态可判）；`origin` 是纯展示冗余，会让 wire 契约变宽而无收益。排序 = `compatible && upToDate` → `compatible` → `path` |
 | A28 | `reuse-launcher-missing` **在路由层**以 `400` 拒（`packageSource==='reuse'` 且 `reuseLauncherPath` 缺失/为空），plan 阶段同码只作兜底 | QA 实测 alpha51 的路由层没透传该字段；缺参必须同步拒，不能留到执行期才报 |
 | A29 | 远端 `sandbox` 兜底**必须返回官方 facts 对象**（`{ argv, enforcement:'partial', denialSignatures:[], runnerFailureRules:[] }`），不是裸 argv；验证必须用官方 strict schema，**不许 `z.unknown()`** | alpha48–54 的裸数组被客户端 strict `.parse` 拒绝、包成 `SandboxUnavailableError`（用户看到与平台无关的通用模板 + `Runner failure: [`）；`z.unknown()` 正是让它活到 alpha55 的原因。`partial` 是诚实值：没有 backend 约束过 argv |

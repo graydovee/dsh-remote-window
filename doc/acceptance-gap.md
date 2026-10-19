@@ -9,7 +9,7 @@
 > B 节第 8 条（两条传输 + host-key 确认）、3.2/4.2/2a.6 的裁决标注；§2.3/§7.1/§7.2 的脚本
 > 纠正见 `doc/api-contract.md`。
 > **v3（2026-10-18，Developer A/B 契约偏差裁决）**——4.1 措辞改为「断开连接 / 连接」；
-> E 节 SSH 目标改为真实主机 `graydove@192.168.10.210:22`（密码认证，登录后是 WSL），
+> E 节 SSH 目标改为真实主机 `tester@203.0.113.10:22`（密码认证，登录后是 WSL），
 > 删除已作废的「用户态 sshd 夹具 / `scripts/test-sshd.sh`」；其余偏差写在
 > `doc/api-contract.md` §12 的偏差表。
 > **v4（2026-10-18，D-1 裁决 (b) + 路由层口径）**——撤销 `origin` 降权要求（2a.8 的「需要做什么」
@@ -205,7 +205,7 @@
 | 用途 | 资源 | 关键事实 |
 |---|---|---|
 | **WSL 传输的验收目标** | 本机 `Ubuntu-22.04` | 已确认存在 `~/.dsh/server/{dsh,node,staging}` 与 `~/.dsh/profiles/dsh-remote-server/.dsh-rw-plugin.json`——即**打包路径已部署过**。因此它同时是「上传包 → 复用刚部署实例」这条链的现成用例（对应 2a.8 的回归点）。WSL 无 host key，指纹恒 `''`。 |
-| **SSH 传输的验收目标** | **真实主机 `graydove@192.168.10.210:22`**（**密码认证**） | 该主机登录后就是一台 WSL（发行版用 `uname -a` 确认，QA 需把它记进测试记录）。① `~/.ssh/config` 别名读取：QA 自己在该文件里加一条别名指向这台主机（例如 `Host qa-ssh` + `HostName 192.168.10.210` + `User graydove`），然后在第 ② 步用别名预填；② 未知 host-key 确认：首次连接必然触发指纹面板（`dsh-scan` 的 `stage:'host-key'` 与 `connect/start` 各证一次）；③ ssh 传输全流程（连接 → 上传包/复用 → 添加工作区 → 会话在远端）。**密码只在 `/api/connect/start`、`/api/dsh-scan` 的 body 里出现，QA 不得把密码写进报告或截图。** |
+| **SSH 传输的验收目标** | **真实主机 `tester@203.0.113.10:22`**（**密码认证**） | 该主机登录后就是一台 WSL（发行版用 `uname -a` 确认，QA 需把它记进测试记录）。① `~/.ssh/config` 别名读取：QA 自己在该文件里加一条别名指向这台主机（例如 `Host qa-ssh` + `HostName 203.0.113.10` + `User tester`），然后在第 ② 步用别名预填；② 未知 host-key 确认：首次连接必然触发指纹面板（`dsh-scan` 的 `stage:'host-key'` 与 `connect/start` 各证一次）；③ ssh 传输全流程（连接 → 上传包/复用 → 添加工作区 → 会话在远端）。**密码只在 `/api/connect/start`、`/api/dsh-scan` 的 body 里出现，QA 不得把密码写进报告或截图。** |
 | 未知 host key 正例 | SSH 真实主机的 host key 对本机是新的 | 首次连接触发指纹确认（覆盖硬约束 2）。**注意**：该主机被确认过一次后指纹就进内存 `state.trusted`；要重测确认流程需重启 `dsh web`（内存态）或换目标。 |
 | 不兼容 dsh 负例 | 在真实主机上把 `PATH` 指向一个假启动器（`--version` 打印 `0.1.9`），或用 `nvm` 装一个旧版 dsh | 验证 `dsh-incompatible` 错误码 + 「改用上传 server 包并重试」按钮（裁决 4），并证明**没有自动开始上传**（日志无 upload 行、无大流量传输）。 |
 
@@ -230,7 +230,7 @@
 
 | 步骤 | 期望 | 证据 |
 |---|---|---|
-| ① 客户端 A（`dsh web` 端口 P1，profile `web`）连接同一台 server，添加工作区 `/home/graydove/proj` | 成功；`reg.list` 里出现该项 | A 的 `POST /api/state` → `serverWorkspaces[targetId]` 里的 `{id,path,title,sessionCount}`，`id` 记下来 |
+| ① 客户端 A（`dsh web` 端口 P1，profile `web`）连接同一台 server，添加工作区 `/home/user/proj` | 成功；`reg.list` 里出现该项 | A 的 `POST /api/state` → `serverWorkspaces[targetId]` 里的 `{id,path,title,sessionCount}`，`id` 记下来 |
 | ② 客户端 B（**另一个** profile 或另一个端口 P2，同一 server，**此前从未加过这个工作区**）连接并**只刷新**（不点任何按钮） | **无需手动操作**，B 的「远程工作区」树里直接出现该工作区行（同 `id`、同 `path`、同标题） | 截图/DOM 实测行文本 + B 的 `POST /api/state`：`serverWorkspaces[id]` 有该项，且 `workspaceRefs` 里存在同 `remoteWorkspaceId` 的 ref（证明显式登记是自动发生的） |
 | ③ A 建一个会话、聊一轮；B 展开该工作区 | B 看到**同一个 sessionId** 与**同一个标题** | B 的 `POST /api/sessions` 响应；`persist.titles` 读到的标题一致 |
 | ④ A 重命名工作区；B 刷新 | B 看到新标题（`reg.rename` 是 server 权威） | 两边 `reg.list` 的 `title` 一致 |

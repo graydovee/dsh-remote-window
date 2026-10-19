@@ -29,7 +29,7 @@ const EXISTING: RemoteTargetRecord = {
   kind: 'ssh',
   host: '10.0.0.9',
   port: 22,
-  username: 'graydove',
+  username: 'tester',
   authKind: 'agent',
   hostKeyFingerprint: 'SHA256:pinned',
   packageSource: 'reuse',
@@ -54,7 +54,7 @@ const REQUEST: ConnectRequest = {
   kind: 'ssh',
   host: '10.0.0.9',
   port: 22,
-  username: 'graydove',
+  username: 'tester',
   authKind: 'agent',
 }
 
@@ -101,10 +101,10 @@ describe('targetDraftFrom (F0)', () => {
 
   it('keeps a WSL target a WSL target, with no host key and the distro as host', () => {
     const draft = targetDraftFrom({
-      request: { label: 'ubuntu', kind: 'wsl', host: 'ignored', port: 1, username: 'ignored', authKind: 'agent', wslDistro: 'Ubuntu-22.04', wslUser: 'graydove' },
+      request: { label: 'ubuntu', kind: 'wsl', host: 'ignored', port: 1, username: 'ignored', authKind: 'agent', wslDistro: 'Ubuntu-22.04', wslUser: 'tester' },
       existing: { ...EXISTING, kind: 'wsl', host: 'Ubuntu-22.04', wslDistro: 'Ubuntu-22.04' },
     })
-    expect(draft).toMatchObject({ kind: 'wsl', host: 'Ubuntu-22.04', port: 22, username: 'graydove', authKind: 'agent', hostKeyFingerprint: '', wslDistro: 'Ubuntu-22.04', wslUser: 'graydove' })
+    expect(draft).toMatchObject({ kind: 'wsl', host: 'Ubuntu-22.04', port: 22, username: 'tester', authKind: 'agent', hostKeyFingerprint: '', wslDistro: 'Ubuntu-22.04', wslUser: 'tester' })
     // The remote runtime still comes from the record, not from defaults.
     expect(draft.remote.dshHome).toBe('~/custom-dsh')
   })

@@ -25,8 +25,8 @@ import {
 function sampleOutput(overrides: { tail?: string[] } = {}): string {
   return [
     SCAN_MAGIC,
-    'HOME\t/home/graydove',
-    'DSHHOME\t/home/graydove/.dsh',
+    'HOME\t/home/user',
+    'DSHHOME\t/home/user/.dsh',
     'UNAME\tLinux',
     'MACHINE\taarch64',
     'OSTYPE\tLinux',
@@ -35,12 +35,12 @@ function sampleOutput(overrides: { tail?: string[] } = {}): string {
     'TOOL\tsha256sum\t/usr/bin/sha256sum',
     'TOOL\tcurl\t/usr/bin/curl',
     'NODE\t/usr/bin/node\tv20.11.1',
-    'DSH\t/home/graydove/.nvm/versions/node/v24.4.0/bin/dsh\t/home/graydove/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js\t0.2.1-rc.2\t0\t/home/graydove/.nvm/versions/node/v24.4.0/bin/node',
-    'DSH\t/home/graydove/.dsh/server/dsh/node_modules/.bin/dsh\t/home/graydove/.dsh/server/dsh/node_modules/.bin/dsh\t0.2.1-rc.2\t0\t/home/graydove/.dsh/server/node/bin/node',
+    'DSH\t/home/user/.nvm/versions/node/v24.4.0/bin/dsh\t/home/user/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js\t0.2.1-rc.2\t0\t/home/user/.nvm/versions/node/v24.4.0/bin/node',
+    'DSH\t/home/user/.dsh/server/dsh/node_modules/.bin/dsh\t/home/user/.dsh/server/dsh/node_modules/.bin/dsh\t0.2.1-rc.2\t0\t/home/user/.dsh/server/node/bin/node',
     'DSH\t/opt/old/dsh\t/opt/old/dsh\t0.1.9-beta.4\t0\t',
     'PLUGIN\tdsh-remote-server\t0.1.0-alpha50\tabcdef',
     'PLUGIN\tweb\t\t',
-    'MARKER\t/home/graydove/.dsh/server/.components/plugin.json\t{"id":"plugin","sha256":"abcdef"}',
+    'MARKER\t/home/user/.dsh/server/.components/plugin.json\t{"id":"plugin","sha256":"abcdef"}',
     ...(overrides.tail ?? [SCAN_END]),
   ].join('\n')
 }
@@ -98,8 +98,8 @@ describe('scanDshScript', () => {
 describe('parseDshScanOutput', () => {
   it('folds every record kind', () => {
     const scan = parseDshScanOutput(sampleOutput())
-    expect(scan.home).toBe('/home/graydove')
-    expect(scan.dshHome).toBe('/home/graydove/.dsh')
+    expect(scan.home).toBe('/home/user')
+    expect(scan.dshHome).toBe('/home/user/.dsh')
     expect(scan.platform).toBe('Linux')
     expect(scan.machine).toBe('aarch64')
     expect(scan.ostype).toBe('Linux')
@@ -108,11 +108,11 @@ describe('parseDshScanOutput', () => {
     expect(scan.nodes).toEqual([{ path: '/usr/bin/node', version: 'v20.11.1' }])
     expect(scan.launchers).toHaveLength(3)
     expect(scan.launchers[0]).toEqual({
-      path: '/home/graydove/.nvm/versions/node/v24.4.0/bin/dsh',
-      realPath: '/home/graydove/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js',
+      path: '/home/user/.nvm/versions/node/v24.4.0/bin/dsh',
+      realPath: '/home/user/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js',
       version: '0.2.1-rc.2',
       exitCode: 0,
-      nodePath: '/home/graydove/.nvm/versions/node/v24.4.0/bin/node',
+      nodePath: '/home/user/.nvm/versions/node/v24.4.0/bin/node',
     })
     // The empty NODE field means "the deployed node", not a broken record.
     expect(scan.launchers[2]).toEqual({ path: '/opt/old/dsh', realPath: '/opt/old/dsh', version: '0.1.9-beta.4', exitCode: 0 })
@@ -170,10 +170,10 @@ describe('assembleCandidates', () => {
   it('marks compatibilities, reasons and the shared profile block', () => {
     const candidates = assembleCandidates(scan, { profile: 'dsh-remote-server', expectedPluginSha: 'abcdef' })
     const byPath = new Map(candidates.map(candidate => [candidate.path, candidate]))
-    const nvm = byPath.get('/home/graydove/.nvm/versions/node/v24.4.0/bin/dsh')
+    const nvm = byPath.get('/home/user/.nvm/versions/node/v24.4.0/bin/dsh')
     expect(nvm?.compatible).toBe(true)
     expect(nvm?.executable).toBe(true)
-    expect(nvm?.nodePath).toBe('/home/graydove/.nvm/versions/node/v24.4.0/bin/node')
+    expect(nvm?.nodePath).toBe('/home/user/.nvm/versions/node/v24.4.0/bin/node')
     expect(nvm?.selfContained).toBe(false)
     expect(nvm?.profile).toEqual({ name: 'dsh-remote-server', pluginVersion: '0.1.0-alpha50', pluginSha256: 'abcdef', upToDate: true })
     expect(nvm?.reason).toBeUndefined()

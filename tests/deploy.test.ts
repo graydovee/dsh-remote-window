@@ -41,7 +41,7 @@ const PLUGIN_MARKER: PluginMarker = { id: 'plugin', sha256: 'b'.repeat(64) }
 describe('probe framing', () => {
   it('parses a full probe output into an environment', () => {
     const stdout = [
-      '/home/graydove',
+      '/home/user',
       '@@RW@@',
       'Linux\nx86_64',
       '@@RW@@',
@@ -59,7 +59,7 @@ describe('probe framing', () => {
     ].join('\n')
     const facts = parseProbeOutput(stdout)
     expect(facts.libc).toBe('gnu')
-    expect(facts.home).toBe('/home/graydove')
+    expect(facts.home).toBe('/home/user')
     expect(facts.platform).toBe('linux')
     expect(facts.arch).toBe('x64')
     expect(facts.tools).toEqual({ tar: true, sha256sum: true, curl: true, wget: false })

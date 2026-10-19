@@ -686,7 +686,7 @@ export class RemoteWorkspaces {
       }
       // A ref with a server id must not keep the pre-P0 copies of what the server
       // now owns. This runs for EVERY such ref, not only freshly migrated ones —
-      // one leftover row (alpha59, `rw-9708eee7`) kept showing a stale `path`.
+      // one leftover row (alpha59, `rw-1a2b3c4d`) kept showing a stale `path`.
       const cleaned = stripLegacyRefFields(ref, remoteWorkspaceId)
       if (cleaned !== undefined) await this.store.putWorkspace(cleaned)
       if (serverIds.has(String(remoteWorkspaceId))) continue
@@ -2025,8 +2025,8 @@ const SCAN_TIMEOUT_MS = 60_000
  *
  * `path`/`title`/`createdAt`/`serverId` are legacy: as soon as a ref carries a
  * `remoteWorkspaceId`, the server owns those values and a stale local copy is
- * worse than none — one migrated row (`rw-9708eee7`) kept reporting
- * `path: "/home/graydove"` in `/api/state` (alpha59). Materialization and view
+ * worse than none — one migrated row (`rw-1a2b3c4d`) kept reporting
+ * `path: "/home/user"` in `/api/state` (alpha59). Materialization and view
  * state (`stubPath`, `officialWorkspaceId`, `sessionId`, pins, `lastOpenedAt`)
  * are kept.
  * @param ref - the stored ref.

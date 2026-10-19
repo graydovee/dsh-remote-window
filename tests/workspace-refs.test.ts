@@ -161,11 +161,11 @@ describe('reconcileWorkspaceRefs', () => {
     await mkdir(stub, { recursive: true })
     const { store, rows, registry } = fakeStore([
       {
-        id: 'rw-9708eee7',
+        id: 'rw-1a2b3c4d',
         targetId: 'rt-1',
         remoteWorkspaceId: '0123456789abcdef',
         // The three leftovers the QA run found on one row: adopted id, stale copies.
-        path: '/home/graydove',
+        path: '/home/user',
         title: 'WSL home',
         createdAt: '2026-10-18T00:00:00.000Z',
         serverId: 'server-1',
@@ -177,7 +177,7 @@ describe('reconcileWorkspaceRefs', () => {
       },
     ])
     const subject = new RemoteWorkspaces(fakeCtx(registry), store, { packageRoot: process.cwd(), leaseMs: 30_000, maxProcesses: 4 })
-    await subject.reconcileWorkspaceRefs('rt-1', [serverItem('0123456789abcdef', '/home/graydove')])
+    await subject.reconcileWorkspaceRefs('rt-1', [serverItem('0123456789abcdef', '/home/user')])
     const [ref] = [...rows.values()]
     // The server owns these now: no local copy may survive, even though the id
     // was already present (that was the gap).
@@ -187,7 +187,7 @@ describe('reconcileWorkspaceRefs', () => {
     expect(ref?.serverId).toBeUndefined()
     // Materialization + view state stay.
     expect(ref).toMatchObject({
-      id: 'rw-9708eee7',
+      id: 'rw-1a2b3c4d',
       remoteWorkspaceId: '0123456789abcdef',
       stubPath: stub,
       sessionId: 'session-7',

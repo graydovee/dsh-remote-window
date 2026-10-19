@@ -28,14 +28,14 @@ const WSL_REUSE = {
   wslDistro: 'Ubuntu-22.04',
   label: 'ubuntu',
   packageSource: 'reuse',
-  reuseLauncherPath: '/home/graydove/.dsh/server/dsh/node_modules/.bin/dsh',
+  reuseLauncherPath: '/home/user/.dsh/server/dsh/node_modules/.bin/dsh',
 }
 
 describe('connectRequestFrom', () => {
   it('carries reuseLauncherPath for a WSL reuse connect (the alpha51 repro)', () => {
     const request = connectRequestFrom(WSL_REUSE)
     expect(request.packageSource).toBe('reuse')
-    expect(request.reuseLauncherPath).toBe('/home/graydove/.dsh/server/dsh/node_modules/.bin/dsh')
+    expect(request.reuseLauncherPath).toBe('/home/user/.dsh/server/dsh/node_modules/.bin/dsh')
     expect(request.kind).toBe('wsl')
     expect(request.wslDistro).toBe('Ubuntu-22.04')
   })
@@ -45,18 +45,18 @@ describe('connectRequestFrom', () => {
       label: 'box',
       host: '10.0.0.12',
       port: 22,
-      username: 'graydove',
+      username: 'tester',
       authKind: 'password',
       secret: 'hunter2',
       packageSource: 'reuse',
-      reuseLauncherPath: '/home/graydove/.nvm/versions/node/v24.4.0/bin/dsh',
+      reuseLauncherPath: '/home/user/.nvm/versions/node/v24.4.0/bin/dsh',
     })
     expect(request).toMatchObject({
       kind: 'ssh',
       packageSource: 'reuse',
-      reuseLauncherPath: '/home/graydove/.nvm/versions/node/v24.4.0/bin/dsh',
+      reuseLauncherPath: '/home/user/.nvm/versions/node/v24.4.0/bin/dsh',
       host: '10.0.0.12',
-      username: 'graydove',
+      username: 'tester',
       secret: 'hunter2',
     })
   })
@@ -118,8 +118,8 @@ describe('connectRequestFrom', () => {
   })
 
   it('keeps the WSL user and the platform-gated distro', () => {
-    const request = connectRequestFrom({ ...WSL_REUSE, wslUser: 'graydove' })
-    expect(request).toMatchObject({ kind: 'wsl', wslUser: 'graydove', host: 'Ubuntu-22.04', username: 'graydove', port: 22, authKind: 'agent' })
+    const request = connectRequestFrom({ ...WSL_REUSE, wslUser: 'tester' })
+    expect(request).toMatchObject({ kind: 'wsl', wslUser: 'tester', host: 'Ubuntu-22.04', username: 'tester', port: 22, authKind: 'agent' })
     // Without a distro user the distro default applies and no credential is carried.
     expect(connectRequestFrom(WSL_REUSE).username).toBe('default')
     expect('secret' in connectRequestFrom(WSL_REUSE)).toBe(false)

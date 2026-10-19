@@ -69,7 +69,7 @@ describe('routing without a shell row', () => {
     const record = {
       id: 'rw-1',
       targetId: 'rt-1',
-      path: '/home/graydove/projects',
+      path: '/home/user/projects',
       stubPath: 'C:\\Users\\grayd\\.dsh\\remote-workspaces\\rt-1\\abcd1234',
       remoteWorkspaceId: '0123456789abcdef',
       title: 'projects',

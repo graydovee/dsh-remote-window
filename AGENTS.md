@@ -528,21 +528,21 @@ WSL 目标只在 Windows 上存在，所以 **linux 包常常是在 Windows 上�
 
   ```ts
   const p = await provisionTarget({ target /* kind:'wsl' */, packageRoot, packagePolicy })
-  const c = await openRemoteClient(p.channel, '/home/graydove')
+  const c = await openRemoteClient(p.channel, '/home/user')
   const facts = z.object({ argv: z.array(z.string()), enforcement: z.enum(['full','partial']),
     denialSignatures: z.array(z.string()), runnerFailureRules: z.array(z.unknown()) }).strict()
-  await c.request('sandbox', { argv: ['/bin/uname','-s'], policy: { mode:'workspace-write', workspaceRoot:'/home/graydove' } }, facts)
+  await c.request('sandbox', { argv: ['/bin/uname','-s'], policy: { mode:'workspace-write', workspaceRoot:'/home/user' } }, facts)
   // → { argv: ["/bin/uname","-s"], enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }
   //   用官方 facts 形状（strict）校验；用 z.unknown() 会把"裸数组"的 bug 放过去。
   await c.request('executable', { command: 'uname' }, z.unknown())      // → "/usr/bin/uname"
   const prep = await c.request('process.prepare', {
-    argv: ['/bin/sh','-c','uname -s; pwd; echo WSL-OK'], cwd: '/home/graydove', graceMs: 5_000,
+    argv: ['/bin/sh','-c','uname -s; pwd; echo WSL-OK'], cwd: '/home/user', graceMs: 5_000,
     stdio: { stdin: 'ignore', stdout: { maxBytes: 65_536 }, stderr: { maxBytes: 65_536 } },
   }, z.unknown())
   await c.request('process.start', { id: prep.id }, z.unknown())
   await c.request('process.wait', { id: prep.id }, z.unknown())
   const done = await c.request('process.done', { id: prep.id }, z.unknown())
-  // collected.stdout.tail 是 base64 → "Linux\n/home/graydove\nWSL-OK\n"
+  // collected.stdout.tail 是 base64 → "Linux\n/home/user\nWSL-OK\n"
   ```
 - **realm 与浏览共用同一个 `RemoteClient`**（`RemoteWorkspaces.remoteClient()` + `pin()`）：
   一个字节流只能有一个 mux/peer。之前各自建 peer，谁先收到 `hello` 响应就把对方的请求饿死，

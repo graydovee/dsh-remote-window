@@ -158,7 +158,7 @@ describe('RemoteWorkspaces wiring', () => {
 
   it('refuses a new session before touching the store or the remote', async () => {
     const ctx = fakeContext({ presets: { resolve: async id => ({ id, broken: 'row "connection" is unusable' }) } })
-    const refused = await refusal(service(ctx).openWorkspace('rt-abc12345', '/home/graydove/projects'))
+    const refused = await refusal(service(ctx).openWorkspace('rt-abc12345', '/home/user/projects'))
     expect(refused.code).toBe('realm-unavailable')
     expect(refused.message).toContain('failed to activate')
   })
@@ -171,7 +171,7 @@ describe('RemoteWorkspaces wiring', () => {
         },
       },
     })
-    const refused = await refusal(service(ctx).resumeSession('rt-abc12345', '/home/graydove/projects', 'session-1'))
+    const refused = await refusal(service(ctx).resumeSession('rt-abc12345', '/home/user/projects', 'session-1'))
     expect(refused.code).toBe('realm-unavailable')
     expect(refused.message).toContain('not registered')
   })

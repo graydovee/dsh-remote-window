@@ -1,6 +1,6 @@
 # Vendored: the official workspace row layer
 
-Source checkout: `/Users/djh/Desktop/project/deepseek-harness`
+Source checkout: `<dsh-checkout>`
 Upstream paths:
 
 - `packages/client/ui-workspace/src/client/rows/Rows.tsx`
