@@ -1,117 +1,35 @@
 # dsh-remote-workspace
 
-**Open an SSH host as a DeepSeek Harness workspace.**
+English | [中文](README-zh.md)
 
-This is the client half of the **Remote Session** architecture. The agent loop, model
-requests, API credentials and the browser UI stay on your machine; the files,
-subprocesses, shell and **session logs** live on the remote host. Sessions are
-authoritative there, in the official DSH JSONL format, so resuming a conversation from
-another machine needs no mirroring.
+**Open an SSH host as a DeepSeek Harness workspace.** The agent loop, model requests,
+credentials and the UI stay on your machine; the files, subprocesses, shell and **session
+logs** live on the remote host, in the official DSH JSONL format. Resuming a conversation
+from another machine needs no mirroring.
 
-- Bundle plugin for `dsh web` (client platform `web`)
-- Release: [`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1)
-- Server half: [`dsh-remote-workspace-server`](https://github.com/graydovee/dsh-remote-workspace-server)
-- Chinese: [README-zh.md](README-zh.md)
+- Adds a **远程工作区** section to the left sidebar: connections → workspaces → sessions.
+- Installs and starts a `dsh` runtime on the host for you (no Node or npm needed there).
+- Keeps SSH credentials and model keys local, verifies host keys, and never routes session
+  logs through your machine.
+- A plugin for `dsh web` (`web` profile). Verified against **DSH `0.2.1-rc.2`** only.
 
-## How it works
+## Quick start
 
-```
-         your machine (dsh web)                      SSH host (POSIX)
-┌───────────────────────────────────┐          ┌───────────────────────────────────────┐
-│ agent loop · models · credentials │  frames  │ dsh runtime (shipped with its own     │
-│ RoutingSessionPersistence         │◄────────►│ Node + dsh, no system install needed) │
-│   ├─ local cwd  → official JSONL  │ protocol │ fs / subprocess / sandbox / shell     │
-│   └─ remote cwd → persist.* (RPC) │    3     │ sessionPersistence → JSONL (zstd)     │
-│ 「远程工作区」 sidebar region     │          │ ~/.dsh/remote-server-sessions/…       │
-└───────────────────────────────────┘          └───────────────────────────────────────┘
-```
+### 1. Requirements
 
-The plugin owns four things:
-
-1. **Transport** — `ssh2` connections with host-key verification, plus WSL targets on
-   Windows hosts (`wsl.exe` instead of a network hop).
-2. **Remote deployment** — a Node runtime and a target-platform `dsh` tree are staged or
-   downloaded into `~/.dsh/server`, and this plugin's `package.json` / `cordis.patch.yml` /
-   `lib/server.js` are uploaded into the profile's
-   `node_modules/dsh-remote-workspace`. Remote commands are always `/bin/sh -c` with
-   absolute paths; the host's `PATH`, login shell and system npm are never consulted.
-3. **Persistence routing** — `RoutingSessionPersistence` provides the official
-   `sessionPersistence` service. Sessions with a local cwd use the untouched official JSONL
-   backend; remote-workspace sessions go to the remote `persist.*` plane. A remote
-   session's header cwd is always the local stub, so the official workspace registry and
-   session controller keep working.
-4. **UI** — the **远程工作区** region in the left sidebar (above the shell's own workspace
-   region) renders connections → workspaces → sessions with the official row components.
-
-## Requirements and compatibility
-
-### Declared in `package.json`
-
-| What | Field | Value |
-| --- | --- | --- |
-| DSH host | `engines.dsh` | `0.2.1-rc.2` — exact, the only verified release |
-| DSH packages | every `@deepseek-ai/dsh-*` in `peerDependencies` | `0.2.1-rc.2` — exact |
-| Manifest format | `dsh.manifestVersion` | `1` |
-| Node | `engines.node` | `^22.19.0 \|\| >=24.0.0` |
-| Wire protocol | `REMOTE_SESSION_PROTOCOL` / `server.hello` | `3` |
-| Verification | `devDependencies` | `@deepseek-ai/dsh-*` `0.2.1-rc.2`, `@deepseek-ai/cordis` `4.0.5` |
-
-Why it is declared this way:
-
-- **Exactly one DSH release, not a window.** `0.2.1-rc.2` is the only release this plugin has
-  been verified against. A range would claim that every release inside it keeps working, and
-  that is not knowable: a later `0.2.x` is free to change the `apply()`-mounted JSONL backend,
-  the strict `{ kind, executable }` hello shape, or the row / `data-slot` contract this client
-  mounts onto. Compatibility is earned by re-running the suite, not by widening a range.
-- DSH checks **`engines.dsh`** at install time and at every profile start, and when the field
-  is present **that value alone decides** — `peerDependencies` are ignored for admission. The
-  peers are pinned to the same exact string so nothing in the manifest reads as "0.2.x is
-  fine", and the two declarations cannot drift apart.
-- Older releases do not boot it (`0.2.0-rc.x` and earlier `0.2.1` alphas lack the
-  `apply()`-mounted JSONL backend and the strict hello shape); newer releases are simply
-  untested.
-- `@deepseek-ai/cordis` (`^4.0.5`) and `@deepseek-ai/schemastery` (`^3.18.2`) keep caret
-  ranges: they are semver-stable libraries shipped *inside* the runtime, so the exact
-  `engines.dsh` pin already fixes which copies we see.
-- Client and server must agree on wire protocol `3`. A mismatched pair fails with
-  `unsupported remote session protocol …` instead of degrading silently; the server half
-  declares the same exact DSH release.
-
-**A host on any other release is refused** (`incompatible-version`, requirement keyed
-`engines.dsh`) before pnpm downloads or runs anything. The only escape hatch is a per-pair
-exemption recorded in the profile's `compatibility.json`:
-
-```bash
-dsh plugin --profile web allow-version dsh-remote-workspace@<version you installed> \
-  --dsh-version <the host's dsh version> --accept-risk
-```
-
-That combination is explicitly unsupported — it was never tested, and the failure modes
-include crashes and session-log damage.
-
-**Advancing the window is a release task**, never a range edit: move `devDependencies` to the
-new release, run `pnpm typecheck`, the provider conformance suite and the browser acceptance
-run, then update `engines.dsh` in both repositories in the same version.
-
-### Runtime matrix
-
-| Role | Requirement |
+| Where | Requirement |
 | --- | --- |
-| Local host | `dsh` **`0.2.1-rc.2`** with the `web` profile; Node `^22.19.0 \|\| >=24.0.0`; macOS, Linux or Windows |
-| Remote host (SSH) | POSIX: `/bin/sh`, `tar`, `chmod`, a writable `$HOME`, reachable sshd. **No Node or npm required** — the deployment ships its own runtime |
-| Remote target (WSL) | Windows hosts only; the selected distro becomes the execution world |
-| Server packages | `linux-x64-gnu`, `linux-arm64-gnu`, `darwin-x64`, `darwin-arm64` |
+| Your machine | `dsh` **exactly `0.2.1-rc.2`**, a `web` profile, Node `^22.19.0 \|\| >=24.0.0` |
+| Remote host | POSIX with a reachable sshd, `/bin/sh`, `tar`, `chmod`, writable `$HOME`. **No Node, npm or dsh needed** — they are deployed for you |
+| Remote target (WSL) | Windows hosts only; the chosen distro is the execution world |
 
-Windows is deliberately absent from the server-package matrix: every provisioning script is
-`/bin/sh` + `tar` + `chmod`, and a Windows remote would need its own deployer.
+The plugin is a bundle for `dsh web`. The desktop app image does not ship the SSH packages
+(`@deepseek-ai/dsh-ssh`, `dsh-fs-ssh`, `dsh-subprocess-ssh`, `dsh-sandbox-ssh`), so install it
+into a `web` profile, never into a desktop profile.
 
-Use the `web` profile. The desktop app image does not ship the SSH packages
-(`@deepseek-ai/dsh-ssh`, `dsh-fs-ssh`, `dsh-subprocess-ssh`, `dsh-sandbox-ssh`), so this
-plugin is a `dsh web` feature; do not install it into a desktop profile.
+### 2. Install the plugin
 
-## Install
-
-The package is not on a registry yet. Install a built tarball (or a git checkout):
+The package is not on a registry yet; install a built tarball:
 
 ```bash
 pnpm install
@@ -122,99 +40,169 @@ dsh plugin --profile web remove dsh-remote-workspace   # only if already install
 dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
-Restart the process that serves the GUI, then reload the page. This is a **bundle** plugin:
-`dsh plugin add` also appends it to the profile's `dsh.profile.bundles`, and a restart is
-what mounts the patch layer.
-
-A git install fetches sources, not build output, so allow the package's `prepare` build in
-the profile's `pnpm-workspace.yaml` and pin a commit:
-
-```bash
-dsh plugin --profile web add "github:graydovee/dsh-remote-workspace#<commit>"
-```
+Restart the process serving the GUI, then reload the page: this is a bundle plugin, and the
+restart is what mounts its patch layer. A git install fetches sources instead of build output,
+so allow the package's `prepare` build in the profile's `pnpm-workspace.yaml`:
 
 ```yaml
 allowBuilds:
   dsh-remote-workspace: true
 ```
 
-## First connection
+### 3. Connect a host
 
-1. Left sidebar → **远程工作区** → **＋新建连接**.
-2. Enter host, port and user, choose the credential, and confirm the host key fingerprint
-   (SHA-256). An unknown key must be confirmed explicitly; a **changed** key aborts.
-3. Pick where the remote runtime comes from:
-   - **download** — the server package is fetched from the release of the server repository;
-   - **upload** — a tarball you built yourself is pushed to the host;
-   - **reuse** — an already installed `dsh` on the host is used as-is.
-4. Add a workspace (a remote directory), then open an existing session or start a new one.
+Sidebar → **远程工作区** → **＋新建连接**. The wizard has three steps:
 
-Deployment is lock-guarded: a second client cannot interleave its upload into the same
-install root.
+1. **选择方式** — `SSH` (a remote host) or `WSL` (a distro on this Windows machine; no host
+   key or password).
+2. **填写配置** — for SSH: **别名** (required; saved after a successful connect), **主机**,
+   **端口**, **用户名**, **认证方式** (`SSH Agent` / `私钥` / `密码`; the key or password is
+   sent once and never stored in the list). **高级：远端运行时** overrides the remote
+   `Node 路径` / `DSH 命令` / `Profile` / `DSH_HOME` when the defaults do not fit; aliases
+   can be prefilled from `~/.ssh/config`.
+3. **连接** — pick where the remote runtime comes from, then confirm the host key:
+   - **复用机器上的 dsh** — scan what is already installed on the host and add only this
+     plugin; no upload, no host-side network;
+   - **上传 server 包** — push a runtime package (Node + dsh) for the host's architecture;
+     a locally cached package is uploaded directly;
+   - **远程下载** — fetch the matching release from GitHub (falls back to a local build).
 
-## The sidebar: connections → workspaces → sessions
+   The first connection to a host shows its SHA-256 fingerprint and waits for **信任并继续**.
+   A fingerprint that changed later aborts the connection. Progress runs through 连接主机 →
+   探测远端环境 → 部署运行时(Node) → 部署 dsh 与服务端 → 建立执行通道; failures keep the
+   connection log visible.
+
+### 4. Add a workspace and open a session
+
+1. On the connection row, click **＋** (or **⋮ → 添加工作区**). Browse the remote directory
+   tree — 主目录 / 上一级 / 新建目录 / path box — then **打开为工作区**. Leave
+   **工作区名称** empty to use the directory name; renaming later never moves the directory.
+2. The workspace row shows its sessions. Click the **blank row** (`新会话`) to start one, or
+   click an existing session row to resume it. The conversation opens in the main area and
+   continues from the remote log.
+
+### 5. Day-to-day
+
+| Action | Where | What it does |
+| --- | --- | --- |
+| 连接 / 重新连接 / 断开 | connection row `⋮` or the `＋` plug icon | Starts or stops the remote runtime channel. Disconnecting folds the subtree; reconnecting expands it |
+| 添加工作区 | connection row `＋` | Registers a remote directory in the server-owned workspace list |
+| 新会话 | workspace row `＋`, or the blank row | Creates a session (a real remote log) |
+| 打开 / 继续 | click a session row | Resumes from the remote log; safe from another machine |
+| 置顶 / 归档 | session row `⋮` | Sorting and visual state, stored on the plugin's workspace record (archived rows refuse to open) |
+| 重命名 | session row `⋮` | Appends an official `session/title` event to the remote log |
+| 分叉 | session row `⋮` | Forks through the shell's own `forkSession`; the child lives on the remote too |
+| 移除工作区 | workspace row `⋮` | Removes the catalogue entry and the local stub. **Remote session logs are kept**; register the same directory again to see them |
+| 刷新 | region header / workspace row | Re-reads the server's workspace list and sessions |
+| 删除连接 | connection row `⋮` | Forgets the local record, credentials and stubs. The deployed runtime and remote logs stay |
+
+## Using it well
+
+- **Sessions are remote files, not a mirror.** Everything the agent writes is appended on the
+  host (`~/.dsh/remote-server-sessions/<projectKey>/<sessionId>/`). Two machines connected to
+  the same host see the same sessions; deleting a local stub does not delete them.
+- **The workspace list belongs to the server.** Adding or removing a workspace changes the
+  host's `workspaces.json`, so a second client sees the change on its next refresh (polling,
+  not push).
+- **WSL targets are local.** On a Windows host, a distro is the execution world: no sshd, no
+  host key, and the deployment goes through `wsl.exe` (its multi-line scripts are fed on
+  stdin, which is why the deploy works in zsh/flavours).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Install or startup refuses with `incompatible-version` naming `engines.dsh` | The host is not `0.2.1-rc.2` (the only release this plugin is verified against) | Install `dsh` `0.2.1-rc.2`, or grant a temporary exemption — see [Compatibility](#compatibility) |
+| `dsh-remote-workspace … failed to import`, then official rows stay pending | The package was added as a dependency but never into `dsh.profile.bundles` (typical in a desktop profile that lacks the SSH packages) | Install it with `dsh plugin --profile web add` and restart |
+| `unsupported remote session protocol …` | The client and the remote server disagree on the wire protocol (`3`) | Reconnect; the plugin redeploys its own server bundle when the plugin version changes |
+| Every command fails with `sandbox mode "workspace-write" … no sandbox backend is usable` | The remote world has no sandbox backend (for example a WSL distro without bubblewrap/Landlock) | Expected: the remote world is the isolation boundary, commands run there unconfinced and report `enforcement: 'partial'` |
+| No **远程工作区** section in the sidebar | The plugin is not mounted (not a `web` profile, or the restart did not happen) | Check `dsh --profile web --dump-config` for its layer, then restart |
+| `该 server 上还没有工作区` on the first frame, correct after a refresh | The workspace list was not ready yet when the panel rendered | Refresh; a known first-frame cosmetic issue |
+| Connection fails early | Wrong host/port/user/credential, or the host key was not trusted | Read 连接日志 in the wizard, try `ssh -v <host>` with the same account, check the private key passphrase or your agent |
+
+## Compatibility
+
+| What | Field | Value |
+| --- | --- | --- |
+| DSH host | `engines.dsh` | `0.2.1-rc.2` — exact, the only verified release |
+| DSH packages | every `@deepseek-ai/dsh-*` in `peerDependencies` | `0.2.1-rc.2` — exact |
+| Manifest format | `dsh.manifestVersion` | `1` |
+| Node | `engines.node` | `^22.19.0 \|\| >=24.0.0` |
+| Wire protocol | `REMOTE_SESSION_PROTOCOL` / `server.hello` | `3` |
+| Verification | `devDependencies` | `@deepseek-ai/dsh-*` `0.2.1-rc.2`, `@deepseek-ai/cordis` `4.0.5` |
+
+`0.2.1-rc.2` is declared exactly, not as a range: it is the only release this plugin has been
+verified against, and a later `0.2.x` may change the persistence backend, the strict
+`{ kind, executable }` hello shape or the row / `data-slot` contract. DSH's admission check
+reads `engines.dsh` alone (peers are ignored once it is present), so the peers are pinned to
+the same exact string. Older releases do not boot it; newer ones are untested.
+
+A host on another release is refused before pnpm downloads or runs anything. The only escape
+hatch is a per-pair exemption recorded in the profile's `compatibility.json`:
+
+```bash
+dsh plugin --profile web allow-version dsh-remote-workspace@<installed version> \
+  --dsh-version <the host's dsh version> --accept-risk
+```
+
+That combination is unsupported — it was never tested, and the failure modes include crashes
+and session-log damage. Advancing the window is a release task: move `devDependencies` to the
+new release, run `pnpm typecheck`, the provider conformance suite and the browser acceptance
+run, then update `engines.dsh` in both repositories in the same version.
+
+## How it works
 
 ```
-远程工作区                      [刷新] [＋新建连接]
-└─ 🌐 connection   mac-arm-200  [+ add workspace | connect]  [⋮ connect/disconnect · forget]
-   └─ 📁 workspace  dujiahui    [+ new session]              [⋮ refresh · remove workspace]
-      ├─ session title  45 min  [⋮ pin · rename · fork · archive]
-      └─ New session            (the official blank row)
-工作区                          ← the shell's own region, unchanged
+         your machine (dsh web)                      SSH host (POSIX)
+┌───────────────────────────────────┐          ┌───────────────────────────────────────┐
+│ agent loop · models · credentials │  frames  │ dsh runtime (shipped with its own     │
+│ RoutingSessionPersistence         │◄────────►│ Node + dsh, no system install needed) │
+│   ├─ local cwd  → official JSONL  │ protocol │ fs / subprocess / sandbox / shell     │
+│   └─ remote cwd → persist.* (RPC) │    3     │ sessionPersistence → JSONL (zstd)     │
+│ 「远程工作区」 sidebar region      │          │ ~/.dsh/remote-server-sessions/…       │
+└───────────────────────────────────┘          └───────────────────────────────────────┘
 ```
 
-- The connection row's folder glyph carries the connection state (green / red / grey); while
-  a target is disconnected or failed, the `＋` slot turns into a plug that connects.
-- Disconnecting folds the subtree, reconnecting expands it again.
-- Session verbs: **pin**, **rename**, **fork**, **archive**. Pin and archive live on the
-  plugin's own workspace record (the shell's pin path validates against the local session
-  index, which remote sessions are not in); rename appends a real `session/title` event to
-  the remote log; fork goes through the shell's own `forkSession` and lands on the remote.
-- Rows are the shell's own row components, vendored under
-  `src/client/vendor/workspace-rows/` and rendered with their official stylesheet; only the
-  region's own chrome (host box, height chain, connection states) is plugin CSS. The
-  vendored layer is regenerated from a DSH source checkout with
-  `node scripts/vendor-workspace-rows.mjs --dsh <dsh-checkout>`.
+1. **Transport** — `ssh2` with host-key verification; WSL targets use `wsl.exe` instead.
+2. **Deployment** — a Node runtime and a target-platform `dsh` tree are staged or downloaded
+   into `~/.dsh/server`, and this plugin is uploaded into the profile's
+   `node_modules/dsh-remote-workspace`. Remote commands are always `/bin/sh -c` with absolute
+   paths; the host's `PATH`, login shell and system npm are never used.
+3. **Persistence routing** — `RoutingSessionPersistence` provides the official
+   `sessionPersistence` service: local cwds use the untouched JSONL backend, remote
+   workspaces go to the remote `persist.*` plane. A remote session's header cwd stays the
+   local stub, so the official workspace registry keeps working.
+4. **UI** — the 远程工作区 region renders connections → workspaces → sessions with the
+   shell's own row components (vendored under `src/client/vendor/workspace-rows/`).
 
-## Where everything is stored
+## Data and security
 
 | Location | Contents |
 | --- | --- |
 | Remote `~/.dsh/server/` | Deployed runtime: `node/`, `dsh/`, staging and component markers |
-| Remote `~/.dsh/profiles/dsh-remote-server/` | The profile the server boots with; this plugin's files live under `node_modules/dsh-remote-workspace/` |
-| Remote `~/.dsh/remote-server-sessions/<projectKey>/<sessionId>/` | **Authoritative** session logs (official JSONL, zstd frames) |
-| Remote `~/.dsh/remote-server/` | `server-id` (drives workspace ids), `workspaces.json` (server-owned catalogue), `status.json` (0600 discovery manifest) |
+| Remote `~/.dsh/profiles/dsh-remote-server/` | The profile the server boots with; this plugin lives under `node_modules/dsh-remote-workspace/` |
+| Remote `~/.dsh/remote-server-sessions/<projectKey>/<sessionId>/` | **Authoritative** session logs (official JSONL, zstd) |
+| Remote `~/.dsh/remote-server/` | `server-id` (drives workspace ids), `workspaces.json`, `status.json` (0600) |
 | Local target store | Connections, workspaces, `pinnedSessions` / `archivedSessions` |
-| Local `~/.dsh/remote-assets/` | Cached server packages downloaded from releases |
-| Local `~/.dsh/sessions/` | Never receives a remote session |
+| Local `~/.dsh/remote-assets/` | Cached runtime packages downloaded from releases |
 
-## Security model
-
-- **Credentials never cross the wire.** SSH credentials and model API keys stay on the local
-  machine; anything shown in the UI or written to logs passes `scrubSecrets`.
-- **Host keys are pinned.** Unknown fingerprints require explicit confirmation (SHA-256 is
-  displayed); a key that changed aborts the connection.
-- **Every plugin HTTP route goes through `trustedRequest`** (DNS-rebinding and cross-site
-  protection), and JSON request bodies are capped at 1 MiB.
-- **The remote world is the isolation boundary.** The plugin does not weaken a host's own
-  sandbox policy. When the remote has no usable sandbox backend (for example a WSL distro
-  without bubblewrap/Landlock), commands run unconfinced *inside that host* and the result
-  reports `enforcement: 'partial'` rather than pretending to be confined.
-- **Zero in-place patching.** The bundle adds its own rows and disables one official
-  persistence row (`session-persistence-jsonl`, restated in `cordis.patch.yml`); no official
-  row is rewritten and the shell's own "add workspace" button keeps its behavior.
+- SSH credentials and model API keys never leave the local machine; anything shown in the UI or
+  written to logs passes `scrubSecrets`.
+- Unknown host keys require explicit confirmation (SHA-256); a key that changed aborts.
+- Every plugin HTTP route goes through `trustedRequest` (DNS-rebinding and cross-site
+  protection), with JSON bodies capped at 1 MiB.
+- The bundle adds its own rows and disables one official persistence row; no official row is
+  rewritten and the shell's own "add workspace" button keeps its behavior.
 
 ## Versioning and releases
 
-- **The repository version is the release, `v0.1.0-alpha1`**; a new public milestone is a new
-  tag `v0.1.0-alphaN`.
-- **The exact `engines.dsh` moves with the harness, not with time.** Accepting a new DSH
-  release means a new plugin release whose `devDependencies` and `engines.dsh` both name it;
-  until that release exists, the current one keeps refusing other hosts instead of guessing.
-- The server *runtime packages* are built and released **from the server repository**, tagged
-  `server-v<dsh version>` (for example `server-v0.2.1-rc.2`). The plugin looks for
-  `server-v<dshVersion>` first, then `v<pluginVersion>`, and verifies the `.sha256` of
-  whichever transfer succeeded.
+- The repository version is the release, `v0.1.0-alpha1`; a new public milestone is a new tag
+  `v0.1.0-alphaN`.
+- The server *runtime packages* are built and released from the
+  [server repository](https://github.com/graydovee/dsh-remote-workspace-server), tagged
+  `server-v<dsh version>` (for example `server-v0.2.1-rc.2`). The plugin tries
+  `server-v<dshVersion>` first, then `v<pluginVersion>`, and verifies the `.sha256` of the
+  transfer that succeeded.
 
 ## Development
 
@@ -227,30 +215,28 @@ pnpm build        # tsdown → lib/ (host, server and browser targets)
 
 Tests cover official provider conformance against the in-repo `src/server` copy, the frame
 mux, `~/.ssh/config` parsing, deployment, the `persist.*` handle lifecycle, routing
-persistence, package download, WSL probing and the remote workspace service.
+persistence, package download, WSL probing and the remote workspace service. The protocol and
+server implementation are byte-identical with the server repository (`src/protocol.ts`,
+`src/server/`, `src/frame/`, `src/provision/package-build.ts`) — change both copies together.
+Sidebar rows are regenerated from a DSH source checkout with
+`node scripts/vendor-workspace-rows.mjs --dsh <dsh-checkout>`.
 
-The protocol and server implementation are **byte-identical** with the server repository
-(`src/protocol.ts`, `src/server/`, `src/frame/`, `src/provision/package-build.ts`); change
-both copies together.
+Design notes: [`docs/remote-session-agent-note.md`](docs/remote-session-agent-note.md) and the
+repository's `AGENTS.md`.
 
-Design notes live in [`docs/remote-session-agent-note.md`](docs/remote-session-agent-note.md)
-and in the repository's `AGENTS.md`.
+## Known limitations
 
-## Known limitations (alpha)
-
-- Remote sessions do not appear in the shell's global session list; the shell may log
-  `uiConversation.binding: unknown session` noise for them.
-- There is no delete-session verb yet; remove a session by deleting it under
+- Remote sessions do not appear in the shell's global session list (the shell may log
+  `uiConversation.binding: unknown session` noise for them).
+- No delete-session action yet; remove a session by deleting it under
   `~/.dsh/remote-server-sessions/…` on the host.
 - Inside the shell's own workspace region the corresponding official rows are hidden with
-  `display: none` (they are not removed from the DOM).
+  `display: none`, not removed from the DOM.
 - Session rows do not show a running/approval status dot.
-- Workspace titles live in the server-owned catalogue, but renaming does not move the remote
-  directory.
-- The first frame after opening the panel can briefly show the wrong empty state; a refresh
-  settles it.
-- Downloading a server package caches `tar.gz` + `.ready` (with the digest) but not the
-  release's `.manifest.json`.
+- Workspace titles live in the server catalogue; renaming does not move the remote directory.
+- The first frame after opening the panel can briefly show the wrong empty state.
+- Downloaded runtime packages cache `tar.gz` + `.ready` (with the digest), not the release's
+  `.manifest.json`.
 
 ## License
 
