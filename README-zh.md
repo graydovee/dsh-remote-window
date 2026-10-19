@@ -6,8 +6,8 @@
 留在本机；文件、子进程、shell 与**会话日志**在远端主机上。会话日志以远端为唯一权威，采用
 DSH 官方 JSONL 格式，因此换一台设备继续对话不需要任何镜像同步。
 
-- 包：`dsh-remote-workspace@0.1.0-alpha68` —— bundle 插件，client 平台 `web`
-- 首个公开里程碑 tag：[`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1)
+- `dsh web` 的 bundle 插件（client 平台 `web`）
+- 发布：[`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1)
 - server 半边：[`dsh-remote-workspace-server`](https://github.com/graydovee/dsh-remote-workspace-server)
 - English: [README.md](README.md)
 
@@ -72,7 +72,7 @@ DSH 官方 JSONL 格式，因此换一台设备继续对话不需要任何镜像
 运行时版本」逐对豁免：
 
 ```bash
-dsh plugin --profile web allow-version dsh-remote-workspace@0.1.0-alpha68 \
+dsh plugin --profile web allow-version dsh-remote-workspace@<version you installed> \
   --dsh-version <宿主实际的 dsh 版本> --accept-risk
 ```
 
@@ -107,7 +107,7 @@ pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
 
 dsh plugin --profile web remove dsh-remote-workspace   # 仅在已安装时
-dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-0.1.0-alpha68.tgz
+dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
 然后重启提供 GUI 的进程并刷新页面。这是 **bundle** 插件：`dsh plugin add` 同时把它写进
@@ -187,11 +187,11 @@ allowBuilds:
 
 ## Versioning and releases
 
-- 版本形如 `0.1.0-alphaN`，**每次部署都必须 bump**：插件批量 URL 带 `&rev=<hash>`，不 bump
-  浏览器会继续吃旧 bundle。同一版本号也出现在 `/api/state` 的 `pluginVersion` 与远端
-  `server.hello.version` 里。
-- tag **`v0.1.0-alpha1`** 标记首个公开里程碑（该 commit 上的包版本是 `0.1.0-alpha61`）；
-  后续里程碑各自打 tag。
+- **仓库里的版本就是发布 tag，当前是 `v0.1.0-alpha1`。** `0.1.0-alphaN` 这些计数是**本地**
+  部署细节：部署循环每次把数字抬高，好让插件批量 URL（`&rev=<hash>`）破掉浏览器缓存，同一
+  数字也出现在 `/api/state` 的 `pluginVersion` 与远端 `server.hello.version` 里。这些 bump
+  只留在执行部署的那台机器上——**不提交、不发布**。
+- 后续里程碑各自打 `v0.1.0-alphaN` tag。
 - **精确的 `engines.dsh` 跟着 harness 走，不跟着时间走**：接受一个新的 DSH 版本 = 发一个新的
   插件版本，其 `devDependencies` 与 `engines.dsh` 同时指向它；在那样一版发出来之前，当前版本
   继续拒绝其它宿主，而不是去猜。

@@ -595,10 +595,17 @@ tag 同源；摘要不一致是硬错，不换 tag 也不换传输。curl 统一
 release 里那份 `.sha256`。
 ## 版本策略
 
-未正式发版前一律 `0.1.0-alphaN`（不要 `0.x.y`）。**每次部署必须 bump**
-（插件批量 URL 带 `&rev=<hash>`，不 bump 浏览器吃旧缓存）；版本同时出现在
-`package.json`、`/api/state` 的 `pluginVersion` 与远端 `server.hello.version`。
-已打 tag：client 仓库 `v0.1.0-alpha1`（插件里程碑，**不带** server 包）；server 包只在 `dsh-remote-workspace-server` 仓库按 `server-v<dshVersion>` 打 tag 并发 release。
+**仓库里体现的版本 = 发布 tag，当前 `v0.1.0-alpha1`。** `0.1.0-alphaN` 这些
+`alphaN` 是**本地部署计数器**：部署循环每次部署前把它 +1（插件批量 URL 带
+`&rev=<hash>`，不 bump 浏览器吃旧缓存），同一数字也出现在 `package.json`、
+`/api/state` 的 `pluginVersion` 与远端 `server.hello.version`。
+
+**这些 bump 只留在执行部署的本机：不提交、不推送、不发布。** 提进仓库就等于把调试号
+当成发布版本，也等于让同一版本号对应两份不同内容。提交到仓库的 `package.json`、
+`src/server/index.ts` 里的版本串与 `lib/` 始终是发布版本。
+
+已打 tag：client 仓库 `v0.1.0-alpha1`（插件里程碑，**不带** server 包）；server 包只在
+`dsh-remote-workspace-server` 仓库按 `server-v<dshVersion>` 打 tag 并发 release。
 
 ## 已知缺口（alpha）
 

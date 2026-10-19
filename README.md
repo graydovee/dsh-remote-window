@@ -8,8 +8,8 @@ subprocesses, shell and **session logs** live on the remote host. Sessions are
 authoritative there, in the official DSH JSONL format, so resuming a conversation from
 another machine needs no mirroring.
 
-- Package `dsh-remote-workspace@0.1.0-alpha68` — bundle plugin, `web` client platform
-- First public milestone tag: [`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1)
+- Bundle plugin for `dsh web` (client platform `web`)
+- Release: [`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1)
 - Server half: [`dsh-remote-workspace-server`](https://github.com/graydovee/dsh-remote-workspace-server)
 - Chinese: [README-zh.md](README-zh.md)
 
@@ -82,7 +82,7 @@ Why it is declared this way:
 exemption recorded in the profile's `compatibility.json`:
 
 ```bash
-dsh plugin --profile web allow-version dsh-remote-workspace@0.1.0-alpha68 \
+dsh plugin --profile web allow-version dsh-remote-workspace@<version you installed> \
   --dsh-version <the host's dsh version> --accept-risk
 ```
 
@@ -119,7 +119,7 @@ pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
 
 dsh plugin --profile web remove dsh-remote-workspace   # only if already installed
-dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-0.1.0-alpha68.tgz
+dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
 Restart the process that serves the GUI, then reload the page. This is a **bundle** plugin:
@@ -206,12 +206,12 @@ install root.
 
 ## Versioning and releases
 
-- Versions are `0.1.0-alphaN` and are bumped on **every** deployment: plugin bundle URLs
-  carry `&rev=<hash>`, so without a bump browsers keep serving the old bundle. The same
-  version is reported by `/api/state` (`pluginVersion`) and by the remote
-  `server.hello.version`.
-- The tag **`v0.1.0-alpha1`** marks the first public milestone (the package version at that
-  commit was `0.1.0-alpha61`); later milestones get their own tags.
+- **The repository version is the release tag, currently `v0.1.0-alpha1`.** The
+  `0.1.0-alphaN` build counters are a *local* deployment detail: the deploy loop raises them
+  so the plugin bundle URL (`&rev=<hash>`) busts the browser cache, and the number also shows
+  up in `/api/state` (`pluginVersion`) and the remote `server.hello.version`. Those bumps
+  stay on the machine that deployed — they are never committed and never published.
+- Later milestones get their own `v0.1.0-alphaN` tag.
 - **The exact `engines.dsh` moves with the harness, not with time.** Accepting a new DSH
   release means a new plugin version whose `devDependencies` and `engines.dsh` both name it;
   until that release exists, the current one keeps refusing other hosts instead of guessing.
