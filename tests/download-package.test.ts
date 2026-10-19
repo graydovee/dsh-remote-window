@@ -14,12 +14,12 @@
  * Everything is injected (`runner`, `cacheDir`), so no test touches the network or
  * the developer's real `~/.dsh/remote-assets`.
  */
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { curlArgs, downloadServerPackage, releaseTagsFor, type CurlRunner } from '../src/provision/assets.ts'
+import { API_TIMEOUT_S, curlArgs, downloadServerPackage, releaseTagsFor, RELEASE_PAGE_MEMORY_MS, RELEASE_PAGE_TIMEOUT_S, resetReleasePageMemory, type CurlRunner } from '../src/provision/assets.ts'
 
 const VERSION = '0.2.1-rc.2'
 const PLUGIN = '0.1.0-alpha62'
@@ -37,6 +37,7 @@ let cacheDir = ''
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'dsh-release-'))
   cacheDir = join(dir, 'assets')
+  resetReleasePageMemory()
 })
 
 afterEach(async () => {
@@ -51,11 +52,13 @@ interface FakeNet {
   readonly api?: ReadonlyMap<string, ReadonlyMap<string, number>>
   /** Override the published digest (to exercise the mismatch path). */
   readonly sha?: string
+  /** Every release-page URL fails at the network level (exit 28, zero bytes). */
+  readonly hardBlockPages?: boolean
 }
 
 /** Build a runner over the fake network and record every request. */
-function network(net: FakeNet): { runner: CurlRunner; calls: { url: string; output?: string; headers?: readonly string[] }[] } {
-  const calls: { url: string; output?: string; headers?: readonly string[] }[] = []
+function network(net: FakeNet): { runner: CurlRunner; calls: Parameters<CurlRunner>[0][] } {
+  const calls: Parameters<CurlRunner>[0][] = []
   const sha = net.sha ?? digest()
   const notFound = { code: 22, stderr: 'curl: (22) The requested URL returned error: 404', stdout: '' }
   const runner: CurlRunner = async options => {
@@ -65,6 +68,12 @@ function network(net: FakeNet): { runner: CurlRunner; calls: { url: string; outp
     if (page !== null) {
       const tag = page[1] ?? ''
       const file = page[2] ?? ''
+      if (net.hardBlockPages === true) {
+        // The alpha64 shape: the connection is accepted and then nothing arrives,
+        // so curl finally gives up with a timeout after writing zero bytes.
+        if (options.output !== undefined) await writeFile(options.output, '')
+        return { code: 28, stderr: 'curl: (28) Operation timed out after 180002 milliseconds with 0 bytes received', stdout: '' }
+      }
       if (net.pages?.has(tag) !== true || options.output === undefined) return notFound
       await writeFile(options.output, file.endsWith('.sha256') ? `${sha}  ${file.replace(/\.sha256$/u, '')}\n` : BODY)
       return { code: 0, stderr: '', stdout: '' }
@@ -201,15 +210,125 @@ describe('GitHub API transport', () => {
   })
 })
 
+describe('stalled release page (alpha64: ten minutes at zero bytes)', () => {
+  it('gives up quickly and falls back to the API', async () => {
+    const assets = new Map([[ARTIFACT, 11], [`${ARTIFACT}.sha256`, 12]])
+    const { runner, calls } = network({ hardBlockPages: true, api: new Map([[`server-v${VERSION}`, assets]]) })
+    const asset = await downloadServerPackage(request({}, runner))
+    // The release page really was attempted (and its 0-byte file was cleaned).
+    expect(calls[0]?.url).toContain('/releases/download/')
+    expect(calls[0]?.maxTimeSeconds).toBe(RELEASE_PAGE_TIMEOUT_S)
+    // ... then the API, which gets the long budget.
+    const apiCalls = calls.filter(call => call.url.includes('api.github.com'))
+    expect(apiCalls.length).toBeGreaterThan(0)
+    expect(apiCalls.every(call => call.maxTimeSeconds === API_TIMEOUT_S)).toBe(true)
+    expect(asset.sha256).toBe(digest())
+    // No 0-byte artifact survived: the final file is the API body.
+    expect(asset.size).toBe(BODY.length)
+  })
+
+  it('remembers the host for ten minutes, then tries the page again', async () => {
+    const assets = new Map([[ARTIFACT, 21], [`${ARTIFACT}.sha256`, 22]])
+    const api = new Map([[`server-v${VERSION}`, assets]])
+    let clock = 1_000_000
+    const first = network({ hardBlockPages: true, api })
+    const messages: string[] = []
+    await downloadServerPackage(request({ now: () => clock, onProgress: message => messages.push(message) }, first.runner))
+    expect(first.calls.some(call => call.url.includes('github.com/graydovee'))).toBe(true)
+    expect(messages.some(message => message.includes('release page marked unreachable for 10 minutes'))).toBe(false)
+
+    // Second attempt inside the window: no release-page request at all.
+    const second = network({ hardBlockPages: true, api })
+    const secondMessages: string[] = []
+    clock += 60_000
+    await downloadServerPackage(request({ now: () => clock, onProgress: message => secondMessages.push(message) }, second.runner))
+    expect(second.calls.some(call => call.url.includes('github.com/graydovee'))).toBe(false)
+    expect(secondMessages).toContain('release page marked unreachable for 10 minutes; using the GitHub API')
+    expect(second.calls.every(call => call.url.includes('api.github.com'))).toBe(true)
+
+    // Past the window: the official path is tried again (the network may be back).
+    clock += RELEASE_PAGE_MEMORY_MS + 1
+    const third = network({ hardBlockPages: true, api })
+    await downloadServerPackage(request({ now: () => clock }, third.runner))
+    expect(third.calls.some(call => call.url.includes('github.com/graydovee'))).toBe(true)
+  })
+
+  it('a 404 does not mark the host (the host answered, only that tag is empty)', async () => {
+    // First run: every tag 404s through the release page.
+    const first = network({ pages: new Set() })
+    await downloadServerPackage(request({ releaseTags: [`server-v${VERSION}`] }, first.runner)).catch(() => undefined)
+    // Second run must still start with the release page — nothing was remembered.
+    const second = network({ pages: new Set([`v${PLUGIN}`]) })
+    const asset = await downloadServerPackage(request({}, second.runner))
+    expect(second.calls[0]?.url).toContain(`/releases/download/server-v${VERSION}/`)
+    expect(asset.sha256).toBe(digest())
+  })
+})
+describe('download progress and slow links', () => {
+  it('reports progress while a slow transfer runs, with the total when known', async () => {
+    // The fake writes the artifact in two halves with a pause in between, so the
+    // poller observes growth mid-transfer.
+    const total = 40 * 1024 * 1024
+    const half = Buffer.alloc(total / 2, 1)
+    const sha = createHash('sha256').update(Buffer.concat([half, half])).digest('hex')
+    const messages: string[] = []
+    const runner: CurlRunner = async options => {
+      if (options.url.includes('/releases/download/')) {
+        // The release page is the blocked transport on this host.
+        if (options.output !== undefined) await writeFile(options.output, '')
+        return { code: 28, stderr: 'curl: (28) Operation timed out', stdout: '' }
+      }
+      if (options.url.includes('/releases/tags/')) {
+        return {
+          code: 0,
+          stderr: '',
+          stdout: JSON.stringify({ assets: [{ id: 99, name: ARTIFACT, size: total }, { id: 100, name: `${ARTIFACT}.sha256`, size: 80 }] }),
+        }
+      }
+      if (options.url.endsWith('/releases/assets/100')) {
+        if (options.output === undefined) return { code: 22, stderr: '404', stdout: '' }
+        await writeFile(options.output, `${sha}  ${ARTIFACT}\n`)
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      if (options.url.endsWith('/releases/assets/99')) {
+        if (options.output === undefined) return { code: 22, stderr: '404', stdout: '' }
+        await writeFile(options.output, half)
+        await new Promise(resolve => setTimeout(resolve, 40))
+        await appendFile(options.output, half)
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      return { code: 22, stderr: 'curl: (22) 404', stdout: '' }
+    }
+    const asset = await downloadServerPackage(request({ progressIntervalMs: 5, onProgress: message => messages.push(message) }, runner))
+    expect(asset.sha256).toBe(sha)
+    const progress = messages.filter(message => message.includes('server package download progress:'))
+    expect(progress.length).toBeGreaterThan(0)
+    // The total comes from the release listing, so the line reads `x / 40.0 MB`.
+    expect(progress.some(message => /\d+\.\d+ \/ 40\.0 MB$/u.test(message))).toBe(true)
+    // Nothing was reported before any bytes arrived.
+    expect(progress[0]).not.toMatch(/^server package download progress: 0\.0/u)
+  })
+})
 describe('curlArgs', () => {
-  it('retries transient connection failures (measured: the reset clears on a retry)', () => {
+  it('stops a stalled transfer and retries transient failures', () => {
     const args = curlArgs({ url: 'https://example.com/x', output: 'out.bin' })
     expect(args).toContain('-fL')
     expect(args).toContain('--retry')
     expect(args).toContain('3')
     expect(args).toContain('--retry-connrefused')
-    // `-o <file>` right before the url (curl's argv order here).
+    // The measured alpha64 stall: 0 bytes for minutes, so a speed floor is what
+    // makes the fallback run at all.
+    expect(args).toContain('--speed-limit')
+    expect(args).toContain('1024')
+    expect(args).toContain('--speed-time')
+    expect(args).toContain('30')
     expect(args.slice(-3)).toEqual(['-o', 'out.bin', 'https://example.com/x'])
+  })
+
+  it('gives the release page a short budget and the API a long one', () => {
+    expect(RELEASE_PAGE_TIMEOUT_S).toBeLessThan(API_TIMEOUT_S)
+    expect(curlArgs({ url: 'https://example.com/a' })).toContain(String(RELEASE_PAGE_TIMEOUT_S))
+    expect(curlArgs({ url: 'https://example.com/a', maxTimeSeconds: API_TIMEOUT_S })).toContain(String(API_TIMEOUT_S))
   })
 
   it('passes headers through and omits -o for a stdout fetch', () => {

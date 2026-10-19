@@ -322,25 +322,58 @@ export type CurlRunner = (options: {
   readonly url: string
   readonly output?: string
   readonly headers?: readonly string[]
+  /** Whole-request budget in seconds; the transports get different ones. */
+  readonly maxTimeSeconds?: number
 }) => Promise<{ readonly code: number; readonly stderr: string; readonly stdout: string }>
+
+/**
+ * Budget for the browser-style release URL.
+ *
+ * Short on purpose: on a host that cannot reach `github.com:443` the connection
+ * *hangs* (measured: 0 bytes for ten minutes, no error, because `-m 900` had not
+ * expired yet), so the REST fallback never got a turn. `--speed-time` ends a
+ * stalled transfer after 30 s; this cap is the belt-and-braces limit for a slow
+ * but alive one.
+ */
+export const RELEASE_PAGE_TIMEOUT_S = 180
+
+/**
+ * Budget for the REST transport: it is the one that really moves 121 MB.
+ *
+ * One hour, because the download has to survive a slow link: measured 12–45 KB/s
+ * to `api.github.com` from the QA host, i.e. ~45–170 minutes for a 121 MB package,
+ * so the earlier 15-minute cap made the download impossible there. Nothing can
+ * hang forever from this: `--speed-limit`/`--speed-time` is what detects a dead
+ * transfer, so a generous *total* budget costs nothing.
+ */
+export const API_TIMEOUT_S = 3600
 
 /**
  * The argv one `curl` fetch runs with.
  *
- * `--retry 3 --retry-connrefused` are load-bearing on networks that reset
- * connections to `github.com:443`: measured on the QA host, the first attempt
- * fails with `curl: (56) Recv failure: Connection was reset` / `(28) Failed to
- * connect`, while a retried request succeeds. Exported so the flags are asserted
- * instead of assumed.
- * @param options - target url, optional output file and extra headers.
+ * - `--retry 3 --retry-connrefused` — the reset/refused cases are transient here;
+ *   a retried request does succeed.
+ * - `--speed-limit 1024 --speed-time 30` — measured: a blocked `github.com:443`
+ *   does **not** fail fast, it sits at 0 bytes, and only this makes it give up in
+ *   half a minute so the API fallback runs.
+ * - `-m <budget>` — per transport (`RELEASE_PAGE_TIMEOUT_S` vs `API_TIMEOUT_S`).
+ * Exported so the flags are asserted instead of assumed.
+ * @param options - target url, optional output file, headers and time budget.
  */
-export function curlArgs(options: { readonly url: string; readonly output?: string; readonly headers?: readonly string[] }): string[] {
+export function curlArgs(options: {
+  readonly url: string
+  readonly output?: string
+  readonly headers?: readonly string[]
+  readonly maxTimeSeconds?: number
+}): string[] {
   return [
     '-fL',
     '--retry', '3',
     '--retry-connrefused',
     '--connect-timeout', '20',
-    '-m', '900',
+    '--speed-limit', '1024',
+    '--speed-time', '30',
+    '-m', String(options.maxTimeSeconds ?? RELEASE_PAGE_TIMEOUT_S),
     ...(options.headers ?? []).flatMap(header => ['-H', header]),
     ...(options.output === undefined ? [] : ['-o', options.output]),
     options.url,
@@ -349,7 +382,10 @@ export function curlArgs(options: { readonly url: string; readonly output?: stri
 
 /** The production runner: `curl -fL` into a file (or stdout), bounded by a timeout. */
 export const runCurl: CurlRunner = async (options) => {
-  const result = await execLocal('curl', curlArgs(options), 920_000)
+  // The process timeout outlives curl's own budget so curl reports first (a killed
+  // curl loses its stderr, which is the diagnostic we need).
+  const budgetMs = ((options.maxTimeSeconds ?? RELEASE_PAGE_TIMEOUT_S) + 60) * 1_000
+  const result = await execLocal('curl', curlArgs(options), budgetMs)
   return { code: result.code, stderr: result.stderr, stdout: result.stdout }
 }
 
@@ -403,12 +439,143 @@ function reasonOf(result: { code: number; stderr: string }): string {
   return (result.stderr || `curl exit ${result.code}`).trim().split('\n').at(-1)?.slice(-160) ?? `curl exit ${result.code}`
 }
 
-/** Download one file and report success/failure without throwing. */
-async function fetchTo(runner: CurlRunner, url: string, output: string, headers?: readonly string[]): Promise<boolean> {
-  const result = await runner({ url, output, ...(headers === undefined ? {} : { headers }) })
-  if (result.code === 0) return true
-  await rm(output, { force: true })
-  return false
+/**
+ * How long a host whose release page failed *hard* is skipped.
+ *
+ * In-process only (a restart clears it) and deliberately short: the network may
+ * come back, and the official release URL is the path we want whenever it works.
+ */
+export const RELEASE_PAGE_MEMORY_MS = 10 * 60 * 1000
+
+/** Hosts whose release page transport recently failed at the network level. */
+const unreachableHosts = new Map<string, number>()
+
+/**
+ * Whether a failure means "this host is unreachable" rather than "this asset/tag
+ * is missing".
+ *
+ * The distinction is the whole point: a 404 (`--fail` exit 22) proves the host
+ * answered, so the next tag must be tried normally; a blocked host instead hangs
+ * or resets. curl codes here: 6/7 resolution/connect, 28 timeout (also what
+ * `--speed-time` aborts with), 35 TLS handshake, 55/56 send/recv failure, 18
+ * partial transfer, 92 HTTP/2 stream error.
+ * @param result - the failed curl result.
+ */
+export function isReleasePageUnreachable(result: { code: number; stderr: string }): boolean {
+  if (result.code === 22 || result.code === 0) return false
+  if ([6, 7, 18, 28, 35, 55, 56, 92].includes(result.code)) return true
+  return /\(6\)|\(7\)|\(18\)|\(28\)|\(35\)|\(55\)|\(56\)|\(92\)|timed out|Recv failure|Connection (refused|reset)/i.test(result.stderr)
+}
+
+/** Remember that one host's release page is not usable right now. */
+export function markReleasePageUnreachable(host: string, now: number = Date.now()): void {
+  unreachableHosts.set(host, now)
+}
+
+/** Whether one host is still inside its "skip the release page" window. */
+export function releasePageMarkedUnreachable(host: string, now: number = Date.now()): boolean {
+  const markedAt = unreachableHosts.get(host)
+  if (markedAt === undefined) return false
+  if (now - markedAt >= RELEASE_PAGE_MEMORY_MS) {
+    unreachableHosts.delete(host)
+    return false
+  }
+  return true
+}
+
+/** Forget every remembered host (tests only). */
+export function resetReleasePageMemory(): void {
+  unreachableHosts.clear()
+}
+
+/**
+ * When a download reports its size, and how often at most.
+ *
+ * A 121 MB package can take an hour on a slow link, so a silent progress line is
+ * indistinguishable from a hang (alpha65). The poller reads the `-o` target's size
+ * — curl's own stderr meter is not portable across versions — and reports at most
+ * twice a minute or every 20 MB, whichever comes first.
+ */
+const DOWNLOAD_PROGRESS_TICK_MS = 5_000
+const DOWNLOAD_PROGRESS_REPORT_MS = 15_000
+const DOWNLOAD_PROGRESS_STEP_BYTES = 20 * 1024 * 1024
+
+/** `12.3` for byte counts, in MB. */
+function megabytes(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(1)
+}
+
+/**
+ * Download one file and report success/failure without throwing.
+ *
+ * `onProgress` is invoked while the transfer runs (see
+ * {@link DOWNLOAD_PROGRESS_STEP_BYTES}); failures delete the target so a partial
+ * file can never be mistaken for a cached artifact.
+ */
+async function fetchTo(
+  runner: CurlRunner,
+  url: string,
+  output: string,
+  options: {
+    headers?: readonly string[]
+    maxTimeSeconds?: number
+    /** Total size, when the caller knows it (the REST asset listing reports `size`). */
+    totalBytes?: number
+    onProgress?: (transferred: number, totalBytes: number | undefined) => void
+    progressIntervalMs?: number
+  } = {},
+): Promise<{ ok: boolean; result: { code: number; stderr: string; stdout: string } }> {
+  let finished = false
+  /** Wakes the poller's sleep when the transfer ends, so it never adds latency. */
+  let wake: (() => void) | undefined
+  let poller: Promise<void> | undefined
+  if (options.onProgress !== undefined) {
+    const onProgress = options.onProgress
+    const tickMs = options.progressIntervalMs ?? DOWNLOAD_PROGRESS_TICK_MS
+    poller = (async () => {
+      let lastBytes = 0
+      let lastReportAt = Date.now()
+      while (!finished) {
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, tickMs)
+          timer.unref?.()
+          // `finished` must interrupt the sleep: without this every completed
+          // transfer waited out a whole tick (5 s each) before returning.
+          wake = () => {
+            clearTimeout(timer)
+            resolve()
+          }
+        })
+        wake = undefined
+        if (finished) return
+        const size = await stat(output).then(info => info.size, () => 0)
+        const now = Date.now()
+        if (size <= lastBytes) continue
+        if (size - lastBytes < DOWNLOAD_PROGRESS_STEP_BYTES && now - lastReportAt < DOWNLOAD_PROGRESS_REPORT_MS) continue
+        lastBytes = size
+        lastReportAt = now
+        onProgress(size, options.totalBytes)
+      }
+    })()
+  }
+  try {
+    const result = await runner({
+      url,
+      output,
+      ...(options.headers === undefined ? {} : { headers: options.headers }),
+      ...(options.maxTimeSeconds === undefined ? {} : { maxTimeSeconds: options.maxTimeSeconds }),
+    })
+    if (result.code === 0) return { ok: true, result }
+    // A failed transfer must not survive as a 0-byte "cached" artifact: the cache
+    // reader trusts `.ready`+size, but a half file on disk is still a trap for
+    // anything that looks at the filename (alpha64 left one behind for ten minutes).
+    await rm(output, { force: true })
+    return { ok: false, result }
+  } finally {
+    finished = true
+    wake?.()
+    await poller?.catch(() => {})
+  }
 }
 
 /**
@@ -435,6 +602,8 @@ async function verifyDownload(cached: string, shaFile: string, releaseTag: strin
 interface ReleaseAsset {
   readonly id: number
   readonly name: string
+  /** Byte size, so the progress line can show `x / total`. */
+  readonly size?: number
 }
 
 /** The subset of the release JSON this module reads. */
@@ -443,10 +612,15 @@ function assetsOf(json: string): ReleaseAsset[] | undefined {
     const parsed = JSON.parse(json) as { assets?: unknown }
     if (!Array.isArray(parsed.assets)) return undefined
     return parsed.assets
-      .filter((asset): asset is { id: number; name: string } =>
+      .filter((asset): asset is { id: number; name: string; size?: number } =>
         typeof asset === 'object' && asset !== null &&
         typeof (asset as { id?: unknown }).id === 'number' &&
         typeof (asset as { name?: unknown }).name === 'string')
+      .map(asset => ({
+        id: asset.id,
+        name: asset.name,
+        ...(typeof asset.size === 'number' ? { size: asset.size } : {}),
+      }))
   } catch {
     return undefined
   }
@@ -482,10 +656,15 @@ export async function downloadServerPackage(options: {
   cacheDir?: string
   /** curl substitution (tests). */
   runner?: CurlRunner
+  /** Clock substitution (tests): the release-page memory's window is time-based. */
+  now?: () => number
+  /** Progress poll interval override (tests); defaults to a few seconds. */
+  progressIntervalMs?: number
   onProgress?: (message: string, detail?: string) => void
 }): Promise<CachedAsset> {
   const notify = options.onProgress ?? (() => {})
   const runner = options.runner ?? runCurl
+  const now = options.now ?? Date.now
   const tag = artifactTag(options.platform, options.arch, options.libc)
   const name = artifactName(options.version, tag)
   const dir = options.cacheDir ?? remoteAssetsCacheDir()
@@ -495,20 +674,36 @@ export async function downloadServerPackage(options: {
   const tags = options.releaseTags ?? releaseTagsFor(options.version, options.pluginVersion)
   const mirror = options.mirror.replace(/\/+$/, '')
   const failures: string[] = []
+  // A blocked release page hangs instead of failing (measured: ten minutes at zero
+  // bytes), so once it has failed at the network level the next attempts in this
+  // process go straight to the API for ten minutes — otherwise every connect pays
+  // the whole budget again. Only hard network failures arm this; a 404 means the
+  // host answered and the next tag is tried normally.
+  const skipHtml = mirror === '' && releasePageMarkedUnreachable(HTML_BASE, now())
+  if (skipHtml) notify('release page marked unreachable for 10 minutes; using the GitHub API')
+  // A 121 MB transfer over a slow link must show movement, or it reads as a hang.
+  const progress = (transferred: number, totalBytes: number | undefined): void => {
+    notify(`server package download progress: ${megabytes(transferred)}${totalBytes === undefined ? '' : ` / ${megabytes(totalBytes)}`} MB`)
+  }
+  const progressOptions = {
+    onProgress: progress,
+    ...(options.progressIntervalMs === undefined ? {} : { progressIntervalMs: options.progressIntervalMs }),
+  }
   for (const releaseTag of tags) {
     const attempts: string[] = []
-    const hosts = mirror === '' ? [HTML_BASE] : [mirror]
+    const hosts = skipHtml ? [] : mirror === '' ? [HTML_BASE] : [mirror]
     // 1. release-page (or mirror) URL
     for (const host of hosts) {
       const base = releaseAssetBase(host, releaseTag)
       notify(`downloading server package ${name} from ${host} (release ${releaseTag})`)
-      const artifact = await runner({ url: `${base}/${name}`, output: cached })
-      if (artifact.code !== 0) {
-        attempts.push(`html: ${reasonOf(artifact)}`)
-        await rm(cached, { force: true })
+      const artifact = await fetchTo(runner, `${base}/${name}`, cached, { maxTimeSeconds: RELEASE_PAGE_TIMEOUT_S, ...progressOptions })
+      if (!artifact.ok) {
+        attempts.push(`html: ${reasonOf(artifact.result)}`)
+        if (host === HTML_BASE && isReleasePageUnreachable(artifact.result)) markReleasePageUnreachable(HTML_BASE, now())
         continue
       }
-      if (!await fetchTo(runner, `${base}/${name}.sha256`, shaFile)) {
+      const sha = await fetchTo(runner, `${base}/${name}.sha256`, shaFile, { maxTimeSeconds: RELEASE_PAGE_TIMEOUT_S })
+      if (!sha.ok) {
         attempts.push(`html: .sha256 companion missing`)
         await rm(cached, { force: true })
         continue
@@ -519,9 +714,9 @@ export async function downloadServerPackage(options: {
     }
     // 2. REST API transport (only for GitHub itself)
     if (mirror === '') {
-      notify(`release page unreachable for ${releaseTag}; trying the GitHub API`)
+      if (!skipHtml) notify(`release page unreachable for ${releaseTag}; trying the GitHub API`)
       const releaseUrl = `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/tags/${encodeURIComponent(releaseTag)}`
-      const listing = await runner({ url: releaseUrl, headers: ['Accept: application/vnd.github+json'] })
+      const listing = await runner({ url: releaseUrl, headers: ['Accept: application/vnd.github+json'], maxTimeSeconds: API_TIMEOUT_S })
       if (listing.code !== 0) {
         attempts.push(`api: ${reasonOf(listing)}`)
       } else {
@@ -533,7 +728,13 @@ export async function downloadServerPackage(options: {
           attempts.push(`api: asset ${name} not in release`)
         } else {
           const download = async (asset: ReleaseAsset, output: string): Promise<boolean> =>
-            await fetchTo(runner, `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/assets/${asset.id}`, output, ['Accept: application/octet-stream'])
+            (await fetchTo(runner, `${API_BASE}/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/assets/${asset.id}`, output, {
+              headers: ['Accept: application/octet-stream'],
+              maxTimeSeconds: API_TIMEOUT_S,
+              // The listing reports the size, so progress reads `x / 121.2 MB`.
+              ...(asset.size === undefined ? {} : { totalBytes: asset.size }),
+              ...progressOptions,
+            })).ok
           if (!await download(artifactAsset, cached)) {
             attempts.push('api: asset download failed')
             await rm(cached, { force: true })
