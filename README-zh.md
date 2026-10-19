@@ -187,11 +187,15 @@ allowBuilds:
 
 ## Versioning and releases
 
-- **仓库里的版本就是发布 tag，当前是 `v0.1.0-alpha1`。** `0.1.0-alphaN` 这些计数是**本地**
-  部署细节：部署循环每次把数字抬高，好让插件批量 URL（`&rev=<hash>`）破掉浏览器缓存，同一
-  数字也出现在 `/api/state` 的 `pluginVersion` 与远端 `server.hello.version` 里。这些 bump
-  只留在执行部署的那台机器上——**不提交、不发布**。
-- 后续里程碑各自打 `v0.1.0-alphaN` tag。
+- **仓库里的版本就是发布版本 `v0.1.0-alpha1`。** 提交进仓库的一切——`package.json`、内嵌的
+  remote-server 版本串、`lib/`——都带这个号。
+- **本地部署加的是修订后缀，不是另一个版本号：** `0.1.0-alpha1.1`、`0.1.0-alpha1.2`……
+  部署循环在**执行部署的那台机器**上把后缀 +1，好让插件批量 URL（`&rev=<hash>`）破掉浏览器
+  缓存；同一字符串也出现在 `/api/state` 的 `pluginVersion` 与远端 `server.hello.version` 里。
+  后缀要在 `pnpm build` **之前** 加（server 的兜底版本号会被编译进 `lib/server.js`）。它
+  **从不提交**：部署完用 `git checkout -- package.json src/server/index.ts && pnpm build`
+  把工作树还原。
+- 新的公开里程碑才打新 tag（`v0.1.0-alphaN`），后缀从 `.1` 重新开始。
 - **精确的 `engines.dsh` 跟着 harness 走，不跟着时间走**：接受一个新的 DSH 版本 = 发一个新的
   插件版本，其 `devDependencies` 与 `engines.dsh` 同时指向它；在那样一版发出来之前，当前版本
   继续拒绝其它宿主，而不是去猜。

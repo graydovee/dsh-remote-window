@@ -206,12 +206,16 @@ install root.
 
 ## Versioning and releases
 
-- **The repository version is the release tag, currently `v0.1.0-alpha1`.** The
-  `0.1.0-alphaN` build counters are a *local* deployment detail: the deploy loop raises them
-  so the plugin bundle URL (`&rev=<hash>`) busts the browser cache, and the number also shows
-  up in `/api/state` (`pluginVersion`) and the remote `server.hello.version`. Those bumps
-  stay on the machine that deployed — they are never committed and never published.
-- Later milestones get their own `v0.1.0-alphaN` tag.
+- **The repository version is the release, `v0.1.0-alpha1`.** Everything committed —
+  `package.json`, the embedded remote-server version strings and `lib/` — carries it.
+- **A local deployment adds a revision suffix instead of inventing a new number:**
+  `0.1.0-alpha1.1`, `0.1.0-alpha1.2`, … The deploy loop raises the suffix on the machine that
+  deploys, so the plugin bundle URL (`&rev=<hash>`) busts the browser cache; the same string
+  shows up in `/api/state` (`pluginVersion`) and the remote `server.hello.version`. Bump
+  **before** `pnpm build` — the server's fallback version is compiled into `lib/server.js`.
+  It is never committed: after the deploy the tree goes back with
+  `git checkout -- package.json src/server/index.ts && pnpm build`.
+- A new public milestone is a new tag (`v0.1.0-alphaN`), and the suffix restarts at `.1`.
 - **The exact `engines.dsh` moves with the harness, not with time.** Accepting a new DSH
   release means a new plugin version whose `devDependencies` and `engines.dsh` both name it;
   until that release exists, the current one keeps refusing other hosts instead of guessing.

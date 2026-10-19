@@ -186,8 +186,8 @@ provider 对着 `src/server` 副本在内存传输上跑）、`frame`、`ssh-con
 子代理（单标签约束：`browser_list_tabs` → `browser_follow_tab` → `browser_navigate`，
 永不 `browser_open_tab`），并要求它回报 DOM 实测值而不是"看起来对"。
 
-部署循环：`pnpm typecheck && pnpm test && pnpm build` → **bump 版本** →
-`pnpm pack --pack-destination ~/.dsh/tarballs` →
+部署循环：**bump 本地修订号**（`0.1.0-alpha1.x`，仅本机）→ `pnpm typecheck && pnpm test && pnpm build`
+→ `pnpm pack --pack-destination ~/.dsh/tarballs` →
 `dsh plugin --profile web remove/add <tgz>` → 重启 3080。
 
 ## 会话持久层的路由接线（实测，2026-10-16；0.2.1-rc.2 复核 2026-10-17）
@@ -595,14 +595,19 @@ tag 同源；摘要不一致是硬错，不换 tag 也不换传输。curl 统一
 release 里那份 `.sha256`。
 ## 版本策略
 
-**仓库里体现的版本 = 发布 tag，当前 `v0.1.0-alpha1`。** `0.1.0-alphaN` 这些
-`alphaN` 是**本地部署计数器**：部署循环每次部署前把它 +1（插件批量 URL 带
-`&rev=<hash>`，不 bump 浏览器吃旧缓存），同一数字也出现在 `package.json`、
-`/api/state` 的 `pluginVersion` 与远端 `server.hello.version`。
+**仓库里的版本 = 发布版本，当前 `v0.1.0-alpha1`。**
 
-**这些 bump 只留在执行部署的本机：不提交、不推送、不发布。** 提进仓库就等于把调试号
-当成发布版本，也等于让同一版本号对应两份不同内容。提交到仓库的 `package.json`、
-`src/server/index.ts` 里的版本串与 `lib/` 始终是发布版本。
+本地调试部署时**不改发布版本号，只加修订后缀**：`0.1.0-alpha1.1`、`0.1.0-alpha1.2`……
+在**执行部署的那台机器**上把后缀 +1（插件批量 URL 带 `&rev=<hash>`，不 bump 浏览器吃
+旧缓存）；同一字符串也出现在 `/api/state` 的 `pluginVersion` 与远端
+`server.hello.version`。后缀必须加在 `pnpm build` **之前**——server 的兜底版本号会被
+编译进 `lib/server.js`。
+
+**这些临时版本永不推送到远程**：不提交、不 push、不打 tag、不发布。提交进仓库的
+`package.json`、`src/server/index.ts` 版本串与 `lib/` 始终是发布版本。部署完用
+`git checkout -- package.json src/server/index.ts && pnpm build` 把工作树还原。
+
+提进仓库就等于把调试号当成发布版本，也等于让同一版本号对应两份不同内容。
 
 已打 tag：client 仓库 `v0.1.0-alpha1`（插件里程碑，**不带** server 包）；server 包只在
 `dsh-remote-workspace-server` 仓库按 `server-v<dshVersion>` 打 tag 并发 release。
