@@ -160,10 +160,13 @@ Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要�
   `allowImportingTsExtensions`：相对导入带 `.ts` 后缀；type-only 用 `import type`。
 - 可选 wire 字段沿用条件展开惯用法 `...(x === undefined ? {} : { x })`。
 - 注释解释**实测约束**而非显而易见的事；写清当年的现象与结论，别只写"按设计如此"。
-- peer 依赖区间是 `>=0.2.1-rc.2 <0.3.0`（**下限就是实测基线**：本插件用到
-  0.2.1-rc.2 才有的 `apply()` 挂载式持久后端与 `hello` 的 `kind`/`executable` 形状，
-  0.2.0-rc.x 上会直接起不来）；`dsh-plugin-dev check --strict` 的 `manifest-peers`
-  失败是已记录偏差，不要靠升降区间去"修"。
+- **`engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 都写精确值 `0.2.1-rc.2`，不写区间。**
+  理由：0.2.1-rc.2 是唯一实测过的版本，写 `>=0.2.1-rc.2 <0.3.0` 等于替 0.2.2 提前担保——
+  而后续 0.2.x 完全可能改掉 `apply()` 挂载式持久后端、`hello` 的 `kind`/`executable` 严格
+  形状或行/`data-slot` 契约。DSH 的准入只看 `engines.dsh`（存在时 peer 被忽略），所以两者
+  钉成同一个精确值，清单里就没有任何一处读起来像"0.2.x 都行"。扩窗是一次发布动作：
+  升 `devDependencies` → 跑 typecheck/conformance/浏览器验收 → 同版本里改两个仓库的声明。
+  `dsh-plugin-dev check --strict` 的 `manifest-peers` 失败是已记录偏差，不要靠升降区间去"修"。
 - **`zod` 必须钉死成 harness 用的那个确切版本（当前 `4.4.3`），不要写 `^`。**
   实测：官方包用 `zod: 4.4.3`，而 `^4.4.3` 会解析到 4.6.x，树里出现两份 zod 后
   `z.infer`/`ZodType` 跨副本交叉推导，`tsc` 会在 `src/targets/store.ts`、
