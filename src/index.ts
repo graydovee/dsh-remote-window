@@ -24,6 +24,7 @@ import { methodAvailable } from './targets/methods.ts'
 import { TargetStore } from './targets/store.ts'
 import { scrubSecrets , type PackagePolicySettings, type RemoteWorkspaceService } from './targets/types.ts'
 import { RemoteWorkspaces, packageRootFrom, type ConnectRequest, type ProvisionEvent } from './provision/service.ts'
+import { DSH_VERIFIED_RUNTIMES } from './provision/version-range.ts'
 
 /** Route prefix for the plugin's own API and SSE channel. */
 export const ROUTE_PREFIX = '/dsh-remote-workspace'
@@ -423,6 +424,9 @@ async function dispatchApi(
         // the UI must not render as "the server has no workspaces".
         serverWorkspaces: await workspaces.serverWorkspaceLists(),
         pluginVersion: pluginVersion(),
+        // The runtime contract the reuse gate enforces; the wizard shows it so a
+        // rejected launcher's reason has a visible reference point.
+        verifiedRuntimes: [...DSH_VERIFIED_RUNTIMES],
         defaultProfile: 'dsh-remote-server',
         // The browser does not know the host OS; this is what gates the WSL
         // connection method (the same `methodAvailable` predicate validates it).

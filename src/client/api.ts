@@ -329,6 +329,8 @@ export interface StateResult {
    */
   serverWorkspaces: Record<string, ServerWorkspace[]>
   pluginVersion: string
+  /** The remote launcher runtimes this client accepts; shown above the reuse list. */
+  verifiedRuntimes?: string[]
   defaultProfile: string
   /** The harness host's `process.platform`; the WSL method is gated on it. */
   platform?: string

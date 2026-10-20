@@ -17,7 +17,7 @@
  *    measured on Ubuntu 22.04, where the uploaded `.bin/dsh` is a `/bin/sh`
  *    wrapper whose `exec node` needs the deployed runtime on `PATH`.
  */
-import { describeIncompatibility, isCompatibleDsh } from './version-range.ts'
+import { DSH_VERIFIED_SUMMARY, describeIncompatibility, isCompatibleDsh } from './version-range.ts'
 
 /** Where the server package may come from; `reuse` never produces an artifact. */
 export type PackageSourceKind = 'auto' | 'download' | 'upload' | 'reuse'
@@ -139,7 +139,7 @@ export function planProvision(input: {
     return {
       ok: false,
       code: 'dsh-incompatible',
-      message: `the selected launcher ${selected} cannot be used: ${describeIncompatibility(facts.version)}; use 「上传 server 包」 instead`,
+      message: `the selected launcher ${selected} cannot be used: ${describeIncompatibility(facts.version)}; the target must run ${DSH_VERIFIED_SUMMARY}, so choose 「上传 server 包」or「下载 server 包」 instead`,
     }
   }
 

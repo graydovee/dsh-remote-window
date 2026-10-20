@@ -1,0 +1,94 @@
+name: release
+
+# Publishes the plugin tarball of one tagged version. The runtime packages the
+# remote world installs are a different artifact and are released from
+# dsh-remote-workspace-server.
+#
+# npm is deliberately not published here: the tag produces the GitHub Release,
+# and the npm upload is a separate, explicit step.
+
+on:
+  push:
+    tags: ['v*', '[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'existing tag to release (e.g. 0.1.0-alpha.1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The tag names the release version; a local revision suffix must never
+      # reach a release.
+      - name: check tag matches package.json
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          want="$(node -p "require('./package.json').version")"
+          got="${tag#v}"
+          if [ "$got" != "$want" ]; then
+            echo "tag $tag does not match package.json version $want" >&2
+            exit 1
+          fi
+
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      # Advisory until the build is confirmed reproducible on the runner.
+      - name: lib is up to date with src
+        continue-on-error: true
+        run: git diff --exit-code -- lib
+
+      - name: pack
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          pnpm pack --pack-destination dist
+          tarball="$(ls dist/*.tgz)"
+          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
+          shasum -a 256 "$tarball" | cut -d' ' -f1 > "$tarball.sha256"
+          cat "$tarball.sha256"
+
+      # The published package ships lib/ and the profile patch only; source,
+      # tests and maintainer docs stay out.
+      - name: inspect tarball
+        run: |
+          set -euo pipefail
+          listing="$(tar -tzf "$TARBALL")"
+          echo "$listing"
+          for forbidden in '/src/' '/tests/' '/doc/' '/node_modules/'; do
+            if echo "$listing" | grep -q "$forbidden"; then
+              echo "tarball contains $forbidden" >&2
+              exit 1
+            fi
+          done
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            dist/*.tgz
+            dist/*.tgz.sha256

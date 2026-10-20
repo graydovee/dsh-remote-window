@@ -226,7 +226,7 @@ return { argv: [...argv], enforcement: 'partial', denialSignatures: [], runnerFa
 
 | 新模块 | 内容 | 为什么在这个位置 |
 |---|---|---|
-| `src/provision/version-range.ts` | 版本解析 + 比较 + 兼容判定（`>=0.2.1-rc.2 <0.3.0`） | 纯函数，host 专用；**不引入 `semver` 依赖**（peer 区间是一个常量，用 30 行实现即可，避免动 `dependencies` 与锁文件） |
+| `src/provision/version-range.ts` | 版本解析 + 比较 + 兼容判定（`DSH_VERIFIED_RUNTIMES` 成员判定） | 纯函数，host 专用；**不引入 `semver` 依赖**（peer 区间是一个常量，用 30 行实现即可，避免动 `dependencies` 与锁文件） |
 | `src/provision/dsh-scan.ts` | 「扫描远端已装 dsh」脚本 + 解析器 + 候选类型 | 与 `deploy.ts`（脚本层）、`ssh-config.ts`（解析层）同构：**只拼脚本、只解析文本**，零 I/O，可单测 |
 | `src/provision/plan.ts` | `planProvision()`：把「目标记录 + probe 事实 + 扫描结果 + 策略」判定成 `ProvisionPlan`（reuse 还是打包、跳过哪些 stage） | 判定必须可单测、可解释（QA 要能说清为什么走了 reuse），且 `channel.ts` 里不再长出 if 森林 |
 
@@ -522,7 +522,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | A18 | 复用候选的 `nodePath` 必须认 `$DSHHOME/server/node/bin/node`，扫描 PATH 前缀必须含它 | 实测：部署实例是 `/bin/sh` 包装脚本 + 内部 `exec node`，不带这个前缀会 `exit 127` 被误判不兼容 |
 | A19 | 复用启动命令一律 `DSH_HOME=… PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> --profile <p>`，**不用** `node <launcher>`；`selfContained` 时省略 PATH 前缀 | 实测部署 launcher 是 `/bin/sh` 包装脚本（末行 `exec node`），`node <launcher>` 跑不起来；PATH 前缀同时覆盖两种形状 |
 | A20 | 插件 marker **两处并存**：`<profileDir>/.dsh-rw-plugin.json`（两条路径都写）+ `.components/plugin.json`（仅上传路径写，**`decidePlugin` 的权威**） | 复用路径没有 `.components/` 树；上传路径的「要不要重传」必须仍由原判据决定 |
-| A21 | `0.3.0-rc.1` **属于兼容** | npm semver：预发布段 < 同号正式版，故 `0.3.0-rc.1 < 0.3.0`（落在 `[0.2.1-rc.2, 0.3.0)`） |
+| A21 | ~~`0.3.0-rc.1` 属于兼容~~ → **已被 2026-10-20 修订取代**：门禁改为 `DSH_VERIFIED_RUNTIMES` 成员判定，只接受实测过的 `0.2.1-rc.2` | 区间是对未发布版本的提前担保，且会放进未验证的中间预发布 |
 | A22 | 候选装配函数命名 `assembleCandidates()` | Leader 已确认；职责单一（scan → 带 profile 与排序的候选） |
 | A23 | 扫描**不 pin** 指纹；确认后指纹进内存 `state.trusted`，`connect/start` 复用它**不二次弹窗**，pin 只在连接成功时发生 | 扫描是只读探路，不该产生持久信任；又不能让用户两次确认同一台机器 |
 | A24 | 草稿字段 `ConnectDraft.packageSource` 退役，第 3 步 `connectionMode` **独占** wire 字段 `packageSource` | 一份真相；旧的第 2 步选择器是双入口缺陷 |

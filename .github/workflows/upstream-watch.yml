@@ -1,0 +1,91 @@
+name: upstream-watch
+
+# DSH is a developer preview: a breaking change can land in any release. This job
+# turns "a user reports it" into "we know within a day" by trying the newest
+# upstream release against this plugin and recording the outcome in an issue.
+#
+# It never pushes: the only side effect is the issue.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: compare upstream with the verified runtime
+        id: versions
+        run: |
+          set -euo pipefail
+          latest="$(npm view @deepseek-ai/dsh version)"
+          current="$(node -e "const s=require('node:fs').readFileSync('src/provision/version-range.ts','utf8');const m=s.match(/DSH_VERIFIED_RUNTIMES[^\\[]*\\[([^\\]]*)\\]/);console.log((m?.[1]??'').match(/'([^']+)'/g)?.at(-1)?.replaceAll(\"'\",'')??'')")"
+          echo "latest=$latest current=$current"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$latest" = "$current" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+
+      # Publishing all peers is the maintainers' step, not ours: without them the
+      # install cannot resolve and the report would be pure noise.
+      - name: are the peers published
+        id: peers
+        if: steps.versions.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          v="${{ steps.versions.outputs.latest }}"
+          ok=true
+          for name in $(node -p "Object.keys(require('./package.json').peerDependencies).filter(n=>n.startsWith('@deepseek-ai/dsh')).join(' ')"); do
+            if ! npm view "$name@$v" version >/dev/null 2>&1; then echo "missing $name@$v"; ok=false; fi
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: try the new runtime
+        id: trial
+        if: steps.versions.outputs.changed == 'true' && steps.peers.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/bump-dsh-version.mjs --to "${{ steps.versions.outputs.latest }}"
+          pnpm install --no-frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
+
+      - name: record the outcome
+        if: steps.versions.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          title='[upstream] DSH compatibility report'
+          latest="${{ steps.versions.outputs.latest }}"
+          current="${{ steps.versions.outputs.current }}"
+          if [ "${{ steps.peers.outputs.ok }}" != 'true' ]; then
+            body="upstream released \`$latest\` while this client verifies \`$current\`, but not every \`@deepseek-ai/dsh-*\` peer is published for it yet. Nothing to do until the peers land."
+          elif [ "${{ steps.trial.outcome }}" = 'success' ]; then
+            body="\`$latest\` (verified: \`$current\`) passes \`typecheck\`, \`test\` and \`build\` after bumping the declarations. It still needs a real deployment before \`--to\` is committed; \`node scripts/bump-dsh-version.mjs --to $latest\` reproduces the tree."
+          else
+            body="\`$latest\` (verified: \`$current\`) fails the checks after bumping the declarations. See the \`try the new runtime\` step of [run ${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          fi
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

@@ -1,25 +1,30 @@
 /**
- * The dsh version window this plugin supports, and the comparison enforcing it.
+ * The dsh runtimes this plugin has verified, and the comparison used to word a
+ * rejection.
  *
- * The window mirrors `package.json`'s peer range (`>=0.2.1-rc.2 <0.3.0`). The
- * floor is a *measured* baseline rather than a policy choice: 0.2.1-rc.2 is the
- * first release whose JSONL persistence backend is an `apply()`-mounted row and
- * whose `hello` carries `kind`/`executable` — on 0.2.0-rc.x the remote world
- * never starts. Keep the two in sync by hand when the peers move.
+ * The contract is a *membership* test, not a version range: a remote launcher is
+ * usable when its version is exactly one of {@link DSH_VERIFIED_RUNTIMES}. The
+ * list is kept in lockstep with `package.json` (`engines.dsh` and every
+ * `@deepseek-ai/dsh-*` peer) by `tests/release-contract.test.ts`; widening it is
+ * a release action that adds an entry after that runtime has been exercised.
  *
- * Why not `semver`: the window is one constant, and a second, *mutable* parser
- * in the dependency tree has already cost this repo real pain (`zod` had to be
- * pinned to an exact version because a duplicate copy made `tsc` OOM, see
- * AGENTS.md). The ~70 lines below cover exactly the semantics we need — and the
- * prerelease ordering is unit-tested, which is the part a naive
- * `localeCompare` would get wrong (`rc.10` vs `rc.2`).
+ * Why not a range: an upper bound such as `<0.3.0` promises compatibility with
+ * releases that do not exist yet, and a range also admits unverified
+ * prereleases inside it (`rc.3` between `rc.2` and `rc.4`). DSH is a developer
+ * preview, so a breaking change can land in any release.
+ *
+ * Why not `semver`: a second, *mutable* parser in the dependency tree has
+ * already cost this repo real pain (`zod` had to be pinned to an exact version
+ * because a duplicate copy made `tsc` OOM, see AGENTS.md). The code below covers
+ * the semantics we need, and the prerelease ordering is unit-tested — that is
+ * the part a naive `localeCompare` gets wrong (`rc.10` vs `rc.2`).
  */
 
-/** Lowest dsh release the remote world runs on (inclusive). */
-export const DSH_MIN_VERSION = '0.2.1-rc.2'
+/** The dsh runtimes this client has verified. Membership decides; never a range. */
+export const DSH_VERIFIED_RUNTIMES: readonly string[] = ['0.2.1-rc.2']
 
-/** First dsh release the remote world is *not* known to work on (exclusive). */
-export const DSH_MAX_VERSION = '0.3.0'
+/** Human text for messages and the wizard: `0.2.1-rc.2`. */
+export const DSH_VERIFIED_SUMMARY = DSH_VERIFIED_RUNTIMES.join(' / ')
 
 /** One parsed version: three numeric segments plus dot-separated prerelease ids. */
 export interface DshVersion {
@@ -73,7 +78,10 @@ const NUMERIC_ID = /^\d+$/
  * 3. prerelease identifiers compare element-wise: numeric vs numeric by value,
  *    both alphanumeric by ASCII order, numeric **below** alphanumeric;
  * 4. a shorter identifier list that prefixes the other is smaller
- *    (`rc.2 < rc.2.1`) — the case that decided the floor of the supported window.
+ *    (`rc.2 < rc.2.1`).
+ *
+ * Used only to word a rejection and to rank scan candidates; the gate itself is
+ * the membership test in {@link isCompatibleDsh}.
  *
  * @returns negative when `a < b`, 0 when equal, positive when `a > b`.
  */
@@ -106,27 +114,48 @@ export function compareDshVersion(a: DshVersion, b: DshVersion): number {
   return 0
 }
 
-/** The parsed floor, computed once. */
-const MIN: DshVersion = parseDshVersion(DSH_MIN_VERSION) as DshVersion
-/** The parsed ceiling, computed once. */
-const MAX: DshVersion = parseDshVersion(DSH_MAX_VERSION) as DshVersion
+/**
+ * Canonical spelling of a parsed version: `major.minor.patch[-prerelease]`.
+ *
+ * Build metadata and a leading `v` are not part of the identity, so
+ * `v0.2.1-rc.2+build.7` normalizes to the string the verified list carries.
+ * @param version - the parsed version.
+ * @returns the canonical text.
+ */
+export function formatDshVersion(version: DshVersion): string {
+  const core = `${version.major}.${version.minor}.${version.patch}`
+  return version.prerelease.length === 0 ? core : `${core}-${version.prerelease.join('.')}`
+}
 
 /**
  * Whether a version line names a dsh release this plugin can drive remotely.
+ *
+ * This is a membership test over {@link DSH_VERIFIED_RUNTIMES}; unparseable text
+ * is never a member.
  * @param text - whatever `dsh --version` (or a scan record) printed.
- * @returns false for unparseable text as well as out-of-window versions.
+ * @returns true only for a verified runtime.
  */
 export function isCompatibleDsh(text: string): boolean {
   const version = parseDshVersion(text)
   if (version === undefined) return false
-  return compareDshVersion(version, MIN) >= 0 && compareDshVersion(version, MAX) < 0
+  return DSH_VERIFIED_RUNTIMES.includes(formatDshVersion(version))
 }
+
+/** The verified runtimes as parsed versions, computed once. */
+const VERIFIED = DSH_VERIFIED_RUNTIMES
+  .map(text => parseDshVersion(text))
+  .filter((version): version is DshVersion => version !== undefined)
+
+/** Lowest verified runtime, for wording a rejection. */
+const LOWEST = VERIFIED.reduce((low, current) => (compareDshVersion(current, low) < 0 ? current : low))
+/** Highest verified runtime, for wording a rejection. */
+const HIGHEST = VERIFIED.reduce((high, current) => (compareDshVersion(current, high) > 0 ? current : high))
 
 /**
  * A human-readable reason for rejecting a version line.
  *
- * Shown verbatim in the wizard's candidate list and in `reuse`-mode failures,
- * so it names the actual floor/ceiling instead of saying "unsupported".
+ * Shown verbatim in the wizard's candidate list and in `reuse`-mode failures, so
+ * it names the verified runtime instead of saying "unsupported".
  * @param text - the version line that failed {@link isCompatibleDsh}.
  * @returns one sentence; never empty.
  */
@@ -136,8 +165,11 @@ export function describeIncompatibility(text: string): string {
   if (version === undefined) {
     return trimmed === '' ? 'the launcher printed no version' : `"${trimmed}" is not a dsh version`
   }
-  if (compareDshVersion(version, MIN) < 0) {
-    return `version ${trimmed} is below the supported floor ${DSH_MIN_VERSION}`
+  if (compareDshVersion(version, LOWEST) < 0) {
+    return `version ${trimmed} is older than the verified DSH runtime ${DSH_VERIFIED_SUMMARY}`
   }
-  return `version ${trimmed} is at or above the unsupported ceiling ${DSH_MAX_VERSION}`
+  if (compareDshVersion(version, HIGHEST) > 0) {
+    return `version ${trimmed} is newer than the verified DSH runtime ${DSH_VERIFIED_SUMMARY}`
+  }
+  return `version ${trimmed} is not one of the verified DSH runtimes (${DSH_VERIFIED_SUMMARY})`
 }

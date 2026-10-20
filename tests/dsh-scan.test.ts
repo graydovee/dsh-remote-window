@@ -181,7 +181,7 @@ describe('assembleCandidates', () => {
     const old = byPath.get('/opt/old/dsh')
     expect(old?.compatible).toBe(false)
     expect(old?.selfContained).toBe(true)
-    expect(old?.reason).toContain('below the supported floor')
+    expect(old?.reason).toContain('older than the verified DSH runtime')
   })
 
   it('reports upToDate=false when the installed digest differs', () => {
@@ -202,22 +202,24 @@ describe('assembleCandidates', () => {
     expect(candidates.at(-1)?.path).toBe('/opt/old/dsh')
   })
 
-  it('ranks by (compatible && upToDate) → compatible → path, whatever the input order (D-1: no origin)', () => {
+  it('ranks usable candidates first, then by path, whatever the input order (D-1: no origin)', () => {
     // The wizard's list is ordered by usability alone; there is no "was this
-    // installed by us" tier (D-1 decision (b)), so this is the whole rule.
+    // installed by us" tier (D-1 decision (b)), so this is the whole rule. The
+    // profile block — and therefore `upToDate` — is shared by every candidate on
+    // one host, so the only tiers that can differ here are usable vs not.
     const unsorted = parseDshScanOutput([
       SCAN_MAGIC,
       'HOME\t/home/u',
       'PLUGIN\tdsh-remote-server\t0.1.0-alpha50\tabcdef',
-      // compatible, listed before an incompatible one on purpose
+      // usable, listed before the unusable ones on purpose
       'DSH\t/z/compatible\t/z/compatible\t0.2.1-rc.2\t0\t',
       'DSH\t/a/incompatible\t/a/incompatible\t0.1.0\t0\t',
-      'DSH\t/b/compatible\t/b/compatible\t0.2.1\t0\t',
+      'DSH\t/b/incompatible\t/b/incompatible\t0.2.1\t0\t',
       'END',
     ].join('\n'))
     const paths = assembleCandidates(unsorted, { profile: 'dsh-remote-server', expectedPluginSha: 'abcdef' })
       .map(candidate => candidate.path)
-    expect(paths).toEqual(['/b/compatible', '/z/compatible', '/a/incompatible'])
+    expect(paths).toEqual(['/z/compatible', '/a/incompatible', '/b/incompatible'])
     // Same host, same DSH_HOME: the profile block (and so `upToDate`) is shared.
     expect(new Set(assembleCandidates(unsorted, { profile: 'dsh-remote-server', expectedPluginSha: 'abcdef' }).map(candidate => candidate.profile?.upToDate))).toEqual(new Set([true]))
   })

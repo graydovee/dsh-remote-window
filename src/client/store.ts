@@ -285,6 +285,8 @@ export interface AppState {
    */
   workspaces: WorkspaceRow[]
   pluginVersion: string
+  /** The remote launcher runtimes this client accepts, straight from `/api/state`. */
+  verifiedRuntimes: string[]
   defaultProfile: string
   stateLoaded: boolean
   stateLoading: boolean
@@ -448,6 +450,7 @@ function initialState(): AppState {
     serverWorkspaces: {},
     workspaces: [],
     pluginVersion: '',
+    verifiedRuntimes: [],
     defaultProfile: '',
     stateLoaded: false,
     stateLoading: false,
@@ -1642,6 +1645,7 @@ async function refreshState(): Promise<void> {
       workspaceRefs: value.workspaceRefs,
       serverWorkspaces: value.serverWorkspaces,
       pluginVersion: value.pluginVersion,
+      verifiedRuntimes: value.verifiedRuntimes ?? [],
       defaultProfile: value.defaultProfile,
       // The host platform gates the WSL method; it must ride the *successful*
       // commit too (the retry branch below is only reached on a first-load
@@ -1684,6 +1688,7 @@ async function refreshState(): Promise<void> {
             workspaceRefs: value.workspaceRefs,
             serverWorkspaces: value.serverWorkspaces,
             pluginVersion: value.pluginVersion,
+            verifiedRuntimes: value.verifiedRuntimes ?? [],
             defaultProfile: value.defaultProfile,
             platform: value.platform ?? '',
             stateLoaded: true,

@@ -130,7 +130,7 @@ const STATE = {
   targets: [],
   workspaceRefs: [],
   serverWorkspaces: {},
-  pluginVersion: '0.1.0-alpha1',
+  pluginVersion: '0.1.0-alpha.1',
   defaultProfile: 'web',
   platform: 'darwin',
 }

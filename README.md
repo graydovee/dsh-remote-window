@@ -2,159 +2,211 @@
 
 English | [中文](README-zh.md)
 
-`dsh-remote-workspace` adds remote workspaces to the DeepSeek Harness **web** profile. It keeps the
-agent loop, model calls and credentials on your computer while the remote machine owns the files,
-commands and session logs. You can therefore reconnect the same workspace from another computer
-without copying a local session directory.
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-brightgreen.svg)](package.json)
+[![dsh](https://img.shields.io/badge/dsh-0.2.1--rc.2-blue.svg)](#compatibility)
+[![npm](https://img.shields.io/npm/v/dsh-remote-workspace.svg)](https://www.npmjs.com/package/dsh-remote-workspace)
 
-The project has two repositories:
+Open an SSH host as a DeepSeek Harness workspace. The agent loop, model calls and credentials stay on
+your computer; the files, the commands and the session logs live on the remote machine, so another
+computer can pick the same workspace up without copying a session directory.
 
-- [client](https://github.com/graydovee/dsh-remote-workspace) — the DSH plugin, browser UI, SSH/WSL
-  transport and provisioning code.
-- [server](https://github.com/graydovee/dsh-remote-workspace-server) — the headless DSH plugin that
-  runs on the target and serves the filesystem, processes, sandbox bridge and remote session store.
+## Why this exists
 
-The client normally deploys and starts the server for you. There is no listening port on the target;
-the server speaks a framed RPC protocol over the SSH or WSL stdio channel.
+Harness works on the machine that runs it. When the work has to happen somewhere else — a build box, a
+GPU host, a staging server — there are three options, and only the third one keeps the session intact:
 
-## What you can do
+1. **Copy the files back.** A mirror drifts, conflicts, and quietly breaks the moment two people touch
+   the same tree.
+2. **Run the agent on the remote.** Then the model credentials and the conversation live there too, and
+   every machine needs its own install.
+3. **Keep the agent here and the world there.** That is this plugin: a headless DSH profile runs on the
+   target, and the client speaks a framed RPC protocol to it over SSH (or WSL) stdio.
 
-- Add an SSH host, or a WSL distribution on Windows.
-- Browse remote directories and register them as workspaces.
-- Start, resume, rename, fork, pin and archive sessions whose logs stay on the target.
-- Run DSH filesystem, process, terminal and sandbox operations in the remote execution world.
-- Reuse a compatible `dsh` already installed on the target, upload a runtime package from the client,
-  or download a published package for the target architecture.
-- Share one remote workspace between multiple client machines because the workspace registry and
-  session logs are server-authoritative.
+Three invariants follow from that split, and they are the reason the code is shaped the way it is:
 
-## Requirements
+- **Credentials never cross the line.** Model keys and SSH secrets stay in the local credential store;
+  errors, logs and streamed details are scrubbed before they are shown.
+- **The target listens on nothing.** There is no port to expose: the server half is a child process on
+  the SSH channel's stdio.
+- **One server process per target.** Browsing and agent work share one channel, which is what keeps a
+  single session writer and a single workspace registry authoritative.
 
-| Location | Requirement |
-| --- | --- |
-| Local machine | DeepSeek Harness `0.2.1-rc.2`, the `web` profile, and Node `^22.19.0 \|\| >=24.0.0` |
-| SSH target | Reachable `sshd`, a POSIX `/bin/sh`, `tar`, `chmod`, and a writable home directory |
-| WSL target | Windows with `wsl.exe` and a usable POSIX distribution |
-| Network | The local machine must reach the SSH target; package download mode also needs release access |
+If you only need "edit files on one server", stop here and use the official SSH profile
+(`dsh-ssh` + `fs-ssh` + `subprocess-ssh` + `sandbox-ssh`): it is smaller and it needs no plugin.
 
-The target does not need Node, npm or DSH when you choose upload or download mode. The client stages
-the matching runtime under `~/.dsh/server/`. Windows is supported as a **client host for WSL targets**;
-the remote execution world itself is POSIX.
+## How it compares
 
-## Install in a web profile
+| | Official SSH profile | File-routing plugins | This plugin |
+| --- | --- | --- | --- |
+| Where tools execute | remote | remote | remote |
+| Several targets in one UI | one profile per host | yes | yes |
+| Session logs | local | local | **remote, server-authoritative** |
+| Sandbox | remote provider | host-side policy | **remote provider + policy** |
+| Continuation from another computer | no | no | **yes** |
 
-Build and pack the plugin from a checkout:
+The distinguishing question is not "does it run remotely" — it does in all three columns. It is whether
+the session log and the workspace registry are authoritative on the target, which is what makes several
+clients and several days of work line up.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph local [Your computer]
+    UI[Web UI: sidebar, wizard, sessions]
+    LOOP[Agent loop + model client]
+    CRED[Credential store]
+    REALM[Per-target realm<br/>fs / subprocess / sandbox / shell]
+  end
+  subgraph remote [SSH or WSL target]
+    SRV[Headless DSH profile<br/>remote-workspace-server]
+    WORLD[Official providers<br/>fs, process, terminal, sandbox]
+    LOG[(JSONL session logs<br/>workspace registry)]
+  end
+  UI --> LOOP
+  LOOP --> REALM
+  LOOP -.-> CRED
+  REALM -->|framed RPC over stdio| SRV
+  SRV --> WORLD
+  SRV --> LOG
+```
+
+The local half owns the agent loop, the model, the credentials and the browser UI. The remote half owns
+the files, the processes, the sandbox backend and the authoritative session log. Each target gets its own
+isolate realm, so two targets cannot share a session world by accident; if the realm fails to mount, the
+session refuses to run instead of silently executing locally. The wire protocol is described in
+[doc/architecture.md](doc/architecture.md) and [doc/api-contract.md](doc/api-contract.md).
+
+## Feature breakdown
+
+**Remote execution world.** DSH's own filesystem, process, terminal and sandbox providers are pointed at
+the target through one `ctx.ssh` adapter. The `read` / `write` / `edit` / `glob` / `grep` tools and the
+`bash` tool therefore act on the remote tree with no mirror and no special-purpose tools to learn.
+
+**Server-authoritative sessions.** New, open, resume, rename, fork, pin and archive all read and write the
+JSONL log on the target. Renaming appends a `session/title` event without opening the session; forking
+uses the shell's own fork and keeps the inherited event metadata; pin and archive store view state
+locally and never rewrite the log.
+
+**Three ways to get a runtime.** Probe the target read-only, then *reuse* an installed `dsh` whose version
+is verified, *upload* a package built here for the target's OS and CPU, or *download* the published
+package for that architecture and verify its checksum before uploading. Only one server process is
+started per target.
+
+**Host keys are pinned.** The first connection shows the host key's SHA-256 and waits for an explicit
+confirmation; a later key change stops the connection. WSL is a local process and has no host key step.
+
+**Sandbox and permissions.** The remote profile mounts the official sandbox provider and policy, so writes
+are confined to the workspace root where a backend exists. The client asks for the facts rather than
+assuming them: when the target has no confinement backend the world reports partial enforcement and the
+command is executed there.
+
+**WSL.** On Windows the same plugin can open a WSL distribution as the target. The distribution drives a
+POSIX world (multiline scripts go through `/bin/sh -s`), and it needs no host key confirmation.
+
+**Several clients, one workspace.** Because the registry and the logs are remote, a second computer that
+connects to the same target sees the same workspaces and can continue the same session.
+
+## Quick start
+
+Install into the `web` profile:
 
 ```bash
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm build
+dsh plugin --profile web add dsh-remote-workspace
+```
+
+Or build from a checkout and install the tarball:
+
+```bash
+pnpm install && pnpm typecheck && pnpm test && pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
 dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
-Restart the process that serves `dsh web`, then reload the page. Install this plugin in the `web`
-profile; the desktop profile does not provide the browser module table and SSH dependencies used by
-this package.
+Restart the process that serves `dsh web` and reload the page. Then:
 
-When installing from a Git dependency, allow the package's build script in the profile's
-`pnpm-workspace.yaml`:
+1. Open **Remote Workspaces** in the sidebar and choose **New connection**.
+2. Pick `SSH` (or `WSL` on Windows), fill in the alias and the target details, and confirm the host key
+   fingerprint on first contact.
+3. Run the read-only probe, choose a runtime source, and connect.
+4. Use the plus action on the connection row to browse the target and add a directory as a workspace.
+5. Open the blank row under the workspace for a new session, or an existing row to continue one.
 
-```yaml
-allowBuilds:
-  dsh-remote-workspace: true
+The agent works in the remote tree from then on. `bash` runs there, files are read and written there, and
+the session log is written there.
+
+## Compatibility
+
+Verified against exactly this runtime:
+
+| Plugin | Verified DSH runtime | Status |
+| --- | --- | --- |
+| 0.1.0-alpha.1 | 0.2.1-rc.2 | verified |
+<!-- verified-runtimes -->
+
+The declaration is a **precise version**, not a range: the manifest pins `engines.dsh` and every
+`@deepseek-ai/dsh-*` peer to the runtime above, and the client accepts a remote launcher only when its
+version is one of the verified runtimes. DSH is a developer preview, so an unverified release is not
+promised to work — it is refused with an actionable message instead of failing halfway.
+
+If you intentionally run another DSH version, exempt the exact pair in the profile and treat the result as
+unsupported:
+
+```bash
+dsh plugin --profile web allow-version dsh-remote-workspace@<installed version> \
+  --dsh-version <runtime version> --accept-risk
 ```
 
-## Connect a target
-
-Open **Remote Workspaces** in the sidebar and choose **New connection**.
-
-1. Choose `SSH`, or `WSL` on Windows.
-2. Enter an alias and the target details. SSH supports an agent, a private key, or a password. A
-   password or key passphrase is used for the connection and is kept in the local credential store;
-   it is never part of a workspace record or sent to the server plugin.
-3. Run the read-only probe, choose a runtime source, then connect:
-
-   | Choice | Behavior |
-   | --- | --- |
-   | Reuse installed DSH | Validates a compatible launcher already on the target and deploys only this plugin's profile files. |
-   | Upload server package | Builds or uses a verified local package for the target OS/CPU, uploads it, and installs it under `~/.dsh/server/`. |
-   | Download server package | Downloads the matching release asset on the local side, verifies its SHA-256 companion, then uploads it to the target. |
-
-   For SSH, the first connection displays the host's SHA-256 key fingerprint. Explicitly trust it to
-   continue. A later key change stops the connection; it is never silently accepted. WSL is a local
-   process and has no host key prompt.
-
-## Work with sessions
-
-Use the plus action on a connection to browse and add a remote directory. A workspace row contains
-its sessions and a blank row for a new session.
-
-| Action | Result |
-| --- | --- |
-| Connect / reconnect / disconnect | Opens or closes the target's one shared channel. |
-| Add workspace | Registers the directory in the target's server-side workspace registry. |
-| Open / continue | Resumes a session from the target's JSONL log. |
-| New session | Creates a session whose events are written to the target. |
-| Rename session | Appends a `session/title` event remotely without opening the session. |
-| Fork session | Uses the shell's normal fork operation and preserves inherited event metadata. |
-| Pin / archive | Stores client-side view state; it does not rewrite the remote log. |
-| Rename workspace | Changes the server-side display title; the physical directory does not move. |
-| Remove workspace | Removes the registry entry. Existing session logs remain on the target. |
-| Delete connection | Forgets local target metadata and credentials. It does not delete remote files or logs. |
-
-Only one server process is started per target. Browsing and agent operations share its channel, which
-prevents split session handles and conflicting write leases.
+That exemption covers the plugin on the local host only. A remote launcher of another version cannot be
+exempted: install the verified runtime on the target, or choose *Upload* / *Download* so the client
+deploys it. Runtime packages currently cover `linux-x64-gnu`, `linux-arm64-gnu`, `darwin-x64` and
+`darwin-arm64`; a Windows host reaches a POSIX world through WSL.
 
 ## Data and security
 
 | Location | Contents |
 | --- | --- |
-| Target `~/.dsh/remote-server-sessions/` | Authoritative remote session logs |
-| Target `~/.dsh/remote-server/` | Server identity, workspace index and status manifest |
+| Target `~/.dsh/remote-server-sessions/` | Authoritative session logs |
+| Target `~/.dsh/remote-server/` | Server identity, workspace registry and status manifest |
 | Target `~/.dsh/server/` | Uploaded Node/DSH runtime and the deployed server bundle |
-| Local DSH storage | Target records, workspace references and pin/archive view state |
+| Local DSH storage | Target records, workspace references, pin/archive view state |
 | Local `~/.dsh/remote-assets/` | Verified Node and server-package cache |
 
-Model API keys and SSH credentials stay on the local machine. HTTP routes are same-origin/trusted,
-request bodies are size-limited, and displayed errors are scrubbed of secrets. Remote sandbox support
-depends on the target's available backend; when no backend exists, the remote world reports partial
-enforcement and executes the requested argv there.
+Model API keys and SSH credentials stay on the local machine: the browser never receives a secret, and
+every error, log line and streamed detail passes through a scrubber. HTTP routes are same-origin and
+trusted-host checked with a body size limit. The credential file itself is written by DSH's credential
+store (`~/.dsh/.credentials.yaml`, mode `0600`); this plugin only references records in it.
 
-## Compatibility and platform limits
+## Known limitations
 
-This release is tested against exactly DSH `0.2.1-rc.2`. The plugin and server package declare that
-version precisely and reject other releases before the remote world starts. Runtime release assets
-currently cover `linux-x64-gnu`, `linux-arm64-gnu`, `darwin-x64` and `darwin-arm64`. A Windows host
-uses WSL; there is no native Windows remote package.
-
-If you intentionally test another DSH version, use the profile's risk-acceptance command and expect
-unsupported behavior:
-
-```bash
-dsh plugin --profile web allow-version dsh-remote-workspace@<installed-version> \
-  --dsh-version <dsh-version> --accept-risk
-```
+- **The version coupling is deliberate.** One verified runtime per release; widening it is a release
+  action backed by a deployment, not a range edit.
+- **No port forwarding and no terminal panel yet.** Remote processes are reachable through `bash`; there
+  is no local forward to a remote dev server, and no interactive terminal tab.
+- **The remote world is POSIX.** A native Windows target is not supported; Windows reaches WSL.
+- **The web profile only.** The desktop profile does not provide the browser module table and SSH
+  dependencies this package uses.
+- **`desktop`/`headless` profiles** are not supported targets for the UI.
 
 ## Troubleshooting
 
-| Symptom | Check |
+| Symptom | What to check |
 | --- | --- |
-| `incompatible-version` | Install DSH `0.2.1-rc.2` in the local web profile. |
-| Remote Workspaces is missing | Confirm the plugin is installed in `web`, restart `dsh web`, and reload the page. |
-| The first view says there are no workspaces | Wait for the server list to load, then use Refresh. |
-| SSH fails before provisioning | Check the account, private-key permissions, agent and fingerprint; `ssh -v <host>` is useful. |
+| `incompatible-version` | Install DSH `0.2.1-rc.2` in the local `web` profile, or exempt that exact pair (see Compatibility). |
+| No Remote Workspaces section | The plugin must be installed in `web`; restart `dsh web` and reload the page. |
+| A reused launcher is rejected | The target's `dsh` is not the verified runtime — install it there, or switch to Upload/Download. |
+| The first view says there are no workspaces | Wait for the server list to load, then Refresh. |
+| SSH fails before provisioning | Check the account, key permissions, agent and fingerprint; `ssh -v <host>` is a good next step. |
 | `unsupported remote session protocol` | Reconnect so the client redeploys the matching server bundle. |
 | A command reports no usable sandbox backend | The target has no confinement backend; this is the documented partial-enforcement path. |
-| A reused launcher is rejected | Select a DSH launcher whose `--version` is compatible, or choose Upload server package. |
 
 ## Development
 
-Read [AGENTS.md](AGENTS.md) before changing code. It defines the client/server byte-for-byte sync
-contract, storage and security invariants, build targets, test matrix and release procedure. The
-server repository has its own [README](https://github.com/graydovee/dsh-remote-workspace-server) and
-[AGENTS.md](https://github.com/graydovee/dsh-remote-workspace-server/blob/main/AGENTS.md).
+[AGENTS.md](AGENTS.md) holds the development contract: cross-repository byte-for-byte files, local
+commands, storage and security invariants, release procedure. The roadmap and the decisions behind it are
+in [doc/milestone.md](doc/milestone.md). The server half lives in
+[dsh-remote-workspace-server](https://github.com/graydovee/dsh-remote-workspace-server).
 
 ## License
 

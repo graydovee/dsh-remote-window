@@ -18,7 +18,7 @@
 > **修订 v3（2026-10-18，Developer A/B 契约偏差裁决）**：
 > ① §9.2 启动命令字面 = `PATH=… exec <launcher>`（**不是** `node <launcher>`，实测部署 launcher 是
 > `/bin/sh` 包装脚本）+ 两条 marker 并存与 `decidePlugin` 权威；
-> ② §8 显式声明 `0.3.0-rc.1` 兼容；③ §7.2 补 `TOOL` 记录与 `probe.tools` 映射、nodePath 三级判定、
+> ② §8 改「已验证运行时集合」（2026-10-20 修订，推翻 10-18 的区间裁决）；③ §7.2 补 `TOOL` 记录与 `probe.tools` 映射、nodePath 三级判定、
 > `truncated`；④ §2.2 补客户端 host-key 责任与「已确认未 pin」；⑤ §6 明确
 > `ConnectDraft.packageSource` 退役（`connectionMode` 独占）；⑥ §12/§13 命名改 `assembleCandidates()`、
 > 删掉 sshd 夹具、验收 SSH 目标改真实主机；⑦ 新增 §12「已知契约偏差」。
@@ -73,7 +73,7 @@
 
 | 路由 | 状态 | 说明 |
 |---|---|---|
-| `state` | **变更（P0）** | 响应改为 `targets` / **`workspaceRefs`** / **`serverWorkspaces`** / `pluginVersion` / `defaultProfile` / `platform`（§15） |
+| `state` | **变更（P0）** | 响应改为 `targets` / **`workspaceRefs`** / **`serverWorkspaces`** / `pluginVersion` / **`verifiedRuntimes`** / `defaultProfile` / `platform`（§15） |
 | `wsl-distros` | 不变 | 非 win32 = `400 unsupported` |
 | `ssh-aliases` / `alias-prefill` | 不变 | `~/.ssh/config` |
 | `dsh-scan` | 新增 | 连接前只读扫描：架构探测 + 远端已装 dsh 候选 + 本地包缓存状态（§2） |
@@ -173,6 +173,7 @@
         "profile": {
           "name": "dsh-remote-server",
           "pluginVersion": "0.1.0-alpha50",
+          "verifiedRuntimes": ["0.2.1-rc.2"],
           "pluginSha256": "…",
           "upToDate": true               // 与本机 profile 文件集的 sha256 相同
         },
@@ -214,7 +215,7 @@
 | `candidates[].nodePath` | 见下方「nodePath 判定顺序」（**实测有坑，不要简化**） |
 | `candidates[].selfContained` | `nodePath === undefined`：启动器不需要解释器（无 shebang 的原生二进制）；**或**是需要 node 但远端一个都没找到（此时 `planProvision` 会部署我们自己的 Node） |
 | `candidates[].profile` | 该 dsh 的 `DSH_HOME/profiles/<name>/node_modules/dsh-remote-workspace/package.json` 的 `version` + `.dsh-rw-plugin.json` 的 `sha256`；`upToDate` 由 host 用 `sha256OfFiles()` 比对。**profile 级、不是每个 launcher 一份** |
-| `candidates[].reason` | 例如 `version 0.1.9 is below the supported floor 0.2.1-rc.2`；`--version` 没输出时是 `the launcher did not report a version (exit 127)` |
+| `candidates[].reason` | 例如 `version 0.1.9 is older than the verified DSH runtime 0.2.1-rc.2`；`--version` 没输出时是 `the launcher did not report a version (exit 127)` |
 | **排序** | 见下方「排序规则」；最多返回 12 条 |
 
 **nodePath 判定顺序（Leader 2026-10-18 在 `Ubuntu-22.04` 实测后纠正）**
@@ -759,32 +760,38 @@ export interface DshScan {
 
 ## 8. 版本兼容判定
 
-常量（`src/provision/version-range.ts`，与 `package.json` 的 peer 区间**同源**）：
+契约是**已验证运行时集合**，不是区间：远端 launcher 可用 ⟺ 它的版本**恰好等于** `DSH_VERIFIED_RUNTIMES`
+中的一项。常量（`src/provision/version-range.ts`）：
 
 ```ts
-export const DSH_MIN_VERSION = '0.2.1-rc.2'   // 实测基线：apply() 挂载式持久后端 + hello 的 kind/executable
-export const DSH_MAX_VERSION = '0.3.0'        // 开区间
-export function parseDshVersion(text: string): DshVersion | undefined   // 容忍前缀 v、首行带噪声时取首个匹配
-export function compareDshVersion(a: DshVersion, b: DshVersion): number
-export function isCompatibleDsh(text: string): boolean
-export function describeIncompatibility(text: string): string           // 给 candidates[].reason
+export const DSH_VERIFIED_RUNTIMES: readonly string[] = ['0.2.1-rc.2']   // 唯一事实来源
+export const DSH_VERIFIED_SUMMARY = DSH_VERIFIED_RUNTIMES.join(' / ')    // 给文案与向导
+export function parseDshVersion(text: string): DshVersion | undefined     // 容忍前缀 v、首行带噪声时取首个匹配
+export function formatDshVersion(version: DshVersion): string            // 归一化：丢 v 与 +build
+export function compareDshVersion(a: DshVersion, b: DshVersion): number   // 只用于措辞与候选排序
+export function isCompatibleDsh(text: string): boolean                    // 集合成员判定
+export function describeIncompatibility(text: string): string             // 给 candidates[].reason
 ```
 
 算法（实现必须与这段话逐条对应，并有单测）：
 1. 从文本中提取第一个 `^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?`；提取不到 = 不可解析 = 不兼容。
-2. 逐段比较 `major/minor/patch`（数值）。
-3. 有预发布段 < 无预发布段（`0.2.1-rc.2 < 0.2.1`）。
-4. 预发布段按 `.` 切成 identifier：**两边都是数字** → 数值比较；**都是字母数字** → 字典序（ASCII）；
-   **数字 < 字母数字**；前缀相同则短的小（`rc.2 < rc.2.1`）。
-5. 兼容 = `compare(v, MIN) >= 0 && compare(v, 0.3.0) < 0`。
+2. 归一化为 `major.minor.patch[-prerelease]`（忽略 `v` 前缀与 `+build` 元数据）。
+3. **兼容 = 归一化结果 ∈ `DSH_VERIFIED_RUNTIMES`**。没有上下界比较参与门禁。
+4. `compareDshVersion` 只承担两件事：措辞（"older/newer than the verified runtime"）与扫描候选排序。
+   预发布语义必须保留：`0.2.1-rc.2 < 0.2.1`、`rc.10 > rc.2`、`rc.2 < rc.2.1`、数字 < 字母数字。
 
-**边界显式结论（Leader 裁决 2026-10-18）**：`0.3.0-rc.1` **属于兼容**——按 npm/semver 语义
-`0.3.0-rc.1 < 0.3.0`（预发布段 < 同号正式版），所以它落在 `[0.2.1-rc.2, 0.3.0)` 内。
-`0.3.0` 本身、`0.3.0-rc.0` 之后的**正式** `0.3.x`、以及 `0.2.1-rc.1` 都不兼容。
-单测必须钉住这几条：`0.3.0-rc.1` 兼容 / `0.3.0` 不兼容 / `0.2.1-rc.1` 不兼容。
+**边界显式结论（2026-10-20 修订，推翻 2026-10-18 的区间裁决）**：`0.2.1`、`0.2.2`、`0.2.9-rc.1`、
+`0.3.0-rc.1`、`0.3.0`、`0.2.1-rc.1` 全部**不兼容**；只有 `0.2.1-rc.2`（含 `v` 前缀、尾点、`+build` 写法）
+兼容。单测必须钉住这批用例。
 
-> 为什么不用 `semver`：区间是一个固定常量，30 行足够；新增依赖会动 `dependencies` 与锁文件，
-> 而 `zod` 已经被迫钉死（见 AGENTS「编码规约」），不想再引入第二个可变的解析器。
+为什么不是区间：① `engines.dsh` 与全部 dsh peer 都是精确值，DSH 启动时按精确值裁决，区间会先放行再在
+远端启动时被拒，形成两段式失败；② `<0.3.0` 这类上界是对未发布版本的提前担保，DSH 是开发者预览版，
+破坏性变更可以出现在任何一版；③ 区间会放进未验证的中间版本（`rc.3` 落在 `rc.2` 与 `rc.4` 之间）。
+扩窗是一次发布动作：验证过新运行时后往集合里加一项（`node scripts/bump-dsh-version.mjs --to <版本>`），
+`tests/release-contract.test.ts` 守住声明与集合的一致性。
+
+> 为什么不用 `semver`：新增依赖会动 `dependencies` 与锁文件，而 `zod` 已经被迫钉死（见 AGENTS
+> 「不能违反的行为约束」），不想再引入第二个可变的解析器。成员判定本来也不需要区间代数。
 
 ---
 
@@ -1036,9 +1043,10 @@ export const targetRecordSchema = z.object({
 - [ ] **路由层回归**：`connect/start` 带 `packageSource: 'reuse'` 但不带/空 `reuseLauncherPath`
       → HTTP `400`（`code: 'bad-request'`，message 点名该字段），且 `connectRequestFrom`
       会把两个字段一起搬进 `ConnectRequest`（`tests/connect-request.test.ts`；QA 实测 alpha51 丢过）
-- [ ] `version-range` 单测：`0.2.1-rc.2` 兼容、`0.2.1-rc.10 > 0.2.1-rc.2`、`0.2.0-rc.9` 不兼容、
-      **`0.3.0-rc.1` 兼容**、`0.3.0` 不兼容、`0.2.1-rc.1` 不兼容、`0.2.1` 兼容、`garbage` 不兼容、
-      `v0.2.1-rc.2`（带 v）兼容
+- [ ] `version-range` 单测：`0.2.1-rc.2`（含 `v` 前缀、尾点、`+build`）兼容；`0.2.1`、`0.2.1-rc.1`、
+      `0.2.1-rc.10`、`0.2.2`、`0.2.9-rc.1`、`0.3.0-rc.1`、`0.3.0`、`garbage`、空串全部不兼容
+- [ ] `release-contract` 单测：`engines.dsh` ∈ `DSH_VERIFIED_RUNTIMES`、每个 dsh peer/devDep 精确且相等、
+      两份 README 含该版本且 `##` 标题集合逐字一致、`package.json` 版本与 `src/server/index.ts` 默认值一致
 - [ ] `plan` 单测：reuse 命中 / node 缺失需部署 Node / 版本不兼容 / selfContained
 - [ ] **手工关键用例**：对一台**已用「上传 server 包」部署过**的远端跑 `dsh-scan`，
       `~/.dsh/server/dsh/node_modules/.bin/dsh` 这条候选必须 `compatible: true` 且
@@ -1255,6 +1263,7 @@ export const workspaceRefSchema = z.object({
     "rt-1a2b3c4d": [ /* ServerWorkspace[]，= reg.list 的结果，见 §14.1 */ ]
   },
   "pluginVersion": "0.1.0-alphaNN",
+  "verifiedRuntimes": ["0.2.1-rc.2"],
   "defaultProfile": "dsh-remote-server",
   "platform": "win32"
 }

@@ -647,6 +647,12 @@ function ReusePanel(props: { state: AppState }): ReactElement | null {
         </Button>
       </div>
 
+      {props.state.verifiedRuntimes.length > 0 && (
+        <p className="dsh-rw-hint">
+          {t('connect.scan.verified', { version: props.state.verifiedRuntimes.join(' / ') })}
+        </p>
+      )}
+
       {dshScan.fingerprint !== undefined && (
         <>
           <p className="dsh-rw-hint">{t('connect.scan.hostKey.pending')}</p>
