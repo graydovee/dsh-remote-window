@@ -136,6 +136,19 @@ export interface RemoteSession {
   title?: string
   /** Last activity in the log (epoch milliseconds), for the row's time column. */
   updatedAt?: number
+  /**
+   * The log holds **no `turn/start`** yet: a saved draft, not a conversation.
+   *
+   * `prepare-workspace` plus the shell's own `startSession` create and persist
+   * that log (a few hundred bytes of session/permission/sandbox headers), so the
+   * draft is *reusable* — the next 新会话 click reopens the same blank instead of
+   * minting another one — but it is still not a row: the tree hides it and shows
+   * one temporary 「新会话」 row above the list instead.
+   *
+   * Absent from hosts that predate the flag; `undefined` means "no evidence it is
+   * a draft", so it is treated as a stored conversation (never hide a real one).
+   */
+  draft?: boolean
 }
 
 /** Response of `/api/ssh-aliases`. */
@@ -348,6 +361,44 @@ export interface OpenWorkspaceResult {
   sessionId: string
 }
 
+/**
+ * Response of `/api/prepare-workspace`: a **materialized workspace without a
+ * session**.
+ *
+ * This is what the official new-conversation draft needs and `open-workspace`
+ * deliberately is not: the row (server `reg.create`, local stub, plugin record
+ * and — for this path only — the official shell workspace row) must exist before
+ * the shell can bind a draft to it, but no remote session may be created. The
+ * shell creates that session itself on the first message
+ * (`uiWorkspace.startSession` → `sessions.create` → routing `create(header.cwd)`).
+ *
+ * The route is **idempotent** (same `(targetId, path)` keeps the record id, does
+ * not re-register, creates no session) and only refreshes `lastOpenedAt`, so the
+ * client calls it before *every* draft: the startup sweep and 刷新
+ * (`cleanup-shell-workspaces`) delete the shell rows under the stubs, which
+ * invalidates a cached `officialWorkspaceId`.
+ */
+export interface PrepareWorkspaceResult {
+  /** The plugin's own row id (`wr-…`): `/api/sessions`, flags and pin/archive take it. */
+  workspaceId: string
+  /** Server-authoritative workspace id (16 hex). */
+  remoteWorkspaceId: string
+  /**
+   * Local stub directory — exactly the `header.cwd` of the draft session the
+   * shell creates (the realm rewrites it to the remote path).
+   */
+  stubPath: string
+  /**
+   * Official shell workspace id, the argument
+   * `uiWorkspace.startSession(workspaceId, …)` takes. Always present on
+   * success: a missing row fails the route with `shell-workspace-unavailable`
+   * rather than handing back an unbindable draft.
+   */
+  officialWorkspaceId: string
+  /** Echo of the request. */
+  targetId: string
+}
+
 /** The four progress steps the server reports over SSE. */
 export type ConnectStep = 'connect' | 'probe' | 'runtime' | 'upload' | 'start'
 
@@ -488,6 +539,28 @@ export const api = {
   /** Open a remote directory as a workspace and create its session. */
   openWorkspace(targetId: string, path: string, title?: string): Promise<OpenWorkspaceResult> {
     return call<OpenWorkspaceResult>('open-workspace', title === undefined ? { targetId, path } : { targetId, path, title })
+  },
+
+  /**
+   * Materialize one remote directory as a workspace **without creating a
+   * session** (the official new-conversation draft).
+   *
+   * The row must exist before the shell can bind a draft to it — the official
+   * `uiWorkspace.startSession(workspaceId)` resolves its workspace from the
+   * shell's own list — but this call must not create the remote session: the
+   * shell's own `sessions.create` does that lazily, and the plugin's routing
+   * turns that into `persist.create` on the target (`header.cwd` is the stub
+   * returned here).
+   * @param targetId - the connected host owning the directory.
+   * @param path - absolute remote directory.
+   * @param title - display title; the server normalizes it and defaults to the
+   *   last path segment.
+   */
+  prepareWorkspace(targetId: string, path: string, title?: string): Promise<PrepareWorkspaceResult> {
+    return call<PrepareWorkspaceResult>(
+      'prepare-workspace',
+      title === undefined ? { targetId, path } : { targetId, path, title },
+    )
   },
 
   /**

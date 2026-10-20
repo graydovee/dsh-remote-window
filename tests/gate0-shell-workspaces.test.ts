@@ -21,6 +21,12 @@
  * These tests pin the switch itself: with `DSH_RW_NO_SHELL_WORKSPACES=1` the
  * registry is never touched, while the stub path (ours, used for routing) still
  * comes from the caller.
+ *
+ * One caller overrides the switch: `prepareWorkspace` (`prepare-workspace`, the
+ * lazy-create 新会话 draft) passes `force: true`, because the official draft page
+ * resolves its workspace from the shell's own list and therefore needs the row.
+ * `openWorkspace`/`resumeSessionOnce` still pass no `force` — Gate 0 holds for
+ * everything that creates or resumes a session.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
@@ -108,6 +114,16 @@ describe('officialWorkspaceFor', () => {
     expect(registry.create).toHaveBeenCalledTimes(1)
     expect(registry.create).toHaveBeenCalledWith('/home/u/.dsh/remote-workspaces/rt-1/abcd', 'projects · box')
     expect(official?.id).toBe('official-1')
+  })
+
+  it('registers for the draft path even though the switch is off (force: true)', async () => {
+    // The default environment: the switch is off (see the first describe), and
+    // the draft path still needs a bindable row.
+    const { registry } = fakeRegistry()
+    const official = await officialWorkspaceFor({ registry, canonicalStub: '/stub', shellTitle: 'w · target', force: true })
+    expect(official?.id).toBe('official-1')
+    expect(registry.create).toHaveBeenCalledTimes(1)
+    expect(registry.create).toHaveBeenCalledWith('/stub', 'w · target')
   })
 
   it('tolerates a missing registry (no shell service in this host)', async () => {

@@ -42,6 +42,18 @@ import { REMOTE_SESSION_PROTOCOL, type WorkspaceId, type RemoteSessionSummary, t
  */
 const BROWSE_IDLE_MS = 120_000
 
+/**
+ * Largest log worth reading to decide whether a session is still a draft.
+ *
+ * A freshly opened draft is a handful of events: `session`, `permission/preset`,
+ * `sandbox/mode`, `approval/policy` — about 324 B, and it carries no `turn/start`.
+ * Once a turn starts the title service writes a title with it, so the session stops
+ * being a scan candidate anyway; this ceiling only keeps a pathological
+ * untitled-but-huge log from being read over SSH. Past it the answer is
+ * `draft = false`, which only ever shows a row we would otherwise hide.
+ */
+const DRAFT_SCAN_MAX_BYTES = 262_144
+
 /** One browser-facing connection attempt, driven by an SSE stream. */
 export interface ConnectTicket {
   readonly id: string
@@ -156,6 +168,16 @@ export interface RemoteSessionEntry {
   readonly title?: string
   /** Time of the log's last event (epoch ms): what the row's time column shows. */
   readonly updatedAt?: number
+  /**
+   * The session is a **saved draft**, not a conversation: its log has no
+   * `turn/start`, which is the official definition of a blank session.
+   *
+   * Present only when true — an absent field means "not a draft" (or that the check
+   * could not be read, which degrades to the same thing). The tree keeps drafts
+   * out of the session rows but shows the open one as a temporary 新会话 row, so a
+   * draft is reusable without ever posing as a conversation.
+   */
+  readonly draft?: boolean
 }
 
 /**
@@ -379,6 +401,15 @@ export class RemoteWorkspaces {
   /** Serializes resumes per session id; see {@link resumeSession}. */
   private readonly resumeQueue = new Map<string, Promise<void>>()
   private readonly presetDisposers = new Map<string, () => Promise<void>>()
+  /**
+   * Draft verdicts by `targetId \0 workspaceId \0 sessionId`, keyed on log size.
+   *
+   * Same idea as a title memo: a session's log only ever grows, so the stored
+   * `sizeBytes` is the version stamp — the first message changes it and the entry
+   * is recomputed on the next list. Only *successful* reads are stored, so a
+   * transient channel failure is retried rather than remembered as "not a draft".
+   */
+  private readonly draftCache = new Map<string, { readonly sizeBytes: number | undefined; readonly draft: boolean }>()
   /** Per-target `reg.list` cache (memory only, ≤ SERVER_LIST_TTL_MS; architecture A38). */
   private readonly serverWorkspaceCache = new Map<string, { readonly items: readonly RemoteWorkspaceSummary[]; readonly at: number }>()
   /** Remote path per `${targetId}\0${remoteWorkspaceId}`, for the realm's stub→remote alias. */
@@ -1363,6 +1394,20 @@ export class RemoteWorkspaces {
     } catch {
       // Older server bundle: no titles plane yet.
     }
+    // Draft detection. The official definition of a blank session is "the log has
+    // no `turn/start`": a draft opened in the editor is ~324 B of session /
+    // permission/preset / sandbox/mode / approval/policy events and no turn. Only
+    // **untitled** sessions are candidates — the title service writes a title
+    // together with the first turn — so real conversations cost no RPC here, and a
+    // candidate costs one read open. Verdicts are memoized by log size
+    // (`draftCache`), so a workspace full of old drafts pays for the scan once and
+    // only for the ones that grow afterwards.
+    const drafts = new Map<string, boolean>()
+    for (const summary of summaries) {
+      const meta = titles.get(String(summary.id))
+      if (meta !== undefined && meta.title !== '') continue
+      drafts.set(String(summary.id), await this.draftOf(targetId, workspaceId, String(summary.id), summary.sizeBytes))
+    }
     return summaries
       .map(summary => {
         const meta = titles.get(String(summary.id))
@@ -1372,10 +1417,81 @@ export class RemoteWorkspaces {
           ...(summary.sizeBytes === undefined ? {} : { sizeBytes: summary.sizeBytes }),
           ...(meta === undefined || meta.title === '' ? {} : { title: meta.title }),
           ...(meta?.updatedAt === undefined ? {} : { updatedAt: meta.updatedAt }),
+          ...(drafts.get(String(summary.id)) === true ? { draft: true } : {}),
         }
       })
       // Newest activity first, like the shell's own session list.
       .sort((left, right) => (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0))
+  }
+
+  /**
+   * Whether one stored session is still a **draft** — its log has no `turn/start`.
+   *
+   * The verdict comes from the session's own log, never from its title or size: the
+   * routing/session planes already treat "no turn" as blank, and this is the same
+   * fact read through `persist.open(mode: 'read')`.
+   *
+   * The read open is deliberately used instead of a write open: the official backend
+   * only claims write ownership on a write open (`session-persistence-jsonl`
+   * `open()` — the read branch adopts a handle without a lease), so a draft the
+   * shell is holding open right now can still be inspected, and this check can never
+   * steal the shell's handle. The handle is closed in `finally` because the server
+   * keeps its handle table in memory until then.
+   *
+   * **Fails open**: any error (unreadable log, an unexpected payload, a server that
+   * predates the plane) answers `false` with a warning. Showing one extra row is
+   * recoverable; hiding a real conversation is not.
+   * @param targetId - connected target holding the log.
+   * @param workspaceId - the server workspace the session belongs to; the server
+   *   verifies the log's cwd against it, so it must be the id `persist.list` used.
+   * @param sessionId - stored session id.
+   * @param sizeBytes - log size from `persist.list`, the memo's version stamp.
+   * @returns true only when the log was read and contains no `turn/start`.
+   */
+  private async draftOf(
+    targetId: string,
+    workspaceId: string,
+    sessionId: string,
+    sizeBytes: number | undefined,
+  ): Promise<boolean> {
+    if (sizeBytes !== undefined && sizeBytes > DRAFT_SCAN_MAX_BYTES) return false
+    const key = `${targetId}\u0000${workspaceId}\u0000${sessionId}`
+    const cached = this.draftCache.get(key)
+    if (cached !== undefined && cached.sizeBytes === sizeBytes) return cached.draft
+    let handleId: string | undefined
+    try {
+      const payload = await this.sessionRequest<{ handleId?: unknown; events?: unknown }>(
+        targetId,
+        'persist.open',
+        { workspaceId, sessionId, mode: 'read' },
+      )
+      // Record the handle the moment it exists: everything after this point can
+      // fail, and the server keeps the handle in memory until it is closed.
+      if (typeof payload.handleId !== 'string') throw new Error('persist.open did not return a handle id')
+      handleId = payload.handleId
+      if (!Array.isArray(payload.events)) throw new Error('persist.open did not return the session events')
+      const draft = !payload.events.some(event => (event as { type?: unknown }).type === 'turn/start')
+      // Successful reads are memoized in both directions; failures are not, so a
+      // transient channel problem is retried on the next list instead of pinning the
+      // session as a conversation forever.
+      this.draftCache.set(key, { sizeBytes, draft })
+      return draft
+    } catch (error) {
+      console.warn(
+        `[dsh-remote-workspace] draft check for session "${sessionId}" failed (treated as a conversation): `
+        + scrubSecrets(error instanceof Error ? error.message : String(error)),
+      )
+      return false
+    } finally {
+      if (handleId !== undefined) {
+        // Never mask the verdict or the error above: a leaked handle only costs the
+        // server memory, but a thrown close would fail the whole session list.
+        await this.sessionRequest(targetId, 'persist.close', { handleId }).catch((error: unknown) => {
+          console.warn(`[dsh-remote-workspace] closing the draft-check handle for "${sessionId}" failed: ${
+            scrubSecrets(error instanceof Error ? error.message : String(error))}`)
+        })
+      }
+    }
   }
 
   /** The remote workspace a stub-cwd session belongs to (routing persistence). */
@@ -1471,6 +1587,96 @@ export class RemoteWorkspaces {
     // silent-local-execution state.
     assertRealmComposed(this.ctx, targetId, opened.sessionId)
     return await this.finishOpen(materialized, opened.sessionId)
+  }
+
+  /**
+   * Prepare one remote directory for the **official new-conversation draft**.
+   *
+   * This is {@link openWorkspace} minus the session. The shell's draft page binds
+   * itself to a workspace and only creates the session when the first message is
+   * sent (client `uiWorkspace.startSession(workspaceId)` → host `sessions.create`
+   * → `sessionPersistence.create`), so everything a session needs must already
+   * exist *before* any session does:
+   *
+   * - the server-side workspace entry (`reg.create`, idempotent): the routing
+   *   persistence sends `create(header.cwd = <stub>)` to that workspace, and the
+   *   server rewrites the header cwd to the remote path;
+   * - the local stub directory **and** the record carrying `stubPath` +
+   *   `remoteWorkspaceId`: without them `routeForCwd` misses and the shell's
+   *   session would be written to this machine's JSONL store instead of the
+   *   remote host — silently, which is the one outcome that must not happen;
+   * - the official **shell workspace row**: the draft page resolves its workspace
+   *   from the shell's own list, so the row is what makes the draft bindable. That
+   *   is why this path forces registration while Gate 0 keeps it off elsewhere
+   *   (see `officialWorkspaceFor`). The row stays invisible: the client hides
+   *   `[data-slot="sidebar.workspaces"]` stub rows and `watchShellRows` drops the
+   *   sessions that belong to this plugin.
+   *
+   * Nothing here creates, resumes or references a session: `ctx.agents` is never
+   * touched and no new session id is written (`record.sessionId` keeps whatever
+   * pointer it already had — a prepared workspace is still "the same row"). The
+   * session appears later, through the shell's own create, and the server assigns
+   * it to this workspace by `header.cwd`.
+   *
+   * **Idempotent by contract** — the client calls it right before *every* draft,
+   * which also re-creates a shell row the sweep removed (see the risk note below):
+   * an existing server entry is reused, an existing record keeps its id and stub,
+   * an existing shell row is resolved by path, and no session appears.
+   *
+   * Risk the caller must handle: `POST /api/cleanup-shell-workspaces` (the tree's
+   * 刷新) and the startup sweep delete every registry row under the stub root, so a
+   * row prepared earlier can be gone. Calling this again restores it; a draft
+   * opened with a stale `officialWorkspaceId` fails in the shell, not here.
+   * @param targetId - stored target; must already be connected.
+   * @param path - absolute remote directory.
+   * @param title - display title; defaults to the last path segment.
+   * @returns the materialized record (with its shell row id) and the stub path.
+   */
+  async prepareWorkspace(
+    targetId: string,
+    path: string,
+    title?: string,
+  ): Promise<{ workspace: RemoteWorkspaceRecord; stubPath: string; officialWorkspaceId: string }> {
+    // Connection first: a stopped target is the client's own recovery case
+    // (`target-not-connected` → "connect this host first"), and it must not be
+    // reported as a realm problem while `ensureWorlds` has not run.
+    const target = this.requireConnectedForWrite(targetId, 'preparing a workspace')
+    // Same realm gate as `openWorkspace`, minus the session: a draft whose first
+    // message would compose the *local* execution world writes into the stub on
+    // this machine (defect B), and the client would only notice afterwards.
+    await assertRemoteRealm(this.ctx, targetId)
+    // Validate the directory on the remote host before registering it, then
+    // register it server-side (idempotent: `reg.list` first, `reg.create` only on
+    // a miss), so the id stays server-authoritative.
+    const listing = await this.listDirectory(targetId, path)
+    const remote = await this.ensureRemoteWorkspace(targetId, listing.path, title)
+    this.workspacePaths.set(`${targetId}\u0000${String(remote.id)}`, listing.path)
+    this.invalidateServerWorkspaces(targetId)
+    const materialized = await this.materializeWorkspace(target, {
+      path: listing.path,
+      remoteWorkspaceId: String(remote.id),
+      // The official draft page needs the shell row — see this method's doc.
+      forceShellWorkspace: true,
+    })
+    const officialWorkspaceId = materialized.record.officialWorkspaceId
+    if (officialWorkspaceId === undefined) {
+      // Fail here instead of handing the client a workspace it cannot bind a
+      // draft to: `startSession` would fail later with "unknown workspace", far
+      // from the cause (a missing or refusing workspace registry).
+      throw codedError(
+        'shell-workspace-unavailable',
+        `remote workspace "${targetId}": the shell workspace row for "${materialized.stub}" could not be registered, so the new-conversation draft cannot be bound to it; this needs the dsh workspace registry`,
+      )
+    }
+    // A view-state touch, not an open: the prepared row sorts as most recent
+    // without gaining a session pointer (the record keeps its previous one).
+    const record: RemoteWorkspaceRecord = { ...materialized.record, lastOpenedAt: materialized.now }
+    await this.store.putWorkspace(record)
+    // `stubPath` is what `routeForCwd` compares a session's cwd against, so report
+    // the **stored** value (the shell row's path whenever one exists) rather than
+    // the raw stub: the shell derives the header cwd from its own row, and the two
+    // must stay the same string or the create would fall back to the local store.
+    return { workspace: record, stubPath: record.stubPath ?? materialized.stub, officialWorkspaceId }
   }
 
   /**
@@ -1572,7 +1778,18 @@ export class RemoteWorkspaces {
    */
   private async materializeWorkspace(
     target: RemoteTargetRecord,
-    options: { readonly path: string; readonly remoteWorkspaceId: string },
+    options: {
+      readonly path: string
+      readonly remoteWorkspaceId: string
+      /**
+       * Register the official shell row even while Gate 0 keeps it off.
+       *
+       * Only `prepareWorkspace` sets it: the official draft page resolves its
+       * workspace from the shell's own list, so the row is what makes the draft
+       * bindable at all (see `prepareWorkspace`).
+       */
+      readonly forceShellWorkspace?: boolean
+    },
   ): Promise<MaterializedWorkspace> {
     // P0: the caller has already asked the server (idempotent `reg.create`) for
     // this workspace, so the ref is keyed by the server id and stores no
@@ -1587,7 +1804,8 @@ export class RemoteWorkspaces {
     // the shell's tree at all. Whether we ALSO register it as an official shell
     // workspace is decided by `shouldRegisterShellWorkspaces()` — **off by
     // default** (Gate 0 branch A: the row is not needed and it leaks through the
-    // shared registry file).
+    // shared registry file) — unless the caller forces it for the official draft
+    // page (`prepareWorkspace`).
     // `ctx.get`, not `ctx.workspaceRegistry`: property access on a cordis context
     // requires the service in `inject`, and the plugin deliberately does not
     // inject workspaceRegistry (that edge deadlocks against sessionPersistence).
@@ -1601,6 +1819,7 @@ export class RemoteWorkspaces {
       registry,
       canonicalStub,
       shellTitle: `${displayTitle} · ${target.label}`,
+      ...(options.forceShellWorkspace === true ? { force: true } : {}),
     })
 
     const record: RemoteWorkspaceRecord = {
@@ -2088,7 +2307,7 @@ export function shouldRegisterShellWorkspaces(env: NodeJS.ProcessEnv = process.e
 /**
  * The official shell workspace standing for one stub, when shell rows are enabled
  * (`DSH_RW_FORCE_SHELL_WORKSPACES=1`; off by default — see
- * `shouldRegisterShellWorkspaces`).
+ * `shouldRegisterShellWorkspaces`) **or the caller forces it**.
  *
  * Gate 0 finding: nothing in the **open** path needs it. `attachSession` is the
  * only official call we make, it validates `realpath(header.cwd) === path` and is
@@ -2099,15 +2318,27 @@ export function shouldRegisterShellWorkspaces(env: NodeJS.ProcessEnv = process.e
  * `ctx.agents.create` directly. So the entry buys exactly one thing: a row in the
  * shell's workspace tree (which is also the thing that leaks into unrelated
  * clients through the shared `storages/workspace.json`).
- * @param options - registry (may be absent), the canonical stub and its row title.
+ * **One caller overrides the switch: `prepareWorkspace` passes `force: true`.**
+ * The official new-conversation draft resolves its workspace from the shell's own
+ * list (`uiWorkspace.startSession(workspaceId)`), so a prepared workspace has to
+ * own a registry row or there is no id to bind the draft to — on that path the row
+ * is a *functional* requirement, not a tree entry. Gate 0 is therefore unchanged
+ * everywhere else: `openWorkspace`/`resumeSessionOnce` still pass no `force` and
+ * still skip the row, and even a forced row stays invisible in the UI (the client
+ * hides `[data-slot="sidebar.workspaces"]` stub rows and `watchShellRows` drops
+ * their sessions).
+ * @param options - registry (may be absent), the canonical stub, its row title and
+ *   an explicit override of the process-wide switch.
  * @returns the entry, or undefined when rows are disabled or registration failed.
  */
 export async function officialWorkspaceFor(options: {
   readonly registry: WorkspaceRegistryLike | undefined
   readonly canonicalStub: string
   readonly shellTitle: string
+  /** Register even while `shouldRegisterShellWorkspaces()` is off; only `prepareWorkspace` does. */
+  readonly force?: boolean
 }): Promise<OfficialWorkspace | undefined> {
-  if (!shouldRegisterShellWorkspaces()) return undefined
+  if (options.force !== true && !shouldRegisterShellWorkspaces()) return undefined
   const { registry } = options
   if (registry === undefined) return undefined
   const existing = await registry.resolveByPath(options.canonicalStub)

@@ -821,6 +821,72 @@ ${ROW_STYLES}
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* The connect attempt reports **on its own row**: a spinner while it runs, a
+   warning glyph whose tooltip is the reason once it failed. Both ride in the
+   free slot immediately left of the 连接 seat (8px row padding + 16px button +
+   8px gap = 32px from the row's inline end); nothing is added to the row's
+   layout, only one glyph's worth of padding on the title cell so a long label
+   cannot run underneath it. */
+.dsh-rw-conn {
+  position: relative;
+}
+.dsh-rw-conn-status {
+  position: absolute;
+  inset-inline-end: 32px;
+  top: 50%;
+  translate: 0 -50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  z-index: 1;
+}
+.dsh-rw-conn[data-connect] .dsh-rwv-rows-projectText {
+  padding-inline-end: 20px;
+}
+.dsh-rw-conn-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dsw-alias-border-l2);
+  border-top-color: var(--dsw-alias-label-secondary);
+  animation: dsh-rw-conn-spin 0.8s linear infinite;
+}
+.dsh-rw-conn-warning {
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-state-error-primary);
+  cursor: help;
+}
+/* A spinner already says "wait": the 连接 seat behind it must not invite a
+   second click that the pending guard would swallow. */
+.dsh-rw-conn[data-connect="connecting"] .dsh-rwv-rows-rowActions {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.dsh-rw-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+@keyframes dsh-rw-conn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dsh-rw-conn-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 /* The rename dialog's input, matching the shell's dialog input metrics. */
 .dsh-rw-rename-input {
   box-sizing: border-box;

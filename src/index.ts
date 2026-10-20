@@ -590,6 +590,32 @@ async function dispatchApi(
       )
       return { workspace: opened.workspace, sessionId: opened.sessionId }
     }
+    case 'prepare-workspace': {
+      // The pre-session half of `open-workspace`: materialize the workspace (server
+      // entry, stub, plugin record, shell row) and **create no session**. The shell
+      // creates it from its own draft page when the first message is sent, and the
+      // routing persistence then sends it to the target by its stub cwd. Idempotent,
+      // so the client calls it before every draft — see `prepareWorkspace`.
+      const prepared = await workspaces.prepareWorkspace(
+        requireString(body, 'targetId'),
+        requireString(body, 'path'),
+        optionalString(body, 'title'),
+      )
+      const { workspace } = prepared
+      return {
+        // This plugin's own row id: what `/api/sessions`, `session-flag` and the
+        // pin/archive verbs take.
+        workspaceId: workspace.id,
+        // Server-authoritative workspace id; `routeForCwd` resolves the stub to it.
+        remoteWorkspaceId: workspace.remoteWorkspaceId ?? '',
+        // The local stub the shell binds and the lazily created session will carry.
+        stubPath: prepared.stubPath,
+        // The shell's own workspace id — the id `uiWorkspace.startSession(workspaceId)`
+        // needs. `prepareWorkspace` refuses to answer without it.
+        officialWorkspaceId: prepared.officialWorkspaceId,
+        targetId: workspace.targetId,
+      }
+    }
     case 'open-session': {
       // 换设备续聊: adopt a session that already exists on the remote server.
       const opened = await workspaces.resumeSession(

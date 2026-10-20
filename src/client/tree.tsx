@@ -23,7 +23,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import { MenuItemButton } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconWarningTriangleOutlineRegular, MenuItemButton, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PublicTarget, RemoteSession } from './api.ts'
 import { t } from './locales.ts'
 import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
@@ -67,25 +67,75 @@ function useNow(): number {
  * exactly like the shell's rows (the connection row reads as the header above
  * the workspace rows).
  */
-function Level(props: { state?: string; className?: string; children: ReactNode }): ReactElement {
+function Level(props: {
+  state?: string
+  className?: string
+  /** A live connect attempt or its failure, so CSS can place the row's status. */
+  connect?: 'connecting' | 'failed' | undefined
+  children: ReactNode
+}): ReactElement {
   return (
-    <div className={props.className} data-state={props.state}>
+    <div className={props.className} data-state={props.state} data-connect={props.connect}>
       {props.children}
     </div>
   )
 }
 
+/**
+ * The row's own statement about a connect attempt.
+ *
+ * It sits immediately **left of the 连接 seat** (the row's last action button),
+ * which is the only place a disconnected row shows: a spinner while the attempt
+ * runs, and a warning glyph whose tooltip is the reason once it failed. The
+ * global error line at the bottom of the section is still written, but it is not
+ * where the user's attention is after clicking a row.
+ * @param props.connecting - an attempt for this target is in flight.
+ * @param props.error - why the last attempt failed, if it did.
+ * @returns the status element, or null when there is nothing to say.
+ */
+function ConnectStatus(props: {
+  connecting: boolean
+  error?: { message: string } | undefined
+}): ReactElement | null {
+  if (props.connecting) {
+    return (
+      <span className="dsh-rw-conn-status" data-kind="connecting" role="status" aria-live="polite">
+        <span className="dsh-rw-conn-spinner" aria-hidden="true" />
+        <span className="dsh-rw-visually-hidden">{t('tree.conn.connecting')}</span>
+      </span>
+    )
+  }
+  if (props.error === undefined) return null
+  const reason = t('tree.conn.failedReason', { message: props.error.message })
+  return (
+    <span className="dsh-rw-conn-status" data-kind="failed">
+      <Tooltip label={reason} side="bottom" align="end" delayMs={100}>
+        <span
+          className="dsh-rw-conn-warning"
+          role="img"
+          // Screen readers and automation get the reason without hovering.
+          aria-label={reason}
+          title={reason}
+        >
+          <IconWarningTriangleOutlineRegular size={14} />
+        </span>
+      </Tooltip>
+    </span>
+  )
+}
+
 /** The shell's row verb for one connection, relabelled to what we actually do. */
-function connectionTranslate(target: PublicTarget): VerbTranslate {
+function connectionTranslate(target: PublicTarget, connecting: boolean): VerbTranslate {
   const connected = target.status === 'ready'
+  const connectLabel = connecting ? t('tree.conn.connecting') : t('tree.conn.connect')
   return (key, params) => {
-    if (key === 'rename') return connected ? t('tree.conn.disconnect') : t('tree.conn.connect')
+    if (key === 'rename') return connected ? t('tree.conn.disconnect') : connectLabel
     if (key === 'delete.workspace') return t('tree.forgetConnection')
     // The `+` slot is the only row action a connection has besides its menu: when
     // the connection is down it is the 连接 button (a disconnected host cannot add
     // a workspace anyway), and when it is up it adds one.
     if (key === 'actions.newSession' || key === 'actions.newSession.aria') {
-      return connected ? t('tree.conn.addWorkspace') : t('tree.conn.connect')
+      return connected ? t('tree.conn.addWorkspace') : connectLabel
     }
     return rowsTranslate(key, params)
   }
@@ -132,10 +182,24 @@ function sessionNode(session: RemoteSession, flags: SessionFlags): SessionNode {
   }
 }
 
-/** The provisional New Session row: the official blank-session presentation. */
-function blankSessionNode(): SessionNode {
+/**
+ * The temporary 「新会话」 row: the draft the shell is showing right now.
+ *
+ * `blank: true` is the official presentation of a provisional row — the vendored
+ * component prints the localized 新会话 title instead of `title`, hides the
+ * timestamp and every row verb (nothing exists to rename, fork or archive before
+ * the first message) and refuses to start a drag.
+ *
+ * `id` is the **real** draft session id rather than an empty placeholder, because
+ * the row's selected look is `node.id === currentId`: with the shell's actual id
+ * the row is highlighted exactly while that draft is the open conversation.
+ * @param sessionId - the draft session id reported by the shell catalog.
+ */
+function draftSessionNode(sessionId: string): SessionNode {
   return {
-    id: '',
+    id: sessionId,
+    // Blank rows never read this; kept honest in case the vendored title logic
+    // changes to prefer a non-empty title.
     title: '',
     blank: true,
     running: false,
@@ -218,13 +282,44 @@ function TreeRow(props: {
   )
 }
 
-/** One session row plus the trailing New Session row of an expanded workspace. */
+/**
+ * One workspace's session rows, with the **temporary draft row** on top.
+ *
+ * The draft row is the shell's answer to "which conversation is on screen", not a
+ * list entry: it exists only while `state.currentDraft` names *this* workspace, it
+ * is rendered before the list (never sorted, never counted, never a watermark
+ * entry), and it disappears the moment the shell selects anything else or the
+ * draft's first message makes it a real conversation.
+ */
 function SessionRows(props: { workspace: WorkspaceRowModel; now: number; flags: SessionFlags }): ReactElement | null {
   const state = useAppState()
   const list = state.sessions[props.workspace.id]
-  const items = orderSessions(list?.items ?? [], props.flags)
+  const draft = state.currentDraft?.workspaceId === props.workspace.id ? state.currentDraft : undefined
+  // The draft's own session is hidden from the conversation rows — it is standing
+  // in for that row above. A host that predates the `draft` flag still reports the
+  // draft's bytes, so filtering by id is what keeps it from rendering twice.
+  const stored = (list?.items ?? []).filter(session => session.id !== draft?.sessionId)
+  const items = orderSessions(stored, props.flags)
   return (
     <>
+      {draft !== undefined && (
+        <TreeRow
+          label={t('tree.draft.openAria')}
+          onActivate={() => { void store.startDraftSession(props.workspace) }}
+        >
+          <SessionNodeItem
+            node={draftSessionNode(draft.sessionId)}
+            // Highlighting follows the draft: the vendored row marks itself
+            // selected when its id is the current one.
+            currentId={draft.sessionId}
+            now={props.now}
+            onOpen={() => { void store.startDraftSession(props.workspace) }}
+            onRenameRequest={() => {}}
+            renderSlot={rowRenderSlots({ leading: null, menu: null, actions: null })}
+            t={sessionTranslate(props.workspace.title)}
+          />
+        </TreeRow>
+      )}
       {items.map(session => (
         <SessionNodeItem
           key={session.id}
@@ -253,17 +348,12 @@ function SessionRows(props: { workspace: WorkspaceRowModel; now: number; flags: 
       {list !== undefined && list.loading && items.length === 0 && (
         <p className="dsh-rw-tree-empty">{t('tree.sessions.loading')}</p>
       )}
-      {/* The blank session row is the official 新会话 affordance: clicking it
-          starts a fresh remote session in this workspace. */}
-      <SessionNodeItem
-        node={blankSessionNode()}
-        currentId={state.currentSessionId}
-        now={props.now}
-        onOpen={() => { void store.reopenWorkspace(props.workspace) }}
-        onRenameRequest={() => {}}
-        renderSlot={rowRenderSlots({ leading: null, menu: null, actions: null })}
-        t={sessionTranslate(props.workspace.title)}
-      />
+      {/* No draft and nothing stored: say so instead of leaving the workspace
+          silently empty (the always-present blank row used to fill this spot). */}
+      {list !== undefined && list.loaded && !list.loading && list.error === undefined
+        && items.length === 0 && draft === undefined && (
+        <p className="dsh-rw-tree-empty">{t('tree.sessions.empty')}</p>
+      )}
     </>
   )
 }
@@ -287,8 +377,10 @@ function WorkspaceRow(props: { workspace: WorkspaceRowModel; target: PublicTarge
     // field).
     createdAt: workspace.createdAt === undefined ? undefined : Date.parse(workspace.createdAt),
     label: workspace.title,
-    // The server's count is the truth until this device has loaded the list.
-    sessionCount: list?.items.length ?? workspace.sessionCount ?? 0,
+    // The server's count is the truth until this device has loaded the list —
+    // and once it has, the count is the *stored* conversations it can show
+    // (drafts have no log yet, so the server count can be one higher).
+    sessionCount: list === undefined ? workspace.sessionCount ?? 0 : visibleSessions(list.items).length,
     expanded,
     containsCurrent: state.currentSessionId !== undefined && workspace.sessionId === state.currentSessionId,
     sessions: [],
@@ -299,7 +391,7 @@ function WorkspaceRow(props: { workspace: WorkspaceRowModel; target: PublicTarge
       <ProjectRowItem
         group={group}
         onToggle={() => { store.toggleNode(key) }}
-        onCreate={() => { void store.reopenWorkspace(workspace) }}
+        onCreate={() => { void store.startDraftSession(workspace) }}
         actions={{
           rename: () => { store.requestWorkspaceRename(workspace) },
           delete: () => { store.requestDeleteWorkspace(workspace) },
@@ -321,7 +413,9 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: WorkspaceRowMo
   const key = targetNodeKey(target.id)
   const expanded = state.expanded[key] ?? false
   const connected = target.status === 'ready'
-  const translate = useMemo(() => connectionTranslate(target), [target.status])
+  const feedback = state.connectFeedback[target.id]
+  const connecting = feedback?.connecting === true
+  const translate = useMemo(() => connectionTranslate(target, connecting), [target.status, connecting])
   const sessionCount = props.workspaces.reduce(
     (total, workspace) => total + (state.sessions[workspace.id]?.items.length ?? 0),
     0,
@@ -349,7 +443,12 @@ function ConnectionRow(props: { target: PublicTarget; workspaces: WorkspaceRowMo
   }
   return (
     <>
-      <Level state={target.status} className="dsh-rw-conn">
+      <Level
+        state={target.status}
+        className="dsh-rw-conn"
+        connect={connecting ? 'connecting' : feedback?.error === undefined ? undefined : 'failed'}
+      >
+        <ConnectStatus connecting={connecting} error={feedback?.error} />
         <TreeRow
           label={target.label}
           expanded={connected && expanded}
@@ -443,9 +542,45 @@ export function RemoteTree(props: { compact: boolean; empty?: string }): ReactEl
 }
 
 /**
+ * Whether one listed remote session is a **stored conversation** rather than a
+ * draft.
+ *
+ * Official semantics, measured in the shipped shell: a blank session is one whose
+ * log carries no `turn/start`. `new session` does create and persist the shell
+ * session immediately (a few hundred bytes of session/permission/sandbox headers),
+ * and the plugin's draft path keeps that log — the draft is *reusable*, the next
+ * 新会话 reopens the same blank — but it is still not a conversation. So the log's
+ * size alone cannot decide this any more; the host answers it directly with
+ * `draft` (it opens the log and looks for `turn/start`), and that flag is what the
+ * row list honours.
+ *
+ * The size check stays as the fallback for a host that predates the flag: a
+ * session with no bytes at all has no log yet, so it cannot be a row either.
+ * Either way the *currently open* draft is filtered by id in `SessionRows`, so it
+ * can never appear twice even on an older host.
+ *
+ * A stored log with no title stays: that is a real conversation whose title was
+ * never written (pre-0.1.0 logs, another device mid-write), and the row already
+ * renders the localized 未命名 placeholder for it.
+ * @param session - one `/api/sessions` entry.
+ * @returns true when the session is a conversation the tree may list.
+ */
+function isStoredSession(session: RemoteSession): boolean {
+  if (session.draft === true) return false
+  return session.sizeBytes !== undefined && session.sizeBytes > 0
+}
+
+/** The sessions a workspace's tree may show: stored conversations only. */
+function visibleSessions(items: readonly RemoteSession[]): RemoteSession[] {
+  return items.filter(isStoredSession)
+}
+
+/**
  * Order one workspace's sessions the way the shell orders its own: pinned rows
  * lead (in the shell's pin order), then most recent activity, with archived
  * rows last — and pinned/archived membership comes from the official sets.
+ *
+ * Drafts are dropped first ({@link isStoredSession}): they are not rows yet.
  * @param items - the stored sessions.
  * @param flags - the official pin/archive sets.
  * @returns the row order.
@@ -455,7 +590,7 @@ function orderSessions(items: readonly RemoteSession[], flags: SessionFlags): Re
     if (flags.pinned.has(session.id)) return 0
     return flags.archived.has(session.id) ? 2 : 1
   }
-  return [...items].sort((left, right) => {
+  return visibleSessions(items).sort((left, right) => {
     const byRank = rank(left) - rank(right)
     if (byRank !== 0) return byRank
     return (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
