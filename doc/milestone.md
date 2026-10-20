@@ -69,3 +69,15 @@
 - 发布后清理：client 仓 `v0.1.0-alpha1`、`server-v0.2.1-rc.2` 两个 tag；server 仓 `server-v0.2.1-rc.2`
   的 tag 与 Release（其运行时包改由 `v0.1.0-alpha.1` 提供，客户端按 `server-v<dsh>` → `v<plugin>` 回退查找）。
 - npm：`dsh-remote-workspace@0.1.0-alpha.1` 发布到 registry.npmjs.org，`alpha` 与 `latest` 双 tag。
+- 2026-10-20 发布结果核对：
+  - client tag/Release `0.1.0-alpha.1`，资产 `dsh-remote-workspace-0.1.0-alpha.1.tgz` + `.sha256`，标记 prerelease。
+  - server tag/Release `v0.1.0-alpha.1`，12 个资产（四平台 `.tar.gz` + `.sha256` + `.manifest.json`）；
+    manifest 的 `sha256` 与同名 `.sha256` 逐个一致。
+  - 清理后回退键实测：`server-v0.2.1-rc.2` 的资源 URL 返回 404，`v0.1.0-alpha.1` 返回 200。
+  - npm 发布物 14 个文件（`lib/` + `cordis.patch.yml` + 两份 README + LICENSE + package.json），
+    不含 `src/`、`tests/`、`doc/`、`node_modules/`；`npm view` 的 readme 已是新 README。
+  - npm 上还留着占位版本 `0.0.0-stage`（staged publishing 给新包占名用的 stub，`latest` 已指向正式版本）；
+    要清掉需在浏览器完成 2FA 的 `npm unpublish dsh-remote-workspace@0.0.0-stage --force`。
+- 测试：client 353 通过、4 红（`tests/workspace-refs.test.ts` 的 macOS `/var` 与 `/private/var` realpath
+  环境差异，见 AGENTS）；server 6/6。
+- 尚未做：在真实 DSH web profile 里用 npm 版本替换本机 tarball 安装，并走一遍连接/会话/断线重连验收。
