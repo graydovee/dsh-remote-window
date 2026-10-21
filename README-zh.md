@@ -12,7 +12,7 @@
 
 ## Screenshots
 
-![侧栏的「远程工作区」区域：连接 → 远端工作区 → 新会话，输入区绑定远端预设](assets/screenshots/01-remote-workspace.jpg)
+![侧栏的「远程工作区」区域：连接 → 远端工作区 → 新会话，输入区绑定远端预设](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
 侧栏区域按「连接 → 工作区 → 会话」分组，输入区显示远端预设与工作区级权限模式。这个界面里没有
 本机路径——会话与日志都在目标机上。

@@ -13,7 +13,7 @@ computer can pick the same workspace up without copying a session directory.
 
 ## Screenshots
 
-![The 远程工作区 section in the sidebar: a connection, its remote workspace and a new session, with the composer bound to the remote preset](assets/screenshots/01-remote-workspace.jpg)
+![The 远程工作区 section in the sidebar: a connection, its remote workspace and a new session, with the composer bound to the remote preset](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
 The sidebar section groups a connection, its workspaces and their sessions; the composer shows the
 remote preset and the workspace-scoped permission mode. Nothing in this view is a local path — the
