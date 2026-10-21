@@ -118,16 +118,25 @@ connects to the same target sees the same workspaces and can continue the same s
 
 ## Quick start
 
-Install into the `web` profile. The simplest path is the **Plugins** page (sidebar → 插件 → 添加插件):
-installing `dsh-remote-workspace` there also enables its bundle.
-
-From a shell the package manager only installs the files — the bundle has to be enabled afterwards:
+Install into the `web` profile, either from the **Plugins** page (sidebar → 插件 → 添加插件) or with the
+CLI. A successful install also enables the bundle in `dsh.profile.bundles`:
 
 ```bash
 dsh plugin --profile web add dsh-remote-workspace
-# then enable "dsh-remote-workspace" on the Plugins page, or add it to
-# dsh.profile.bundles in ~/.dsh/profiles/web/package.json
 ```
+
+One caveat: pnpm blocks dependency build scripts by default, and this plugin depends on `ssh2`
+(whose optional native part has one). When pnpm refuses, the command exits **before** enabling the
+bundle, and running it again reports "already up to date" without enabling anything. Either let the
+Plugins page install it (it offers "allow these scripts and retry"), or pass the flag on the first
+run:
+
+```bash
+dsh plugin --profile web add --config.strict-dep-builds=false dsh-remote-workspace
+```
+
+If it is already installed but not enabled, enable it on the Plugins page (or add
+`dsh-remote-workspace` to `dsh.profile.bundles` in `~/.dsh/profiles/web/package.json`).
 
 Or build from a checkout and install the tarball the same way:
 

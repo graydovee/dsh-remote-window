@@ -105,16 +105,23 @@ WSL 是本机进程，没有 host key 确认步骤。
 
 ## Quick start
 
-装进 `web` profile。最省事的是侧栏 **插件 → 添加插件**：在那里安装 `dsh-remote-workspace` 会连同
-bundle 一起启用。
-
-在终端里装也可以，但 `dsh plugin add` 只装文件、不选中 bundle，装完要在插件页把它启用（或把它加进
-`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）：
+装进 `web` profile：用侧栏 **插件 → 添加插件**，或者用命令行。安装成功时 bundle 也会一并写进
+`dsh.profile.bundles`：
 
 ```bash
 dsh plugin --profile web add dsh-remote-workspace
-# 然后到「插件」页启用 dsh-remote-workspace，或手工加进 dsh.profile.bundles
 ```
+
+一个坑：pnpm 默认会拦依赖的构建脚本，而本插件依赖的 `ssh2` 带一个可选的本地模块构建。被拦时命令会
+**在启用 bundle 之前**退出，再跑一次只会报 "already up to date"，仍然不会启用。两种解法：用插件页安装
+（它会给「允许这些脚本并重试」），或者第一次就带上参数：
+
+```bash
+dsh plugin --profile web add --config.strict-dep-builds=false dsh-remote-workspace
+```
+
+如果已经装了但没启用：到插件页把它打开，或手工把 `dsh-remote-workspace` 加进
+`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`。
 
 或者从源码构建后装 tarball，步骤相同：
 
