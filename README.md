@@ -118,13 +118,18 @@ connects to the same target sees the same workspaces and can continue the same s
 
 ## Quick start
 
-Install into the `web` profile:
+Install into the `web` profile. The simplest path is the **Plugins** page (sidebar → 插件 → 添加插件):
+installing `dsh-remote-workspace` there also enables its bundle.
+
+From a shell the package manager only installs the files — the bundle has to be enabled afterwards:
 
 ```bash
 dsh plugin --profile web add dsh-remote-workspace
+# then enable "dsh-remote-workspace" on the Plugins page, or add it to
+# dsh.profile.bundles in ~/.dsh/profiles/web/package.json
 ```
 
-Or build from a checkout and install the tarball:
+Or build from a checkout and install the tarball the same way:
 
 ```bash
 pnpm install && pnpm typecheck && pnpm test && pnpm build
@@ -132,7 +137,10 @@ pnpm pack --pack-destination ~/.dsh/tarballs
 dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
-Restart the process that serves `dsh web` and reload the page. Then:
+The plugin ships the four official SSH provider packages it imports (`dsh-ssh`, `dsh-fs-ssh`,
+`dsh-subprocess-ssh`, `dsh-sandbox-ssh`) as ordinary dependencies, so a clean install has everything
+it needs even though the harness does not ship them. Restart the process that serves `dsh web` and
+reload the page. Then:
 
 1. Open **Remote Workspaces** in the sidebar and choose **New connection**.
 2. Pick `SSH` (or `WSL` on Windows), fill in the alias and the target details, and confirm the host key
@@ -152,7 +160,7 @@ Verified against exactly this runtime:
 
 | Plugin | Verified DSH runtime | Status |
 | --- | --- | --- |
-| 0.1.0-alpha.2 | 0.2.1-rc.2 | verified |
+| 0.1.0-alpha.3 | 0.2.1-rc.2 | verified |
 <!-- verified-runtimes -->
 
 The declaration is a **precise version**, not a range: the manifest pins `engines.dsh` and every

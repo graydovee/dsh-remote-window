@@ -15,6 +15,7 @@ const read = (path: string): string => readFileSync(new URL(`../${path}`, import
 const manifest = JSON.parse(read('package.json')) as {
   version: string
   engines: Record<string, string>
+  dependencies: Record<string, string>
   peerDependencies: Record<string, string>
   devDependencies: Record<string, string>
   keywords: string[]
@@ -41,6 +42,17 @@ describe('runtime contract', () => {
       const parsed = parseDshVersion(runtime)
       expect(parsed, runtime).toBeDefined()
       expect(formatDshVersion(parsed!), runtime).toBe(runtime)
+    }
+  })
+
+  it('ships the four SSH providers the client imports or mounts as runtime dependencies', () => {
+    // The harness installation does not contain these packages: `dsh-ssh` is
+    // imported by value (`/schemas`, `/protocol`) and the other three are mounted
+    // by name inside the realm preset. A profile template sets
+    // `autoInstallPeers: false`, so declaring them as peers alone leaves a fresh
+    // install with `Cannot find package '@deepseek-ai/dsh-ssh'`.
+    for (const name of ['@deepseek-ai/dsh-ssh', '@deepseek-ai/dsh-fs-ssh', '@deepseek-ai/dsh-subprocess-ssh', '@deepseek-ai/dsh-sandbox-ssh']) {
+      expect(manifest.dependencies[name], name).toBe(manifest.engines.dsh)
     }
   })
 

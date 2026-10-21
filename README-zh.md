@@ -105,13 +105,18 @@ WSL 是本机进程，没有 host key 确认步骤。
 
 ## Quick start
 
-装进 `web` profile：
+装进 `web` profile。最省事的是侧栏 **插件 → 添加插件**：在那里安装 `dsh-remote-workspace` 会连同
+bundle 一起启用。
+
+在终端里装也可以，但 `dsh plugin add` 只装文件、不选中 bundle，装完要在插件页把它启用（或把它加进
+`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）：
 
 ```bash
 dsh plugin --profile web add dsh-remote-workspace
+# 然后到「插件」页启用 dsh-remote-workspace，或手工加进 dsh.profile.bundles
 ```
 
-或者从源码构建后装 tarball：
+或者从源码构建后装 tarball，步骤相同：
 
 ```bash
 pnpm install && pnpm typecheck && pnpm test && pnpm build
@@ -119,7 +124,9 @@ pnpm pack --pack-destination ~/.dsh/tarballs
 dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
-重启服务 `dsh web` 的进程并刷新页面。然后：
+插件把运行时真正 import / 挂载的四个官方 SSH provider 包（`dsh-ssh`、`dsh-fs-ssh`、
+`dsh-subprocess-ssh`、`dsh-sandbox-ssh`）作为普通依赖一起安装——harness 自身不带这几个包，所以干净
+安装也能直接加载。重启服务 `dsh web` 的进程并刷新页面。然后：
 
 1. 在侧栏打开 **远程工作区**，点 **新建连接**。
 2. 选择 `SSH`（Windows 上也可选 `WSL`），填别名与目标信息，首次连接时确认 host key 指纹。
@@ -136,7 +143,7 @@ dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 
 | 插件 | 已验证 DSH 运行时 | 状态 |
 | --- | --- | --- |
-| 0.1.0-alpha.2 | 0.2.1-rc.2 | verified |
+| 0.1.0-alpha.3 | 0.2.1-rc.2 | verified |
 <!-- verified-runtimes -->
 
 声明是**精确版本**，不是区间：清单把 `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 钉在上面的运行时，
