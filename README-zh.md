@@ -105,8 +105,7 @@ WSL 是本机进程，没有 host key 确认步骤。
 
 ## Quick start
 
-装进 `web` profile：用侧栏 **插件 → 添加插件**，或者用命令行。安装成功时 bundle 也会一并写进
-`dsh.profile.bundles`：
+装进 `web` profile：用侧栏 **插件 → 添加插件**，或者用命令行：
 
 ```bash
 dsh plugin --profile web add dsh-remote-workspace

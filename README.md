@@ -119,7 +119,7 @@ connects to the same target sees the same workspaces and can continue the same s
 ## Quick start
 
 Install into the `web` profile, either from the **Plugins** page (sidebar → 插件 → 添加插件) or with the
-CLI. A successful install also enables the bundle in `dsh.profile.bundles`:
+CLI:
 
 ```bash
 dsh plugin --profile web add dsh-remote-workspace
