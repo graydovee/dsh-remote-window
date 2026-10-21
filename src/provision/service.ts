@@ -360,6 +360,11 @@ export interface RemoteWorkspacesOptions {
   readonly maxProcesses: number
   /** Idle lifetime of a wizard browsing session. */
   readonly browseIdleMs?: number
+  /**
+   * Connect + provision pipeline. A seam for tests that must prove nothing is
+   * written when a connection fails; production always uses {@link provisionTarget}.
+   */
+  readonly provision?: typeof provisionTarget
 }
 
 /** Host-plane service implementation. */
@@ -422,7 +427,7 @@ export class RemoteWorkspaces {
   private sweepingShellWorkspaces: Promise<{ removed: string[]; kept: string[] }> | undefined
 
   constructor(private readonly ctx: Context, private readonly store: TargetStore, options: RemoteWorkspacesOptions) {
-    this.options = { browseIdleMs: 0, ...options }
+    this.options = { browseIdleMs: 0, provision: provisionTarget, ...options }
   }
 
   /** Register presets for every stored target; safe to call more than once. */
@@ -472,7 +477,20 @@ export class RemoteWorkspaces {
       throw new Error(`remote target "${target.label}" has no confirmed host key; connect it from the wizard first`)
     }
     const secret = await this.store.secretOf(target)
-    const privateKey = target.privateKeyPath === undefined ? undefined : await readPrivateKey(target.privateKeyPath)
+    // A record can predate the "persist only after success" rule (or its
+    // credential can be gone from the store). Refuse before opening a socket so
+    // the row gets an actionable `secret-missing` instead of a raw ssh2 failure.
+    if (target.authKind === 'password' && (secret === undefined || secret === '')) {
+      throw codedError('secret-missing', `remote target "${target.label}" has no stored password; delete the connection and add it again from the wizard`)
+    }
+    if (target.authKind === 'privateKey' && (target.privateKeyPath === undefined || target.privateKeyPath === '')) {
+      throw codedError('key-missing', `remote target "${target.label}" has no private key path; delete the connection and add it again from the wizard`)
+    }
+    const privateKey = target.privateKeyPath === undefined
+      ? undefined
+      : await readPrivateKey(target.privateKeyPath).catch((error: unknown) => {
+          throw codedError('key-missing', `cannot read the private key ${target.privateKeyPath ?? ''}: ${error instanceof Error ? error.message : String(error)}`)
+        })
     // A tree 连接 of a reuse target has no wizard payload: the remembered
     // launcher is the whole selection.
     const reuseLauncherPath = target.packageSource === 'reuse' ? target.reuseDsh?.path : undefined
@@ -808,7 +826,7 @@ export class RemoteWorkspaces {
     let provisioned: Awaited<ReturnType<typeof provisionTarget>> | undefined
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        provisioned = await provisionTarget({
+        provisioned = await this.options.provision({
           target: draft,
           ...(wsl || request.secret === undefined ? {} : { secret: request.secret }),
           ...(privateKey === undefined ? {} : { privateKey }),
@@ -837,20 +855,19 @@ export class RemoteWorkspaces {
           })
           if (ticket.closed || confirmed === '') throw new Error('host key was not confirmed')
           fingerprint = confirmed
-          // Trust is durable the moment the user confirms: the pin survives a
-          // failed later stage, a retry and a client restart, and the target
-          // becomes visible in the saved list even before a success.
+          // The pin is kept for this attempt only. Nothing is written before the
+          // whole attempt succeeds: a failed connect must not leave a target
+          // (nor a credential-less row) behind — see api-contract §2.1.
           draft = { ...draft, hostKeyFingerprint: fingerprint }
-          await this.store.putTarget(draft)
           continue
         }
         throw error
       }
     }
     if (provisioned === undefined) throw new Error('the remote server could not be started')
-    // The first successful connection pins the key and stores the secret. A WSL
-    // target keeps an empty fingerprint forever (there is no key to pin) and
-    // never holds a credential.
+    // The first successful connection is the only write: it pins the key and
+    // stores the secret together. A WSL target keeps an empty fingerprint
+    // forever (there is no key to pin) and never holds a credential.
     const provisionedAt = new Date().toISOString()
     draft = {
       ...draft,
@@ -1025,7 +1042,7 @@ export class RemoteWorkspaces {
         package: await describeLocalPackage({ version: dshReleaseVersion(this.options.packageRoot), platform, arch, libc }),
         dshHome,
         profiles: scan.profiles.map(entry => entry.name),
-        candidates: assembleCandidates(scan, { profile, ...(expectedPluginSha === undefined ? {} : { expectedPluginSha }) }),
+        candidates: assembleCandidates(scan, { profile, dshHome, ...(expectedPluginSha === undefined ? {} : { expectedPluginSha }) }),
       }
     } finally {
       await transport.close().catch(() => {})

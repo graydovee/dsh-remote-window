@@ -44,6 +44,15 @@
 > ⑰ §4 重写为「工作区写操作」；§10 增 `workspace-not-empty`(409)/`server-protocol-mismatch`/
 > `cleanup-failed`/`invalid-workspace-id`。
 >
+> **修订 v7（2026-10-21，连接向导重构）**：
+> ⑱ 第 3 步进入即自动执行只读 `dsh-scan`（进度两行：连接主机 / 探测远端环境），随后才出现运行时选择；
+> ⑲ 运行时是**列表**：扫描到的 dsh 实例点选复用，或选「部署新运行时」后再决定上传 / 远程下载；
+> 原三张方式卡片退役；
+> ⑳ **目标只在一次成功连接后落盘**：host-key 确认不再写记录，失败尝试不留 target / 凭据（§3.1、§10）；
+> ㉑ 新增错误码 `secret-missing` / `key-missing`；无凭据的旧记录在行内给出可操作提示，不再打裸错误；
+> ㉒ `ConnectDraft.connectionMode/reuseLauncherPath` 退役为 `runtimeChoice`（**wire 仍是
+> `packageSource` / `reuseLauncherPath`**，§6）。
+>
 > **修订 v7（2026-10-18，P0 契约修订：join 改为 server 清单驱动）**：
 > ⑱ §15.1 `WorkspaceRef` 注释改为「自动登记，材料化前 `stubPath` 为空」；
 > ⑲ §15.2 `workspaceRefs` 语义改写 + **新不变量**「已连接 target 上 `workspaceRefs` 的
@@ -191,16 +200,17 @@
 ```
 
 客户端拿到 B 就展示**同一个** host-key 面板，用户确认后带 `hostKeyFingerprint` 重发 `dsh-scan`。
-**不落记录、不存凭据、不 pin 指纹**（这与 `connect/start` 的「确认即 pin」不同：扫描是只读探路，
-真正 pin 发生在连接成功时，`service.ts:606-616`）。
+**不落记录、不存凭据、不 pin 指纹**。`connect/start` 也一样（v7 ⑳）：确认后的指纹只在本次尝试的
+内存里有效，pin 与凭据一起在**整条连接成功之后**才写进记录。
 
 **客户端责任（Leader 裁决 2026-10-18 第 6 条）**：
 1. `dsh-scan` 拿到 `stage:'host-key'` 后，向导必须走**同一个** host-key 确认面板（复用
    `connect/start` 的确认 UI 与 `pendingSecret`），确认后把指纹写进**内存** `state.trusted`
    （`store.ts:1367` `confirmHostKey`）+ 带 `hostKeyFingerprint` 重发扫描
    （`store.ts:1123` 已把 `dshScan.fingerprint` 放进扫描请求）。
-2. `connect/start` 复用 `state.trusted` 里的指纹（`store.ts:1046` / `1231`），**不二次弹窗**；
-   已确认但**未 pin** —— pin 仍只发生在**连接成功**那一刻（`runConnect` 成功后写记录）。
+2. `connect/start` 复用 `state.trusted` 里的指纹，**不二次弹窗**；确认本身不创建记录 ——
+   pin 与 secret 都在 `runConnect` 成功后一并写入。失败尝试的指纹只活在本进程内存里，
+   应用重启后需要重新确认。
 3. 扫描本身不产生记录/通道/凭据，因此**取消扫描不需要清理**。
 
 ### 2.3 字段语义
@@ -215,6 +225,8 @@
 | `candidates[].nodePath` | 见下方「nodePath 判定顺序」（**实测有坑，不要简化**） |
 | `candidates[].selfContained` | `nodePath === undefined`：启动器不需要解释器（无 shebang 的原生二进制）；**或**是需要 node 但远端一个都没找到（此时 `planProvision` 会部署我们自己的 Node） |
 | `candidates[].profile` | 该 dsh 的 `DSH_HOME/profiles/<name>/node_modules/dsh-remote-workspace/package.json` 的 `version` + `.dsh-rw-plugin.json` 的 `sha256`；`upToDate` 由 host 用 `sha256OfFiles()` 比对。**profile 级、不是每个 launcher 一份** |
+| `candidates[].origin` | `deployed` \| `nvm` \| `fnm` \| `volta` \| `bun` \| `user-local` \| `system` \| `other`。由 `candidateOrigin(path, dshHome)` 纯函数分类（v7）：`<dshHome>/server/dsh/…` 判 `deployed`，即**本插件上传/下载的运行时**；其余按 node 管理器 / 安装目录归类 |
+| `candidates[].originDetail` | 分类的补充细节：nvm/fnm 的 node 版本，或系统/其他安装的目录 |
 | `candidates[].reason` | 例如 `version 0.1.9 is older than the verified DSH runtime 0.2.1-rc.2`；`--version` 没输出时是 `the launcher did not report a version (exit 127)` |
 | **排序** | 见下方「排序规则」；最多返回 12 条 |
 
@@ -290,6 +302,9 @@ $HOME/.dsh/server/node/bin/node                  ← v24.21.0，**不在 PATH �
   `"reuseLauncherPath" is required when "packageSource" is "reuse"`（**同步拒**，不进任何传输）。
   执行期若启动器仍消失，再由 plan 阶段报 `reuse-launcher-missing`（兜底，见 §10）。
 - **不做**服务端回退：reuse 执行期失败就报错（见 §10 错误码），客户端提示改用「上传 server 包」。
+- **落盘时机（v7 ⑳）**：`runConnect` 只在连接 + 探测 + 部署 + 启动**全部成功**后写 target（pin 与凭据
+  一起写）。host-key 确认、密码错误、探测失败、启动失败都不产生记录，因此失败尝试不会在侧栏留下
+  「没有密码」的行。
 
 ### 3.2 响应
 
@@ -503,15 +518,17 @@ workspaceRename(workspaceId: string, title: string): Promise<{ workspace: Remote
 /** 三步向导。`directory` 已经移出（见 architecture §3.4）。 */
 export type WizardStep = 'method' | 'config' | 'connect'
 
-/** 进度行（服务端五步，不变）。 */
-export const CONNECT_STEPS: readonly ConnectStep[] = ['connect', 'probe', 'runtime', 'upload', 'start']
+// `CONNECT_STEPS` 常量已退役（v7）：向导自己渲染两段进度 —— 阶段一 connect/probe 由扫描驱动，
+// 阶段二只渲染 runtime/upload/start。
 
 export interface ConnectDraft {
   // ……既有字段不变……
-  /** 第 3 步的选择；'' = 未选（按钮禁用）。 */
-  connectionMode: '' | 'reuse' | 'upload' | 'download'
-  /** 被选中的复用启动器绝对路径（connectionMode='reuse' 时必填）。 */
-  reuseLauncherPath: string
+  /** 第 3 步的运行时选择；null = 未选（按钮禁用）。wire 仍映射为 packageSource/reuseLauncherPath。 */
+  runtimeChoice:
+    | { kind: 'reuse'; path: string }
+    | { kind: 'upload' }
+    | { kind: 'download' }
+    | null
 }
 
 /** dsh 扫描状态（与既有 wslProbe 同构）。 */
@@ -554,27 +571,29 @@ export interface AppState {
 **退役**（连同引用一起删，避免死代码）：
 - `ConnectState.origin`（`store.ts:102`）、`store.openTargetDirectory`、`store.retryDirectoryConnect`、
   `wizard.tsx` 的 `DirectoryStep`（搬去 `directory-picker.tsx`）、`STEP_ORDER` 里的 `directory`。
-- **第 2 步的 `packageSource` SegmentedControl（`wizard.tsx:511-524`）与草稿字段 `ConnectDraft.packageSource`
-  （`store.ts:64`）一起退役**（Leader 裁决 2026-10-18 a）：第 3 步的 `connectionMode` **独占** wire 字段
-  `packageSource`，草稿里不再保留第二份真相。
+- **第 2 步的 `packageSource` SegmentedControl 与草稿字段 `ConnectDraft.packageSource` 一起退役**
+  （Leader 裁决 2026-10-18 a）。v7 起第 3 步用 `runtimeChoice` 独占这一决定，wire 字段仍是
+  `packageSource` / `reuseLauncherPath`（映射在 `runtime-choice.ts`，纯函数）。
   **README 待清理**：若 README 仍描述第 2 步的「服务端包来源」，记为已知文档债，本轮不改 README。
 - `ConnectState.phase` 保持原样（`idle|running|awaiting-hostkey|failed|succeeded`）。
 
 **新增动作**：
 
 ```ts
-setConnectionMode(mode: '' | 'reuse' | 'upload' | 'download'): void
-scanDsh(force?: boolean): Promise<void>          // POST dsh-scan；stage==='host-key' 写 dshScan.fingerprint
-selectDshCandidate(path: string): void           // 纯本地选择，不走 patchConfig（它会清 pendingSecret）
+chooseRuntime(choice: RuntimeChoice): void          // 选中一个扫描到的 dsh，或 null
+chooseDeploy(kind: 'upload' | 'download'): void      // 部署新运行时的两种载运方式
+scanDsh(force?: boolean): Promise<void>              // POST dsh-scan；stage==='host-key' 写 dshScan.fingerprint
+selectDshCandidate(path: string): void               // 纯本地选择，不走 patchConfig（它会清 pendingSecret）
 requestWorkspaceRename(workspace: RemoteWorkspace): void
 settleWorkspaceRename(): void
 acceptWorkspaceRename(title: string): Promise<void>
 openBrowseDirectory(target: PublicTarget): Promise<void>   // 打开弹窗「浏览目录」页签，未连接先 connect
 ```
 
-`startConnect()` 的改动：`request.packageSource` 由 `connectionMode` 映射
-（`reuse` → `'reuse'` + `reuseLauncherPath`，`upload` → `'upload'`，`''` → 省略 = 跟随全局策略），
-`download` 不可选（卡片 disabled）。
+`startConnect()` 的改动：`request.packageSource` 由 `runtimeChoice` 映射
+（`reuse` → `'reuse'` + `reuseLauncherPath`，`upload` / `download` → 同名值，`null` → 未选，按钮禁用）。
+扫描结果回来后用 `choiceFromScan()` 对齐选择：仍可用就保留，否则预选最好的候选（
+`compatible && upToDate` → `compatible` → 无）。
 
 SSE `done` 帧的改动（`store.ts:1072-1090`）：
 
@@ -885,7 +904,9 @@ DSH_HOME=<dshHome> PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> --profil
 | `not-found` | 404 | 未知 method / workspaceId / targetId | 错误横幅 |
 | `method-error` | 405 | 非 POST | — |
 | `storage-unavailable` | 500 | `state`（存储域打不开） | 现有重试逻辑 |
-| `scan-failed` | 500 | `dsh-scan` 传输/脚本失败 | 复用卡片显示失败原因 + 建议改用上传 |
+| `scan-failed` | 500 | `dsh-scan` 传输/脚本失败 | 第 3 步显示失败原因 + 「重新探测」；运行时列表不出现 |
+| **`secret-missing`** | 500（SSE `error` 帧 / 路由错误） | 密码认证的目标没有已保存的凭据（旧记录，或凭据被清掉）。`connectOnce` 在打开 socket 前就判 | 行内提示「这条连接没有保存密码，请删除后重新添加」；**不白屏** |
+| **`key-missing`** | 500（SSE `error` 帧 / 路由错误） | 私钥认证的目标缺少 `privateKeyPath`，或私钥文件读不到 | 同上，提示重新添加连接 |
 | `scan-timeout` | 500 | `dsh-scan` > 60 s | 同上 |
 | **`reuse-launcher-missing`（路由层）** | **400** | `connect/start` 的 `packageSource === 'reuse'` 但 `reuseLauncherPath` **缺失/为空**（`connectRequestFrom`，`index.ts:215-218`）。**这是主判据，必须在路由层就拒**，不要留到 `planProvision`。实测 code 字符串为 **`bad-request`**（message 里点名 `reuseLauncherPath`），见下方说明 | 错误横幅「请选择要复用的远端 dsh」（回到第 3 步候选列表） |
 | `reuse-launcher-missing`（兜底） | 500（SSE `error` 帧 code） | plan 阶段发现启动器已消失/不可执行（扫描后被删） | 提示重扫 |
@@ -994,8 +1015,8 @@ export const targetRecordSchema = z.object({
 | 文件 | 工作 |
 |---|---|
 | `src/client/api.ts` | §5 的类型 + `dshScan` / `workspaceRename` 两个方法（`ConnectStartRequest` 加两个字段） |
-| `src/client/store.ts` | §6：`WizardStep` 三步、`ConnectDraft.connectionMode/reuseLauncherPath`（**`ConnectDraft.packageSource` 退役**）、`DshScanState`、`DirectoryState.open`、`WorkspaceRenameState`；`scanDsh/selectDshCandidate/setConnectionMode/requestWorkspaceRename/acceptWorkspaceRename/openBrowseDirectory`；`done` 帧改落点；删掉 `origin`/`openTargetDirectory`/`retryDirectoryConnect` |
-| `src/client/wizard.tsx` | 第 3 步：三张方式卡片（远程下载 disabled）+ 复用候选列表 + 现有进度/日志/host-key；**reuse 失败时渲染「改用上传 server 包并重试」按钮**（只切 `connectionMode='upload'` 重跑，不自动回退）；`DirectoryStep` 搬走 |
+| `src/client/store.ts` | §6：`WizardStep` 三步、`ConnectDraft.runtimeChoice`（v7，`connectionMode/reuseLauncherPath/pathSource` 全退役）、`DshScanState`、`DirectoryState.open`、`WorkspaceRenameState`；`chooseRuntime/chooseDeploy/scanDsh/selectDshCandidate/requestWorkspaceRename/acceptWorkspaceRename/openBrowseDirectory`；`done` 帧改落点；删掉 `origin`/`openTargetDirectory`/`retryDirectoryConnect` |
+| `src/client/wizard.tsx` | 第 3 步（v7）：进入即自动探测（两行进度）→ 运行时**列表**（点选复用 / 部署新运行时展开上传·下载）→ 只有 `runtime/upload/start` 三行进度 + 日志 + host-key；reuse 失败仍给「改用上传并重试」按钮（不自动回退）；`DirectoryStep` 搬走 |
 | `src/client/directory-picker.tsx` | **新建**：从 `DirectoryStep` 搬来的浏览 UI（面包屑/上级/主目录/路径跳转/新建目录/标题/打开） |
 | `src/client/list.tsx` | `AddWorkspaceDialog` **只保留「浏览目录」单页签**（P0 取消「远端已注册」页签：自动登记后它恒为空）；`client/workspace-join.ts` 的 `unaddedServerWorkspaces()` **删除** |
 | `src/client/tree.tsx` | 连接行 `delete` 槽文案 → 删除连接；工作区行 `rename` 槽 → 重命名工作区（调 `requestWorkspaceRename`）；挂 `WorkspaceRenameDialog` |
@@ -1057,13 +1078,13 @@ export const targetRecordSchema = z.object({
 
 **B（client）**
 - [ ] 三步 pill 文本 = 1.选择方式 / 2.填写配置 / 3.连接
-- [ ] 远程下载卡片 `disabled` 且文案含「第一个 server release」
-- [ ] reuse 卡片：扫描中 / 无候选 / 有候选 / host-key 待确认 四种状态都能渲染出文本
-- [ ] 候选行显示 路径 / 版本 / 兼容徽标 /「已有 server 插件」徽标（**没有** `origin` 维度，D-1 已撤销）
-- [ ] reuse 失败：出现「改用上传 server 包并重试」按钮，点击后 `connectionMode` 变 `upload` 并**重新发起**
-      （不得自动切换，也不得静默开始上传）
-- [ ] 第 2 步**没有**旧的「服务端包来源」SegmentedControl（`ConnectDraft.packageSource` 已退役，
-      第 3 步 `connectionMode` 是唯一入口）
+- [ ] 第 3 步进入即自动探测：连接主机 / 探测远端环境 两行有状态；失败显示原因 +「重新探测」，不自动重试
+- [ ] 扫描 ready 后出现运行时**列表**：候选行显示 路径 / 版本 / 兼容徽标 /「已有 server 插件」徽标；
+      不兼容项禁用并给出原因；「部署新运行时」展开后才出现上传 / 远程下载两张卡
+- [ ] 选择变化正确映射到 `packageSource`（reuse 带 `reuseLauncherPath`；upload/download 不带）
+- [ ] reuse 失败：出现「改用上传并重试」按钮，点击后选择改成 upload 并**重新发起**（不得自动切换）
+- [ ] 失败一次后侧栏**不出现**新连接行；成功后才出现，且 `hasStoredSecret` 为真
+- [ ] 手改存储构造一条无凭据的旧连接：点它不白屏、行内有提示、可删除
 - [ ] 扫描时 host-key 未确认 → 复用同一个确认面板；确认后**不**再弹第二次（`state.trusted` 复用），
       且 pin 只发生在连接成功时
 - [ ] 删除连接的确认正文**同时**写明「会删」与「不会删（远端部署物/会话日志）」两块

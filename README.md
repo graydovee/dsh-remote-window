@@ -11,6 +11,14 @@ Open an SSH host as a DeepSeek Harness workspace. The agent loop, model calls an
 your computer; the files, the commands and the session logs live on the remote machine, so another
 computer can pick the same workspace up without copying a session directory.
 
+## Screenshots
+
+![The 远程工作区 section in the sidebar: a connection, its remote workspace and a new session, with the composer bound to the remote preset](assets/screenshots/01-remote-workspace.jpg)
+
+The sidebar section groups a connection, its workspaces and their sessions; the composer shows the
+remote preset and the workspace-scoped permission mode. Nothing in this view is a local path — the
+session and its log live on the target.
+
 ## Why this exists
 
 Harness works on the machine that runs it. When the work has to happen somewhere else — a build box, a
@@ -129,7 +137,9 @@ Restart the process that serves `dsh web` and reload the page. Then:
 1. Open **Remote Workspaces** in the sidebar and choose **New connection**.
 2. Pick `SSH` (or `WSL` on Windows), fill in the alias and the target details, and confirm the host key
    fingerprint on first contact.
-3. Run the read-only probe, choose a runtime source, and connect.
+3. The wizard connects and probes the target by itself; pick a runtime from the list it finds (reuse an
+   installed dsh) or choose **Deploy a new runtime** and decide whether to upload or download it. A failed
+   attempt is not saved — the connection appears only after it succeeds.
 4. Use the plus action on the connection row to browse the target and add a directory as a workspace.
 5. Open the blank row under the workspace for a new session, or an existing row to continue one.
 
@@ -142,7 +152,7 @@ Verified against exactly this runtime:
 
 | Plugin | Verified DSH runtime | Status |
 | --- | --- | --- |
-| 0.1.0-alpha.1 | 0.2.1-rc.2 | verified |
+| 0.1.0-alpha.2 | 0.2.1-rc.2 | verified |
 <!-- verified-runtimes -->
 
 The declaration is a **precise version**, not a range: the manifest pins `engines.dsh` and every

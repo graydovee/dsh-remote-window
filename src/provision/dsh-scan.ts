@@ -378,6 +378,48 @@ export interface DshCandidate {
   readonly profile?: ScannedDshProfile
   /** Why this candidate was rejected; absent when it is usable. */
   readonly reason?: string
+  /**
+   * Where this launcher comes from. The picker names a row by this instead of by
+   * a path nobody can read (`/home/u/.dsh/server/dsh/node_modules/.bin/dsh`).
+   */
+  readonly origin: CandidateOrigin
+  /** Human detail for the origin: node version (nvm/fnm) or the install directory. */
+  readonly originDetail?: string
+}
+
+/**
+ * Provenance of one launcher.
+ *
+ * `deployed` is the runtime **this plugin** uploaded or downloaded
+ * (`<dshHome>/server/dsh`); it is the one that runs the special
+ * `dsh-remote-server` profile, so the picker must say so.
+ */
+export type CandidateOrigin = 'deployed' | 'nvm' | 'fnm' | 'volta' | 'bun' | 'user-local' | 'system' | 'other'
+
+/**
+ * Classify one launcher path.
+ * @param path - the launcher's absolute path.
+ * @param dshHome - the remote `DSH_HOME` the scan ran against (absolute, `''` when unknown).
+ * @returns the origin and an optional detail (node version or directory).
+ */
+export function candidateOrigin(path: string, dshHome: string): { origin: CandidateOrigin; detail?: string } {
+  const normalized = path.replaceAll('\\', '/')
+  const home = dshHome.replace(/\/+$/, '')
+  // The uploaded/downloaded runtime lives under `<DSH_HOME>/server/dsh`; check it
+  // before the generic home-directory rules so it never reads as "user install".
+  if (home !== '' && normalized.startsWith(`${home}/server/dsh/`)) return { origin: 'deployed' }
+  const nvm = /\/\.nvm\/versions\/node\/([^/]+)\//.exec(normalized)
+  if (nvm !== null && nvm[1] !== undefined) return { origin: 'nvm', detail: nvm[1] }
+  const fnm = /\/\.local\/share\/fnm\/node-versions\/([^/]+)\//.exec(normalized)
+  if (fnm !== null && fnm[1] !== undefined) return { origin: 'fnm', detail: fnm[1] }
+  if (normalized.includes('/.volta/')) return { origin: 'volta' }
+  if (normalized.includes('/.bun/')) return { origin: 'bun' }
+  if (normalized.includes('/.local/bin/')) return { origin: 'user-local' }
+  const directory = normalized.slice(0, normalized.lastIndexOf('/'))
+  if (normalized.startsWith('/usr/') || normalized.startsWith('/opt/homebrew/') || normalized.startsWith('/bin/')) {
+    return { origin: 'system', ...(directory === '' ? {} : { detail: directory }) }
+  }
+  return { origin: 'other', ...(directory === '' ? {} : { detail: directory }) }
 }
 
 /** The most candidates the wizard is asked to render. */
@@ -399,7 +441,7 @@ export const MAX_CANDIDATES = 12
  */
 export function assembleCandidates(
   scan: DshScan,
-  options: { profile: string; expectedPluginSha?: string },
+  options: { profile: string; expectedPluginSha?: string; dshHome?: string },
 ): DshCandidate[] {
   const scanned = scan.profiles.find(entry => entry.name === options.profile)
   const upToDate =
@@ -417,6 +459,7 @@ export function assembleCandidates(
   const candidates: DshCandidate[] = scan.launchers.map(launcher => {
     const executable = launcher.exitCode === 0 && launcher.version.trim() !== ''
     const compatible = isCompatibleDsh(launcher.version)
+    const origin = candidateOrigin(launcher.path, options.dshHome ?? '')
     return {
       path: launcher.path,
       realPath: launcher.realPath,
@@ -426,6 +469,8 @@ export function assembleCandidates(
       ...(launcher.nodePath === undefined ? {} : { nodePath: launcher.nodePath }),
       selfContained: launcher.nodePath === undefined,
       ...(profile === undefined ? {} : { profile }),
+      origin: origin.origin,
+      ...(origin.detail === undefined ? {} : { originDetail: origin.detail }),
       ...(compatible
         ? {}
         : {

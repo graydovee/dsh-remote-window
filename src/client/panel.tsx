@@ -12,6 +12,7 @@ import type { ReactElement } from 'react'
 import {
   Button, IconPlusOutlineRegular, IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { RemoteTreeBoundary } from './boundary.tsx'
 import { NoticeToastHost } from './common.tsx'
 import { t } from './locales.ts'
 import { ListBody } from './list.tsx'
@@ -21,8 +22,17 @@ import { WizardBody, WizardFooter } from './wizard.tsx'
 /** The panel id in the layout's main registry (`main` slot key). */
 export const PANEL_ID = 'dsh-remote-workspace'
 
-/** Main-column page: actions at the top-left, list or wizard below. */
+/** Main-column page: the boundary keeps a render crash from blanking the shell. */
 export function RemoteWorkspacePanel(): ReactElement | null {
+  return (
+    <RemoteTreeBoundary>
+      <PanelBody />
+    </RemoteTreeBoundary>
+  )
+}
+
+/** The real page: actions at the top-left, list or wizard below. */
+function PanelBody(): ReactElement | null {
   const state = useAppState()
   const wizard = state.view !== 'list'
   // First open on a fresh page load: the store starts empty and nothing else

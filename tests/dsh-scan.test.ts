@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assembleCandidates,
+  candidateOrigin,
   parseDshScanOutput,
   scanDshScript,
   scanTools,
@@ -268,5 +269,32 @@ describe('scanTools', () => {
 
   it('ignores unknown tool names', () => {
     expect(scanTools([{ name: 'busybox', path: '/bin/busybox' }])).toEqual({ tar: false, sha256sum: false, curl: false, wget: false })
+  })
+})
+
+describe('candidate provenance', () => {
+  it('recognises the runtime this plugin deployed before any home rule', () => {
+    expect(candidateOrigin('/home/user/.dsh/server/dsh/node_modules/.bin/dsh', '/home/user/.dsh')).toEqual({ origin: 'deployed' })
+    // A different DSH_HOME makes the same path an ordinary "other" install.
+    expect(candidateOrigin('/home/user/.dsh/server/dsh/node_modules/.bin/dsh', '/opt/dsh')).toEqual({ origin: 'other', detail: '/home/user/.dsh/server/dsh/node_modules/.bin' })
+  })
+
+  it('names node managers by version and system installs by directory', () => {
+    expect(candidateOrigin('/home/user/.nvm/versions/node/v24.4.0/bin/dsh', '/home/user/.dsh')).toEqual({ origin: 'nvm', detail: 'v24.4.0' })
+    expect(candidateOrigin('/home/user/.local/share/fnm/node-versions/v22.1.0/installation/bin/dsh', '')).toEqual({ origin: 'fnm', detail: 'v22.1.0' })
+    expect(candidateOrigin('/usr/local/bin/dsh', '')).toEqual({ origin: 'system', detail: '/usr/local/bin' })
+    expect(candidateOrigin('/home/user/.local/bin/dsh', '')).toEqual({ origin: 'user-local' })
+    expect(candidateOrigin('/home/user/.volta/bin/dsh', '')).toEqual({ origin: 'volta' })
+  })
+
+  it('attaches the provenance to every assembled candidate', () => {
+    const scan: DshScan = parseDshScanOutput(sampleOutput())
+    const candidates = assembleCandidates(scan, { profile: 'dsh-remote-server', dshHome: '/home/user/.dsh' })
+    const deployed = candidates.find(candidate => candidate.path.includes('/.dsh/server/dsh/'))
+    expect(deployed?.origin).toBe('deployed')
+    const nvm = candidates.find(candidate => candidate.path.includes('/.nvm/'))
+    expect(nvm?.origin).toBe('nvm')
+    expect(nvm?.originDetail).toBe('v24.4.0')
+    expect(candidates.find(candidate => candidate.path === '/opt/old/dsh')?.origin).toBe('other')
   })
 })

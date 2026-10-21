@@ -16,14 +16,14 @@ import {
   api, openConnectStream, toWireError, RemoteApiError,
 } from './api.ts'
 import type {
-  AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, ConnectionMode, DirEntry, DshCandidate,
+  AuthKind, ConnectFrame, ConnectStartRequest, ConnectStep, DirEntry, DshCandidate,
   DshScanRequest, ListDirResult, PublicTarget, RemoteRuntimeInput,
   RemoteRuntimeProbe, RemoteSession, ServerPackageState, ServerWorkspace, SshAlias, WireError,
   WorkspaceRef, WslDistro,
 } from './api.ts'
 import type { ClientContext } from './context.ts'
 import { draftFromAlias } from './alias-prefill.ts'
-import { choiceReady, packageSourceOf } from './connect-mode.ts'
+import { choiceFromScan, choiceReady, packageSourceOf, reusePathOf, type RuntimeChoice } from './runtime-choice.ts'
 import { joinWorkspaces } from './workspace-join.ts'
 import type { WorkspaceRow } from './workspace-join.ts'
 import { methodAvailable } from '../targets/methods.ts'
@@ -52,9 +52,6 @@ export type WizardView = 'list' | 'wizard'
  */
 export type { ConnectionMethod }
 
-/** The four progress rows, in server order. */
-export const CONNECT_STEPS: readonly ConnectStep[] = ['connect', 'probe', 'runtime', 'upload', 'start']
-
 /** Editable connection draft (step 2) plus the step-3 choice. */
 export interface ConnectDraft {
   label: string
@@ -75,17 +72,14 @@ export interface ConnectDraft {
   profile: string
   dshHome: string
   /**
-   * Step 3's three-way choice; `''` = nothing chosen yet (连接 stays disabled).
+   * Step 3's runtime choice: a scanned dsh install to reuse, or a new runtime
+   * that is uploaded / downloaded. `null` = nothing picked yet (连接 disabled).
    *
-   * This is the only package-source control in the wizard: the step-2 advanced
-   * section used to carry a second `packageSource` selector, which could say
-   * "download" while step 3 said "upload". The wire field is still
-   * `ConnectRequest.packageSource` — {@link startConnect} maps this choice onto
-   * it (architecture A3: no second, parallel mode concept).
+   * The wire carries exactly one `ConnectRequest.packageSource`;
+   * `runtime-choice.ts` is the only mapping (architecture A3: no second,
+   * parallel mode concept).
    */
-  connectionMode: '' | ConnectionMode
-  /** The launcher picked from the scan's candidates; required for `reuse`. */
-  reuseLauncherPath: string
+  runtimeChoice: RuntimeChoice
 }
 
 /** One discovery pass over the installed WSL distributions. */
@@ -110,6 +104,10 @@ export interface DshScanState {
   candidates: DshCandidate[]
   probe?: RemoteRuntimeProbe
   package?: ServerPackageState
+  /** Remote `DSH_HOME` the scan ran against (absolute); shown above the runtime list. */
+  dshHome?: string
+  /** Profile names that already exist under that `DSH_HOME` (`dsh-remote-server` is ours). */
+  profiles?: string[]
   /** Set while the host answered `stage: 'host-key'`; cleared by a good scan. */
   fingerprint?: string
   error?: string
@@ -425,8 +423,7 @@ function emptyDraft(): ConnectDraft {
     dshCommand: '',
     profile: '',
     dshHome: '',
-    connectionMode: '',
-    reuseLauncherPath: '',
+    runtimeChoice: null,
   }
 }
 
@@ -1877,7 +1874,7 @@ function patchConfig(patch: Partial<ConnectDraft>): void {
     // pull the record of what the host is actually doing out from under it.
     const live = previous.connect.phase === 'running' || previous.connect.phase === 'awaiting-hostkey'
     return {
-      config,
+      config: clearsScan ? { ...config, runtimeChoice: null } : config,
       ...(clearsScan ? { dshScan: emptyDshScan() } : {}),
       ...(clearsScan && !live ? { connect: idleConnect() } : {}),
     }
@@ -1985,16 +1982,11 @@ async function chooseAlias(alias: string): Promise<void> {
   }
 }
 
-/** Choose one of step 3's three connection methods. */
-function setConnectionMode(mode: '' | ConnectionMode): void {
-  // NOT `patchConfig`: that drops the held secret, and switching reuse→upload
+/** Choose one scanned dsh install to reuse (the runtime list's click action). */
+function chooseRuntime(choice: RuntimeChoice): void {
+  // NOT `patchConfig`: that drops the held secret, and picking another runtime
   // after the password was entered would then demand it again for no reason.
-  commit(previous => ({ config: { ...previous.config, connectionMode: mode }, error: undefined }))
-  // Every mode needs the scan: reuse lists the candidates, upload and download
-  // both show the remote architecture plus whether the package is already cached.
-  if (mode !== '' && state.dshScan.status === 'idle' && state.dshScan.fingerprint === undefined) {
-    void scanDsh()
-  }
+  commit(previous => ({ config: { ...previous.config, runtimeChoice: choice }, error: undefined }))
 }
 
 /**
@@ -2044,21 +2036,6 @@ function buildScanRequest(
 }
 
 /**
- * Pick the candidate to preselect after a scan: keep a still-present choice,
- * else the best usable one (`compatible && upToDate` first, then any
- * compatible — the host already sorts them), else nothing.
- * @param candidates - the scan's candidates.
- * @param current - the launcher currently selected in the draft.
- * @returns the path to select, or `''` when nothing is usable.
- */
-function pickCandidate(candidates: readonly DshCandidate[], current: string): string {
-  if (current !== '' && candidates.some(candidate => candidate.path === current)) return current
-  const best = candidates.find(candidate => candidate.compatible && candidate.profile?.upToDate === true)
-    ?? candidates.find(candidate => candidate.compatible)
-  return best?.path ?? ''
-}
-
-/**
  * Run the read-only pre-connection scan (`/api/dsh-scan`).
  *
  * Nothing is pinned or recorded: a `host-key` stage only stores the fingerprint
@@ -2102,10 +2079,12 @@ async function scanDsh(force = false): Promise<void> {
         candidates: result.candidates,
         probe: result.probe,
         package: result.package,
+        dshHome: result.dshHome,
+        profiles: [...result.profiles],
       },
       config: {
         ...previous.config,
-        reuseLauncherPath: pickCandidate(result.candidates, previous.config.reuseLauncherPath),
+        runtimeChoice: choiceFromScan(result.candidates, previous.config.runtimeChoice),
       },
       ...(sentFingerprint === undefined || method === 'wsl'
         ? {}
@@ -2133,7 +2112,17 @@ async function scanDsh(force = false): Promise<void> {
  * @param path - the candidate's launcher path.
  */
 function selectDshCandidate(path: string): void {
-  commit(previous => ({ config: { ...previous.config, reuseLauncherPath: path } }))
+  commit(previous => ({ config: { ...previous.config, runtimeChoice: { kind: 'reuse', path } } }))
+}
+
+/**
+ * Pick how a **new** runtime travels: upload this machine's package, or fetch
+ * the release built for the remote architecture. Deploy choices are always
+ * ready — the connect pipeline probes the host itself.
+ * @param kind - `upload` or `download`.
+ */
+function chooseDeploy(kind: 'upload' | 'download'): void {
+  commit(previous => ({ config: { ...previous.config, runtimeChoice: { kind } }, error: undefined }))
 }
 
 /** Start (or retry) the connection attempt behind `/api/connect/start`. */
@@ -2146,12 +2135,14 @@ async function startConnect(): Promise<void> {
     commit({ view: 'wizard', step: 'config', error: invalid })
     return
   }
-  // Step 3's choice is the only thing that decides how the server side is
-  // provisioned; it becomes exactly one `packageSource` value (`connect-mode.ts`).
-  if (!choiceReady(draft.connectionMode, draft.reuseLauncherPath)) {
-    const key: LocaleKey = draft.connectionMode === 'reuse'
-      ? 'connect.mode.reuse.required'
-      : 'connect.mode.required'
+  // Step 3's runtime choice is the only thing that decides how the server side
+  // is provisioned; it becomes exactly one `packageSource` value
+  // (`runtime-choice.ts`). A reuse choice also needs its candidate to still be
+  // usable after the last scan.
+  if (!choiceReady(draft.runtimeChoice, state.dshScan.candidates)) {
+    const key: LocaleKey = draft.runtimeChoice !== null && draft.runtimeChoice.kind === 'reuse'
+      ? 'connect.runtime.reuse.required'
+      : 'connect.runtime.required'
     commit({ view: 'wizard', step: 'connect', error: validation(key) })
     return
   }
@@ -2194,12 +2185,13 @@ async function startConnect(): Promise<void> {
   }
   const remote = buildRemote(draft)
   if (remote !== undefined) request.remote = remote
-  // One card, one wire value. `reuse` also carries the launcher the user picked;
-  // `upload`/`download` are fully described by the source itself.
-  const packageSource = packageSourceOf(draft.connectionMode)
+  // One choice, one wire value. `reuse` also carries the launcher the user
+  // picked; `upload`/`download` are fully described by the source itself.
+  const packageSource = packageSourceOf(draft.runtimeChoice)
   if (packageSource !== undefined) {
     request.packageSource = packageSource
-    if (packageSource === 'reuse') request.reuseLauncherPath = draft.reuseLauncherPath.trim()
+    const reusePath = reusePathOf(draft.runtimeChoice)
+    if (reusePath !== undefined) request.reuseLauncherPath = reusePath.trim()
   }
 
   setPendingSecret(resolved.secret)
@@ -2875,6 +2867,17 @@ function expandTarget(targetId: string): void {
  */
 async function connectTarget(target: PublicTarget): Promise<void> {
   if (state.pending) return
+  // A password target without a stored secret cannot ever connect. Say so on
+  // the row instead of opening a socket (or rendering a raw ssh2 error).
+  if (target.authKind === 'password' && !target.hasStoredSecret) {
+    commit(previous => ({
+      connectFeedback: withConnectFeedback(previous.connectFeedback, target.id, {
+        connecting: false,
+        error: { code: 'secret-missing', message: t('tree.conn.secretMissing', { label: target.label }) },
+      }),
+    }))
+    return
+  }
   const gen = generation
   commit(previous => ({
     pending: true,
@@ -2976,7 +2979,8 @@ export const store = {
   loadAliases,
   loadWslDistros,
   chooseAlias,
-  setConnectionMode,
+  chooseRuntime,
+  chooseDeploy,
   scanDsh,
   selectDshCandidate,
   startConnect,

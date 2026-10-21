@@ -132,11 +132,11 @@ export function expandRemoteHome(path: string, home: string): string {
 /** Build the ssh2 authentication material for a target. */
 export function authFor(target: RemoteTargetRecord, secret: string | undefined, privateKey: Buffer | undefined): SshAuth {
   if (target.authKind === 'password') {
-    if (secret === undefined || secret === '') throw new Error(`remote target "${target.label}" has no stored password`)
+    if (secret === undefined || secret === '') throw codedError('secret-missing', `remote target "${target.label}" has no stored password`)
     return { kind: 'password', password: secret }
   }
   if (target.authKind === 'privateKey') {
-    if (privateKey === undefined) throw new Error(`remote target "${target.label}" has no readable private key`)
+    if (privateKey === undefined) throw codedError('key-missing', `remote target "${target.label}" has no readable private key`)
     return { kind: 'privateKey', privateKey, ...(secret === undefined ? {} : { passphrase: secret }) }
   }
   return { kind: 'agent' }

@@ -258,7 +258,14 @@ export interface DshCandidate {
   profile?: ScannedDshProfile
   /** Why it is incompatible, already scrubbed by the host. */
   reason?: string
+  /** Where the launcher comes from; the row is named by this, not by its path. */
+  origin: CandidateOrigin
+  /** Node version (nvm/fnm) or install directory, for the row's label. */
+  originDetail?: string
 }
+
+/** Provenance of one scanned launcher (mirror of the host's classification). */
+export type CandidateOrigin = 'deployed' | 'nvm' | 'fnm' | 'volta' | 'bun' | 'user-local' | 'system' | 'other'
 
 /** What the remote host needs: platform, arch and the package tag that matches. */
 export interface RemoteRuntimeProbe {

@@ -122,6 +122,25 @@ declare module 'react' {
     getServerSnapshot?: () => S,
   ): S
 
+  /** Component stack details handed to an error boundary's `componentDidCatch`. */
+  export interface ErrorInfo {
+    componentStack?: string | null
+  }
+
+  /**
+   * The class base an error boundary needs. Only the surface this bundle uses is
+   * declared (`props`, `state`, `setState`, `componentDidCatch`, `render`); the
+   * runtime value comes from the shell's module table.
+   */
+  export class Component<P = {}, S = {}> {
+    constructor(props: P)
+    props: P
+    state: S
+    setState(state: S | ((previous: S, props: P) => S)): void
+    componentDidCatch?(error: Error, info: ErrorInfo): void
+    render(): ReactNode
+  }
+
   export const Fragment: (props: { children?: ReactNode }) => ReactElement
 }
 

@@ -10,6 +10,13 @@
 把一台 SSH 主机打开成 DeepSeek Harness 的工作区。agent loop、模型请求和凭据留在你的电脑上，
 文件、命令与会话日志留在远端机器上，因此换一台电脑可以接着同一个工作区干，不需要复制会话目录。
 
+## Screenshots
+
+![侧栏的「远程工作区」区域：连接 → 远端工作区 → 新会话，输入区绑定远端预设](assets/screenshots/01-remote-workspace.jpg)
+
+侧栏区域按「连接 → 工作区 → 会话」分组，输入区显示远端预设与工作区级权限模式。这个界面里没有
+本机路径——会话与日志都在目标机上。
+
 ## Why this exists
 
 Harness 只在自己运行的机器上干活。当工作必须发生在别处——构建机、GPU 主机、预发服务器——只有三种
@@ -116,7 +123,8 @@ dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 
 1. 在侧栏打开 **远程工作区**，点 **新建连接**。
 2. 选择 `SSH`（Windows 上也可选 `WSL`），填别名与目标信息，首次连接时确认 host key 指纹。
-3. 跑一次只读探测，选择运行时来源，然后连接。
+3. 向导会自动连接并探测目标机；然后从扫描到的列表里选一个已安装的 dsh 复用，或选「部署新运行时」
+   再决定上传 / 远程下载。连接失败不会保存 —— 只有成功之后才会出现这条连接。
 4. 在连接行上点加号，浏览目标机目录并添加为工作区。
 5. 工作区下面的空白行用于新会话，已有行用于继续会话。
 
@@ -128,7 +136,7 @@ dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 
 | 插件 | 已验证 DSH 运行时 | 状态 |
 | --- | --- | --- |
-| 0.1.0-alpha.1 | 0.2.1-rc.2 | verified |
+| 0.1.0-alpha.2 | 0.2.1-rc.2 | verified |
 <!-- verified-runtimes -->
 
 声明是**精确版本**，不是区间：清单把 `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 钉在上面的运行时，

@@ -108,6 +108,10 @@ tsdown 有三个 target：
   进入草稿不得产生成功提示；失败必须可见。
 - engines.dsh 与全部 @deepseek-ai/dsh-* peer 依赖写精确的 0.2.1-rc.2。zod 固定为 4.4.3，禁止 ^。
 - 运行时版本契约只有一处来源 `DSH_VERIFIED_RUNTIMES`；禁止 semver 区间；扩窗只改该常量并附验收。
+- target 只在一次**成功**连接后落盘（pin 与凭据一起写）。host-key 确认、探测失败、密码错误、启动失败
+  都不得写 target，也不得留下「没有凭据」的行。
+- 第 3 步进入即自动执行只读探测（连接主机 → 探测远端环境）；运行时选择在探测之后：列表里点选一个
+  已扫描到的 dsh，或选「部署新运行时」再决定上传 / 远程下载。
 - TS 保持 strict、noUncheckedIndexedAccess、verbatimModuleSyntax、allowImportingTsExtensions；相对导入带 .ts，
   类型导入使用 import type。可选 wire 字段用条件展开，注释记录现象和结论。
 
@@ -164,8 +168,8 @@ RemoteClient。RemoteClient.close 只关闭自己的 peer，不能调用 mux.clo
 
 ## 版本、测试与发布
 
-仓库版本就是发布版本，当前为 0.1.0-alpha.1；两仓必须一致。本机调试部署可以在执行 pnpm build 前追加
-0.1.0-alpha.1.1、0.1.0-alpha.1.2 等修订后缀，部署后用 git checkout -- package.json src/server/index.ts 并
+仓库版本就是发布版本，当前为 0.1.0-alpha.2；两仓必须一致。本机调试部署可以在执行 pnpm build 前追加
+0.1.0-alpha.2.1、0.1.0-alpha.2.2 等修订后缀，部署后用 git checkout -- package.json src/server/index.ts 并
 重新 build。修订号永不提交、push、打 tag 或发布。
 
 提交前至少运行 pnpm typecheck、pnpm test、pnpm build，并完成一次 web profile 的实际安装验收：
