@@ -2,7 +2,7 @@
  * Release lookup for the server package: tag candidates, transports, verification.
  *
  * The artifact name follows the **dsh** release it was built for
- * (`dsh-remote-server-0.2.1-rc.2-linux-arm64-gnu.tar.gz`), while releases are cut
+ * (`dsh-remote-server-0.2.1-rc.3-linux-arm64-gnu.tar.gz`), while releases are cut
  * and tagged with the **plugin** version (`v0.1.0-alphaN`). A client that only
  * looked under `server-v<dshVersion>` therefore never found a published release.
  *
@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { API_TIMEOUT_S, curlArgs, downloadServerPackage, releaseTagsFor, RELEASE_PAGE_MEMORY_MS, RELEASE_PAGE_TIMEOUT_S, resetReleasePageMemory, resolveServerPackage, sourceOrder, type CurlRunner } from '../src/provision/assets.ts'
 
-const VERSION = '0.2.1-rc.2'
+const VERSION = '0.2.1-rc.3'
 const PLUGIN = '0.1.0-alpha62'
 const ARTIFACT = `dsh-remote-server-${VERSION}-linux-arm64-gnu.tar.gz`
 const BODY = Buffer.from('pretend this is a 121 MB tarball')

@@ -36,8 +36,8 @@ function sampleOutput(overrides: { tail?: string[] } = {}): string {
     'TOOL\tsha256sum\t/usr/bin/sha256sum',
     'TOOL\tcurl\t/usr/bin/curl',
     'NODE\t/usr/bin/node\tv20.11.1',
-    'DSH\t/home/user/.nvm/versions/node/v24.4.0/bin/dsh\t/home/user/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js\t0.2.1-rc.2\t0\t/home/user/.nvm/versions/node/v24.4.0/bin/node',
-    'DSH\t/home/user/.dsh/server/dsh/node_modules/.bin/dsh\t/home/user/.dsh/server/dsh/node_modules/.bin/dsh\t0.2.1-rc.2\t0\t/home/user/.dsh/server/node/bin/node',
+    'DSH\t/home/user/.nvm/versions/node/v24.4.0/bin/dsh\t/home/user/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js\t0.2.1-rc.3\t0\t/home/user/.nvm/versions/node/v24.4.0/bin/node',
+    'DSH\t/home/user/.dsh/server/dsh/node_modules/.bin/dsh\t/home/user/.dsh/server/dsh/node_modules/.bin/dsh\t0.2.1-rc.3\t0\t/home/user/.dsh/server/node/bin/node',
     'DSH\t/opt/old/dsh\t/opt/old/dsh\t0.1.9-beta.4\t0\t',
     'PLUGIN\tdsh-remote-server\t0.1.0-alpha50\tabcdef',
     'PLUGIN\tweb\t\t',
@@ -111,7 +111,7 @@ describe('parseDshScanOutput', () => {
     expect(scan.launchers[0]).toEqual({
       path: '/home/user/.nvm/versions/node/v24.4.0/bin/dsh',
       realPath: '/home/user/.nvm/versions/node/v24.4.0/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js',
-      version: '0.2.1-rc.2',
+      version: '0.2.1-rc.3',
       exitCode: 0,
       nodePath: '/home/user/.nvm/versions/node/v24.4.0/bin/node',
     })
@@ -142,13 +142,13 @@ describe('parseDshScanOutput', () => {
       'HOME\t/home/u',
       'DSH\t/only/one/field',
       'DSH\t/with\ttab/in/path\t/real\t0.2.1\t0\t',
-      'DSH\t/good/dsh\t/good/dsh\t0.2.1-rc.2\t0\t/usr/bin/node',
+      'DSH\t/good/dsh\t/good/dsh\t0.2.1-rc.3\t0\t/usr/bin/node',
       'PLUGIN\tname-only',
       'END',
     ].join('\n')
     const scan = parseDshScanOutput(stdout)
     expect(scan.launchers).toEqual([
-      { path: '/good/dsh', realPath: '/good/dsh', version: '0.2.1-rc.2', exitCode: 0, nodePath: '/usr/bin/node' },
+      { path: '/good/dsh', realPath: '/good/dsh', version: '0.2.1-rc.3', exitCode: 0, nodePath: '/usr/bin/node' },
     ])
     expect(scan.profiles).toEqual([])
   })
@@ -213,7 +213,7 @@ describe('assembleCandidates', () => {
       'HOME\t/home/u',
       'PLUGIN\tdsh-remote-server\t0.1.0-alpha50\tabcdef',
       // usable, listed before the unusable ones on purpose
-      'DSH\t/z/compatible\t/z/compatible\t0.2.1-rc.2\t0\t',
+      'DSH\t/z/compatible\t/z/compatible\t0.2.1-rc.3\t0\t',
       'DSH\t/a/incompatible\t/a/incompatible\t0.1.0\t0\t',
       'DSH\t/b/incompatible\t/b/incompatible\t0.2.1\t0\t',
       'END',
@@ -231,7 +231,7 @@ describe('assembleCandidates', () => {
       launchers: Array.from({ length: 30 }, (_unused, index) => ({
         path: `/opt/dsh-${String(index).padStart(2, '0')}`,
         realPath: `/opt/dsh-${String(index).padStart(2, '0')}`,
-        version: '0.2.1-rc.2',
+        version: '0.2.1-rc.3',
         exitCode: 0,
       })),
     }

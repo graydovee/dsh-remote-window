@@ -21,23 +21,47 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { remotePresetId } from '../preset/world.ts'
+import { installRemoteContext } from './remote-context.ts'
+import type { RemoteContextOptions } from './remote-context.ts'
+import type { LocalAgentHandleLike } from './local-turn.ts'
 
 /** Options for one remote session. */
 export interface OpenRemoteSessionOptions {
   /** Target record id; its preset must already be registered. */
   readonly targetId: string
-  /** Absolute local stub directory standing in for the remote path. */
+  /** Absolute local anchor directory standing in for the remote path. */
   readonly path: string
   /** Session id to reuse, when reopening an existing workspace session. */
   readonly sessionId?: string
+  /**
+   * Exact preset id to mount. Defaults to `remote:<targetId>`; v1 may record a
+   * portable id (per server) in the session log, so a resumed session must be
+   * able to name the preset the log recorded instead of re-deriving one.
+   */
+  readonly agentPreset?: string
   /** Cancellation of the whole creation. */
   readonly signal?: AbortSignal
+  /** Model-facing facts about the local-agent/remote-world split. */
+  readonly remoteContext?: RemoteContextOptions | undefined
 }
 
 /** The created session's identity. */
 export interface OpenedRemoteSession {
   readonly sessionId: SessionId
   readonly agentPreset: string
+  /**
+   * The official `AgentHandle` when this call created/resumed the Agent.
+   *
+   * `undefined` for an already-live session: another caller (the embedded
+   * official UI, a previous open, the shell) owns the disposer, so this module
+   * cannot cancel/release it — the executor state machine must treat the
+   * session as unmanaged and fall back to a profile restart when switching.
+   */
+  readonly handle?: LocalAgentHandleLike
+  /** Whether this call owns the AgentHandle (and therefore the write lease). */
+  readonly managed: boolean
+  /** Diagnostic for an unmanaged session (why no handle is available). */
+  readonly unmanagedReason?: string
 }
 
 /** Options for resuming a stored remote session. */
@@ -46,8 +70,12 @@ export interface ResumeRemoteSessionOptions {
   readonly targetId: string
   /** Stored session id; it may have been written by another dsh instance. */
   readonly sessionId: string
+  /** Exact preset id to mount; defaults to `remote:<targetId>`. */
+  readonly agentPreset?: string
   /** Cancellation of the load and composition. */
   readonly signal?: AbortSignal
+  /** Model-facing facts about the local-agent/remote-world split. */
+  readonly remoteContext?: RemoteContextOptions | undefined
 }
 
 /** The subset of `ctx.agents` this module needs. */
@@ -59,7 +87,7 @@ interface AgentCreator {
     meta: { cwd: string; agentPreset?: string }
     signal?: AbortSignal
     setup?: (agentCtx: Context) => Promise<void> | void
-  }): Promise<unknown>
+  }): Promise<LocalAgentHandleLike>
   /**
    * Load a persisted session and publish a live agent on it. The remote log is
    * read through the routing persistence, so `resumeSessionId` may name a
@@ -70,46 +98,7 @@ interface AgentCreator {
     agentOptions?: { provider?: string; model?: string }
     signal?: AbortSignal
     setup?: (agentCtx: Context) => Promise<void> | void
-  }): Promise<unknown>
-}
-
-/**
- * The creation-time seed: one *complete* turn (open → system head → close).
- *
- * Why a whole turn: the restore layer (DSH `session-format-v3-to-v4`
- * relationships.ts) requires every `system/message` to sit inside an open
- * `turn/start` + `step/start` pair — a bare system event loads fine in memory
- * but is rejected as `… does not match an open turn and step` on the next
- * process restart. The turn must also be *closed* (`step/end` + `turn/end`,
- * reason `completed`): an open tail survives one reload, but the agent loop
- * derives the next turn number from the last seen `data.turn` and its new
- * `turn/start` would then collide with the still-open turn and corrupt the
- * log again.
- */
-function workspaceSeedEvents(): unknown[] {
-  const time = Date.now()
-  return [
-    { type: 'turn/start', seq: 0, time, data: { turn: 1 } },
-    { type: 'step/start', seq: 1, time, data: { turn: 1, step: 1 } },
-    {
-      type: 'system/message',
-      seq: 2,
-      time,
-      surfaceOp: 'append',
-      data: {
-        turn: 1,
-        step: 1,
-        message: {
-          id: randomUUID(),
-          role: 'system',
-          content: [],
-          source: { kind: 'system-prompt' },
-        },
-      },
-    },
-    { type: 'step/end', seq: 3, time, data: { turn: 1, step: 1 } },
-    { type: 'turn/end', seq: 4, time, data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
+  }): Promise<LocalAgentHandleLike>
 }
 
 /**
@@ -125,7 +114,7 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
   // (`C:\Users\…\.dsh\remote-workspaces\…`) even though it was perfectly valid.
   if (!isAbsolute(options.path)) throw new Error(`remote working directory must be absolute, received "${options.path}"`)
   const presets = ctx.agentPresets
-  const presetId = remotePresetId(options.targetId)
+  const presetId = options.agentPreset ?? remotePresetId(options.targetId)
   const resolved = await presets.resolve(presetId)
   if (resolved.broken !== undefined) {
     throw new Error(`remote preset "${presetId}" is unusable: ${resolved.broken}`)
@@ -134,17 +123,20 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
   const agents = ctx.agents as unknown as AgentCreator
   const existing = agents.get(sessionId)
   if (existing !== undefined) {
-    return { sessionId, agentPreset: resolved.id }
+    return {
+      sessionId,
+      agentPreset: resolved.id,
+      managed: false,
+      unmanagedReason: 'the session is already live in this process; another caller owns its AgentHandle',
+    }
   }
   const defaultModel = ctx.get('agentDefaultModel') as { currentSelection(): { provider?: string; model?: string } } | undefined
   const selection = defaultModel?.currentSelection() ?? {}
   const buildCreate = (id: SessionId) => ({
     sessionId: id,
-    // The shell keeps a *blank* session's composer inert behind a "select a
-    // workspace" hero; the seed's complete turn (see workspaceSeedEvents)
-    // clears blank so the opened workspace is immediately chatty, and keeps
-    // the stored log reload-valid.
-    seed: workspaceSeedEvents(),
+    // v1 local mode creates a genuinely blank session (no `turn/start`): the
+    // official draft/composer owns the first turn. Never synthesize a turn seed
+    // (AGENTS: no self-built turn presets).
     agentOptions: { ...(selection.provider === undefined ? {} : { provider: selection.provider }), ...(selection.model === undefined ? {} : { model: selection.model }) },
     meta: { cwd: options.path, agentPreset: resolved.id },
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -152,11 +144,12 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
     // whose realm is not mounted yet.
     setup: async (agentCtx: Context): Promise<void> => {
       await presets.mount(agentCtx, resolved.id)
+      if (options.remoteContext !== undefined) installRemoteContext(agentCtx, options.remoteContext)
     },
   })
   try {
-    await agents.create(buildCreate(sessionId))
-    return { sessionId, agentPreset: resolved.id }
+    const handle = await agents.create(buildCreate(sessionId))
+    return { sessionId, agentPreset: resolved.id, handle, managed: true }
   } catch (error) {
     // A workspace record survives process restarts with its old session id:
     // the live agent registry is empty then, but the durable session store
@@ -165,8 +158,8 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
     const message = error instanceof Error ? error.message : String(error)
     if (options.sessionId === undefined || !/already exists|corrupt|does not match an open turn/i.test(message)) throw error
     const fresh = `session-${randomUUID()}` as SessionId
-    await agents.create(buildCreate(fresh))
-    return { sessionId: fresh, agentPreset: resolved.id }
+    const handle = await agents.create(buildCreate(fresh))
+    return { sessionId: fresh, agentPreset: resolved.id, handle, managed: true }
   }
 }
 
@@ -186,7 +179,7 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
  */
 export async function resumeRemoteSession(ctx: Context, options: ResumeRemoteSessionOptions): Promise<OpenedRemoteSession> {
   const presets = ctx.agentPresets
-  const presetId = remotePresetId(options.targetId)
+  const presetId = options.agentPreset ?? remotePresetId(options.targetId)
   const resolved = await presets.resolve(presetId)
   if (resolved.broken !== undefined) {
     throw new Error(`remote preset "${presetId}" is unusable: ${resolved.broken}`)
@@ -196,11 +189,16 @@ export async function resumeRemoteSession(ctx: Context, options: ResumeRemoteSes
   // A session that is already live (opened earlier in this process) only needs
   // the caller to reveal it; resuming again would collide on write ownership.
   if (agents.get(sessionId) !== undefined) {
-    return { sessionId, agentPreset: resolved.id }
+    return {
+      sessionId,
+      agentPreset: resolved.id,
+      managed: false,
+      unmanagedReason: 'the session is already live in this process; another caller owns its AgentHandle',
+    }
   }
   const defaultModel = ctx.get('agentDefaultModel') as { currentSelection(): { provider?: string; model?: string } } | undefined
   const selection = defaultModel?.currentSelection() ?? {}
-  await agents.resume({
+  const handle = await agents.resume({
     resumeSessionId: sessionId,
     agentOptions: { ...(selection.provider === undefined ? {} : { provider: selection.provider }), ...(selection.model === undefined ? {} : { model: selection.model }) },
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -208,7 +206,8 @@ export async function resumeRemoteSession(ctx: Context, options: ResumeRemoteSes
     // before any observer can drive the resumed session.
     setup: async (agentCtx: Context): Promise<void> => {
       await presets.mount(agentCtx, resolved.id)
+      if (options.remoteContext !== undefined) installRemoteContext(agentCtx, options.remoteContext)
     },
   })
-  return { sessionId, agentPreset: resolved.id }
+  return { sessionId, agentPreset: resolved.id, handle, managed: true }
 }

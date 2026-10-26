@@ -1,6 +1,6 @@
 # Vendored: the official workspace row layer
 
-Source checkout: `<dsh-checkout>`
+Source checkout: `dsh-v0.2.1-rc.2 (commit 687f282e86)`
 Upstream paths:
 
 - `packages/client/ui-workspace/src/client/rows/Rows.tsx`

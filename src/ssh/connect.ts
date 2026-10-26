@@ -19,6 +19,16 @@ export type SshAuth =
   | { readonly kind: 'privateKey'; readonly privateKey: Buffer; readonly passphrase?: string }
   | { readonly kind: 'agent'; readonly agent?: string }
 
+/** The server rejected every offered authentication method. */
+export class SshAuthError extends Error {
+  readonly code = 'ssh-auth-failed'
+
+  constructor(readonly host: string, readonly username: string) {
+    super(`SSH authentication failed for ${username}@${host}: the server rejected the configured password/private key/agent. Check the credentials or switch the authentication method.`)
+    this.name = 'SshAuthError'
+  }
+}
+
 /** One SSH connection description. */
 export interface SshConnectionOptions {
   readonly host: string
@@ -76,18 +86,25 @@ export async function connectSsh(options: SshConnectionOptions): Promise<Client>
       const actual = fingerprintOf(key)
       if (options.hostKeyFingerprint === undefined) {
         hostKeyError = new HostKeyUnknownError(actual)
-        return false
+        throw hostKeyError
       }
       if (options.hostKeyFingerprint !== actual) {
         hostKeyError = new HostKeyMismatchError(options.hostKeyFingerprint, actual)
-        return false
+        throw hostKeyError
       }
       return true
     },
   }
   await new Promise<void>((resolve, reject) => {
     client.once('ready', () => { resolve() })
-    client.once('error', (error: Error) => { reject(hostKeyError ?? error) })
+    client.once('error', (error: Error) => {
+      if (hostKeyError !== undefined) { reject(hostKeyError); return }
+      if (/all configured authentication methods failed/i.test(error.message)) {
+        reject(new SshAuthError(options.host, options.username))
+        return
+      }
+      reject(error)
+    })
     client.connect(config)
   })
   return client

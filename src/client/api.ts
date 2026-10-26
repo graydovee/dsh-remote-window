@@ -431,17 +431,20 @@ export interface WireError {
 export class RemoteApiError extends Error {
   readonly code: string
   readonly status: number
+  /** Structured public details from the envelope (never secrets). */
+  readonly details?: unknown
 
   /**
    * @param code - the host's error code (`network` and `invalid-response` are client-side).
    * @param message - human-readable message, already localized where the client produced it.
    * @param status - HTTP status, 0 for a transport failure.
    */
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, details?: unknown) {
     super(message)
     this.name = 'RemoteApiError'
     this.code = code
     this.status = status
+    this.details = details
   }
 }
 
@@ -455,7 +458,7 @@ export function toWireError(error: unknown): WireError {
 interface Envelope {
   ok?: unknown
   value?: unknown
-  error?: { code?: unknown; message?: unknown }
+  error?: { code?: unknown; message?: unknown; details?: unknown }
 }
 
 /**
@@ -477,11 +480,16 @@ async function readEnvelope<T>(response: Response): Promise<T> {
   const code = typeof parsed?.error?.code === 'string' ? parsed.error.code : `http-${response.status}`
   const envelopeMessage = typeof parsed?.error?.message === 'string' ? parsed.error.message : undefined
   const fallback = raw === '' ? `HTTP ${response.status}` : raw.slice(0, 300)
-  throw new RemoteApiError(code, envelopeMessage ?? fallback, response.status)
+  throw new RemoteApiError(
+    code,
+    envelopeMessage ?? fallback,
+    response.status,
+    parsed?.error?.details,
+  )
 }
 
 /** POST one command route and unwrap its envelope. */
-async function call<T>(route: string, body: unknown): Promise<T> {
+export async function call<T>(route: string, body: unknown): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API_PREFIX}/api/${route}`, {

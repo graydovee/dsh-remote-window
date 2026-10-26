@@ -10,7 +10,21 @@
  * the host plane keeps `sandboxPolicy`, the model client, credentials and the UI.
  */
 import type { PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
-import type { RemoteTargetRecord } from '../targets/types.ts'
+
+/**
+ * The target facts a remote execution-world preset needs.
+ *
+ * Structural on purpose: the v1 `ProfileService` targets and the legacy
+ * `RemoteTargetRecord` both satisfy it, so either connection path can register
+ * the same preset without importing the other plane's record type.
+ */
+export interface RemotePresetTarget {
+  readonly id: string
+  readonly label: string
+  readonly host: string
+  readonly port: number
+  readonly username: string
+}
 
 /** Preset ids are namespaced so a target's world can never collide with a shipped preset. */
 export const REMOTE_PRESET_PREFIX = 'remote:'
@@ -25,7 +39,7 @@ export function remotePresetId(targetId: string): string {
  * @param target - the stored target record.
  * @returns a definition ready for `ctx.agentPresets.register`.
  */
-export function remotePresetDefinition(target: RemoteTargetRecord): PresetDefinition {
+export function remotePresetDefinition(target: RemotePresetTarget): PresetDefinition {
   const id = remotePresetId(target.id);
   return {
     id,

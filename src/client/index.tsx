@@ -1,76 +1,58 @@
 /**
- * Browser half of `dsh-remote-workspace`.
+ * Browser half of `dsh-remote-workspace` (v1).
  *
- * One slot contribution, through the shipped client slots so hot reload
- * disposes it with the plugin fiber:
+ * Contributions, all through the shipped client slots so hot reload disposes
+ * them with the plugin fiber:
  *
- *  - `main` — the panel page: 新建连接 at the top-left, and the whole flow
- *    inline (choose a method → fill the configuration → choose how the remote
- *    side is provisioned, watch the live progress stream including the explicit
- *    host-key confirmation).
+ *  - the 「远程工作区」 section in the left sidebar (mounted by
+ *    {@link mountSidebarSection}) — connections → server workspaces → sessions;
+ *  - one keyed `main` panel for the server-mode conversation area (the v2
+ *    native timeline/composer, task-15). The legacy portal iframe module stays
+ *    in the tree but is not mounted. A local conversation is selected through
+ *    the official `uiWorkspace`, which clears the key and returns to
+ *    `conversation`.
  *
- * There is deliberately **no `sidebar.panellist` row any more**: the
- * 「远程工作区」 section in the left sidebar (mounted by {@link mountSidebarSection})
- * owns the entry points, and its `+新建连接` control selects this panel through
- * `layout.selectPanel(PANEL_ID)` (`sidebar.tsx` → `store.openConnectionWizard`).
- * A second, parallel sidebar row only duplicated that entry.
- *
- * The bundle imports only the platform module table (`react`,
- * `react/jsx-runtime`, `@deepseek-ai/dsh-client-ui-primitives`); the stylesheet
- * is injected as one `<style data-plugin="dsh-remote-workspace">` element from
- * {@link apply} because this plugin's tsdown config does not process CSS.
+ * The legacy connection panel/wizard and the old remote-preset seat are not
+ * registered in v1; local-mode wiring lives in the session bridge and will be
+ * re-attached there, not through the old panel.
  */
-import type { ReactElement, ReactNode } from 'react'
 import type { ClientContext } from './context.ts'
 import { t } from './locales.ts'
-import { ListBody, ListFooter } from './list.tsx'
-import { PANEL_ID, RemoteWorkspacePanel } from './panel.tsx'
+import { bindRemoteStoreContext, disposeRemoteStore, loadRemoteState } from './remote-store.ts'
+import { NativeSessionPanel } from './panel.tsx'
+import { NATIVE_MAIN_ID } from './session-main.tsx'
 import { mountSidebarSection } from './sidebar.tsx'
-import { bindVerbContext } from './session-verbs.ts'
-import { bindClientContext, dispose, store, watchShellRows } from './store.ts'
-import { ensureStyles, syncShellHiding } from './styles.ts'
+import { ensureStyles } from './styles.ts'
 
-/**
- * Client services this plugin needs: `slots` only. Localization is the
- * plugin's own dictionary (`./locales.ts`), so no locale service is required.
- */
+/** Client services this plugin needs: `slots` only. */
 export const inject = ['slots']
 
 /**
- * Plugin body: inject the stylesheet, own the store's side-effect lifetime and
- * register the two slot contributions.
+ * Plugin body: stylesheet, the sidebar section, the P3 state stream and the
+ * server-mode main panel.
  * @param ctx - the client context.
  */
 export function apply(ctx: ClientContext): void {
-  bindClientContext(ctx)
-  bindVerbContext(ctx)
+  bindRemoteStoreContext(ctx)
   ctx.effect(() => ensureStyles(), 'dsh-remote-workspace: stylesheet')
-  // Keep the plugin's rows out of the shell's own 工作区 section (plugin
-  // lifetime, not panel lifetime — those rows live in the sidebar). Remote
-  // work-workspaces and their sessions belong to this plugin's section only.
-  ctx.effect(() => watchShellRows(syncShellHiding), 'dsh-remote-workspace: shell row hiding')
   // The 远程工作区 section in the LEFT SIDEBAR, directly above the shell's own
   // 工作区 section. The shell declares no seat for a second section, so this
-  // mounts into the browsing region itself; see sidebar.tsx for the anchors it
-  // relies on and for the fallback when they are missing.
+  // mounts into the browsing region itself; see sidebar.tsx.
   ctx.effect(() => mountSidebarSection(), 'dsh-remote-workspace: sidebar section')
-  // Load the saved state at activation, not only on first panel open: the
-  // sidebar section and the workspace icons depend on it, and neither waits for
-  // a panel the user may never open.
-  void store.refreshState()
-  ctx.effect(() => () => { dispose() }, 'dsh-remote-workspace: store lifetime')
+  // v1 remote tree: one P3 snapshot for the sidebar; sessions load lazily when
+  // a connection expands. The state stream keeps it current afterwards.
+  void loadRemoteState()
+  ctx.effect(() => () => { disposeRemoteStore() }, 'dsh-remote-workspace: remote store lifetime')
 
-  // The main-column page itself. Registered defensively so a slot option
-  // mismatch surfaces in the console instead of aborting activation (the
-  // sidebar section above is what the user actually clicks).
+  // One keyed main entry: the v2 native conversation. The portal iframe is
+  // retained but no longer registered/mounted (removed after v2 acceptance).
   try {
     ctx.slots.inject('main', () => ctx.slots.register({
       name: 'main',
-      key: PANEL_ID,
-      label: () => t('app.name'),
-    }, RemoteWorkspacePanel))
+      key: NATIVE_MAIN_ID,
+      label: () => t('session.main.aria'),
+    }, NativeSessionPanel))
   } catch (error) {
-    console.error('[dsh-remote-workspace] main panel registration failed', error)
+    console.error('[dsh-remote-workspace] native main panel registration failed', error)
   }
-
 }

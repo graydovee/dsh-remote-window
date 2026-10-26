@@ -18,12 +18,18 @@ import { z } from 'zod'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
-import { helloSchema, type SshStreamEndpoint } from '@deepseek-ai/dsh-ssh/schemas'
-import { FrameMux, streamTransport } from '../frame/mux.ts'
-import type { RemoteProtocolClient, RemoteWorkspaceService } from '../targets/types.ts'
+import { Duplex } from 'node:stream'
+import type { SshStreamEndpoint } from '@deepseek-ai/dsh-ssh/schemas'
+import type { RemoteMux, RemoteMuxStream } from '../remote/mux-client.ts'
 
-/** Wire handshake observation, matching the official helper's `hello`. */
-export type RemoteHello = z.infer<typeof helloSchema>
+/**
+ * v1 execution-world client provided by dev-core (protocol §16.7/§16.9).
+ *
+ * `ctx.remoteMux` routes one target to its own WS/FrameMux backend; the realm
+ * only needs one RPC round-trip and one stream attach. `RemoteMuxStream` is
+ * adapted to a paused `Duplex`, the surface the official `*-ssh` providers
+ * consume (pipe/end/destroy/close).
+ */
 
 /** What one realm-scoped connection needs to know; no secret is ever a field. */
 export interface Config {
@@ -47,7 +53,7 @@ declare module '@deepseek-ai/cordis' {
 
 /** One non-reconnecting connection to a remote execution world. */
 export default class RemoteConnection extends Service {
-  static inject = ['remoteWorkspaces']
+  static inject = ['remoteMux']
   static Config: Schema<Config> = Schema.object({
     targetId: Schema.string().required().description('Remote target record id owned by the plugin store.'),
     label: Schema.string().description('Human-readable target label for diagnostics.'),
@@ -59,10 +65,9 @@ export default class RemoteConnection extends Service {
 
   private readonly config: Required<Omit<Config, 'label'>> & Pick<Config, 'label'>
   private readonly lifetime = new AbortController()
-  private connecting: Promise<RemoteHello> | undefined
-  /** The target's single RPC client, shared with the plugin's browse plane. */
-  private link: RemoteProtocolClient | undefined
-  private remote: RemoteHello | undefined
+  private connecting: Promise<void> | undefined
+  /** v1 execution-world service provided by dev-core. */
+  private mux: RemoteMux | undefined
   private failure: Error | undefined
   private closing = false
   private disposal: Promise<void> | undefined
@@ -85,7 +90,9 @@ export default class RemoteConnection extends Service {
    * operation, so an offline host cannot make the preset permanently broken.
    */
   async [Service.init](): Promise<void> {
-    if (!this.ctx.get('remoteWorkspaces')) throw new Error(`remote target "${this.config.targetId}" has no workspace service`)
+    if (this.ctx.get('remoteMux') === undefined) {
+      throw new Error(`remote target "${this.config.targetId}" has no execution-world mux service`)
+    }
   }
 
   /**
@@ -99,12 +106,13 @@ export default class RemoteConnection extends Service {
    * provider reads this member, so the refusal cannot break a session.
    */
   get ptcLaunch(): { kind: 'embedded'; executable: string } | { kind: 'node-script'; executable: string; bootstrapPath: string } {
-    if (this.remote === undefined) throw new Error('the remote workspace is not connected yet')
+    // v1 keeps the official PTC bootstrap unsupported: nothing in this world
+    // provisions it, and no installed provider reads this member.
     throw new Error('remote PTC is not supported by dsh-remote-workspace v1')
   }
 
   /** The verified remote handshake, connecting on first access. */
-  get ready(): Promise<RemoteHello> {
+  get ready(): Promise<void> {
     this.connecting ??= this.start()
     return this.connecting
   }
@@ -120,16 +128,17 @@ export default class RemoteConnection extends Service {
    */
   async request<T>(method: string, params: unknown, result: z.ZodType<T>, signal?: AbortSignal, wait = false): Promise<T> {
     this.assertOpen()
-    const hello = await this.ready
+    await this.ready
     this.assertOpen()
     const outgoing = this.translateWorkspaceAliases(params)
-    void hello
     const bounded = wait
       ? signal
       : signal === undefined
         ? AbortSignal.timeout(this.config.requestTimeoutMs)
         : AbortSignal.any([signal, AbortSignal.timeout(this.config.requestTimeoutMs)])
-    return (await this.shared()).request(method, outgoing, result, bounded)
+    const mux = await this.muxService()
+    const raw = await mux.request<unknown>(this.config.targetId, method, outgoing, bounded)
+    return result.parse(raw)
   }
 
   /** RPC seam used by the realm-scoped RemotePersistence provider. */
@@ -183,12 +192,17 @@ export default class RemoteConnection extends Service {
    * @returns a duplex; attach a consumer before writing large payloads.
    */
   async connectStream(endpoint: SshStreamEndpoint, signal?: AbortSignal): Promise<import('node:net').Socket> {
-    const hello = await this.ready
+    await this.ready
     this.assertOpen()
-    void hello
     const combined = signal === undefined ? this.lifetime.signal : AbortSignal.any([signal, this.lifetime.signal])
     combined.throwIfAborted()
-    return await (await this.shared()).openStream(endpoint, combined)
+    // The server mux's FRAME_OPEN carries the endpoint's official capability
+    // (64-hex, minted by `process.prepare` / the hello root); the path alone is
+    // not enough to admit the stream.
+    const mux = await this.muxService()
+    const stream = await mux.openStream(this.config.targetId, endpoint.path, { capability: endpoint.capability })
+    combined.throwIfAborted()
+    return muxStreamSocket(stream) as unknown as import('node:net').Socket
   }
 
   /** Close the remote server channel and release every stream. */
@@ -200,12 +214,10 @@ export default class RemoteConnection extends Service {
   private async disposeOnce(): Promise<void> {
     this.closing = true
     this.lifetime.abort(new Error('remote workspace connection is closing'))
-    // The client belongs to the target, not to this adapter: closing its peer or
-    // channel here would take down the plugin's browse plane and the remote
-    // server process itself. Only the pin is released; 停止/忘记 close the channel.
-    this.link = undefined
-    const workspaces = this.ctx.get('remoteWorkspaces') as { releaseRemoteClient?(targetId: string): void } | undefined
-    workspaces?.releaseRemoteClient?.(this.config.targetId)
+    // The mux service owns the per-target WS/FrameMux lifetime (and its P1
+    // client shares it with the browse plane); a realm teardown drops its
+    // reference only, never closing the shared transport.
+    this.mux = undefined
   }
 
   private assertOpen(): void {
@@ -217,37 +229,81 @@ export default class RemoteConnection extends Service {
     if (this.failure !== undefined) return
     this.failure = error
     this.lifetime.abort(error)
-    this.link = undefined
+    this.mux = undefined
   }
 
-  /** The shared client of this target, waiting for startup when needed. */
-  private async shared(): Promise<RemoteProtocolClient> {
+  /** Resolve the target-bound mux on every call so an SSH reconnect is visible. */
+  private async muxService(): Promise<RemoteMux> {
     await this.ready
     this.assertOpen()
-    if (this.link === undefined) throw new Error('remote workspace connection is not attached')
-    return this.link
+    const mux = this.ctx.get('remoteMux') as RemoteMux | undefined
+    if (mux === undefined) throw new Error(`remote target "${this.config.targetId}" has no execution-world mux service`)
+    this.mux = mux
+    return mux
   }
 
-  private async start(): Promise<RemoteHello> {
-    const workspaces = this.ctx.get('remoteWorkspaces') as RemoteWorkspaceService | undefined
-    if (workspaces === undefined) throw new Error(`remote target "${this.config.targetId}" has no workspace service`)
-    // Exactly one peer owns the channel; see RemoteClient in provision/service.
-    const client = await workspaces.remoteClient(this.config.targetId)
-    if (this.closing) {
-      workspaces.releaseRemoteClient?.(this.config.targetId)
-      throw new Error('remote workspace connection closed before startup')
-    }
-    this.link = client
-    const hello = client.hello as unknown as RemoteHello
-    const expected = await workspaces.expectedDigest(this.config.targetId).catch(() => undefined)
-    if (expected !== undefined && expected !== hello.hash) {
-      const detail = `remote server digest ${hello.hash.slice(0, 16)}… differs from the installed plugin ${expected.slice(0, 16)}…`
-      void this.dispose()
-      throw new Error(`${detail}; install the same dsh-remote-workspace version on the remote host`)
-    }
-    this.remote = hello
-    // The heartbeat lives in the shared client (it must keep running between
-    // turns); duplicating it here renewed the same lease from a second peer.
-    return hello
+  private async start(): Promise<void> {
+    const mux = this.ctx.get('remoteMux') as RemoteMux | undefined
+    if (mux === undefined) throw new Error(`remote target "${this.config.targetId}" has no execution-world mux service`)
+    if (this.closing) throw new Error('remote workspace connection closed before startup')
+    this.mux = mux
   }
+}
+
+/**
+ * Adapt one v1 mux stream to the paused `Duplex` the official providers use.
+ *
+ * `RemoteMuxStream` is transport-agnostic; the providers pipe it into process
+ * stdio, terminal output, or a `SshRpcPeer` (which only needs a
+ * Readable+Writable pair). No extra backpressure is invented here: the mux/WS
+ * layer owns flow control.
+ */
+function muxStreamSocket(stream: RemoteMuxStream): Duplex {
+  let iterator: AsyncIterator<Uint8Array> | undefined
+  let pumping = false
+  const duplex = new Duplex({
+    // Official forwardOut sockets are half-open: providers may end stdin while
+    // still reading stdout (subprocess/terminal). Keep the readable side alive.
+    allowHalfOpen: true,
+    read() {
+      if (pumping) return
+      pumping = true
+      iterator ??= stream.read()[Symbol.asyncIterator]()
+      void (async () => {
+        try {
+          while (!duplex.destroyed) {
+            const next = await iterator?.next()
+            if (next === undefined || next.done === true) {
+              pumping = false
+              duplex.push(null)
+              return
+            }
+            if (!duplex.push(Buffer.from(next.value))) {
+              pumping = false
+              return
+            }
+          }
+        } catch (error) {
+          pumping = false
+          duplex.destroy(error instanceof Error ? error : new Error(String(error)))
+        }
+      })()
+    },
+    write(chunk: Buffer, _encoding, callback) {
+      Promise.resolve(stream.write(chunk)).then(() => callback(), error => callback(error instanceof Error ? error : new Error(String(error))))
+    },
+    final(callback) {
+      try {
+        stream.end()
+        callback()
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error(String(error)))
+      }
+    },
+    destroy(error, callback) {
+      stream.abort(error?.message)
+      callback(error)
+    },
+  })
+  return duplex
 }

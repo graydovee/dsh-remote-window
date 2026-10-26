@@ -1,16 +1,24 @@
-# dsh-remote-workspace 架构（含本轮需求变更）
+# dsh-remote-workspace 架构（v1 背景文档）
 
-> 状态：**架构基线 v3 / 阶段 P0**（在「新建连接三步 + 连接方式三选一 + 行级添加工作区」之上，
-> 追加 **server 权威 + 本地只留引用** 的重构）。
-> 权威性：本文件与 `doc/api-contract.md`、`doc/acceptance-gap.md` 一起是实现的唯一权威；
-> 代码与文档不一致时，先走变更确认（架构师改文档并通知 Leader 与 Developer）。
-> 现有实现事实以 `AGENTS.md` 为准（那份文件记录的是实测约束，本文件不推翻任何一条）。
+> **v1 权威文档是 `doc/refactor-v1-architecture.md` 与 `doc/refactor-v1-protocol.md`。**
+> 本文件是 v1 之前的架构历史（stdio 分帧 RPC、远程 execution world、P0 server 权威），
+> **仅作背景，不再作为实现或验收契约**；v1 的 server 普通 DSH + per-client profile、双执行端、
+> 同源 portal/iframe、registry 写守卫、P1/persist v1 等都以 refactor-v1-* 为准。
+> 产品决定见 `doc/refactor-v1-requirements.md`；开发约束见 `AGENTS.md`。
 >
-> **阶段 P0 的全部内容在 §7**（权威归属表 / 协议 v3 / `WorkspaceRef` / stub 生命周期 / 客户端视图）。
-> 它与 §2–§3 的旧描述冲突时，**§7 优先**；§2–§3 保留为历史实现说明。
-
-- 本轮需求（验收标准 1–8）见 `doc/acceptance-gap.md`；P0 的验收口径见其 **F 节**。
-- 接口契约（路由 / 类型 / 脚本 / 缓存命名 / 协议 v3）见 `doc/api-contract.md`。
+> 当前数据位置速查（v1）：
+>
+> | 位置 | 内容 |
+> |---|---|
+> | server `~/.dsh/sessions/**` | 官方会话日志（两种执行端共用，权威） |
+> | server `~/.dsh/storages/workspace.json` | 官方 workspace registry（权威，single layout） |
+> | server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile + server 插件 + lease/log |
+> | server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 Node/DSH runtime |
+> | client `~/.dsh/storages/dsh_remote_workspace.json` | 连接记录、包策略（旧 workspace refs 会清理） |
+> | client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式私有 anchors（非权威） |
+>
+> 下文 §1–§7 中的 stdio server bundle、`remote-server-sessions`、WSL、stub/WorkspaceRef 等描述是
+> 旧架构记录；v1 不再使用。
 
 ---
 
@@ -181,7 +189,10 @@ index.ts dispatchApi ──► RemoteWorkspaces.runConnect
   （`targets/types.ts:336`）。
 - 远端工作区在**本地 shell 的工作区树**里靠一个 stub 目录占位
   （`service.ts:1062-1092`：`~/.dsh/remote-workspaces/<targetId>/<sha1(targetId,path)>`），
-  官方 workspace 只认 `realpath(cwd) === workspace.path`，这是远端路径能进 shell 树的唯一办法。
+  官方 workspace 只认 `realpath(cwd) === workspace.path`；在当前“复用官方草稿页”的路线下，这是远端路径能进 shell 树的唯一办法。
+
+> 官方 UI/功能复用边界、vendored 行的改动和自实现清单见 `doc/official-workspace-reuse.md`；
+> DSH 升级时按该文档 §8 复核，这份架构文档只保留链路结论，不重复维护逐项清单。
 
 ### 2.6 路由持久层（远端权威）
 

@@ -17,6 +17,16 @@
 
 验证范围：DSH `0.2.1-rc.2`；运行时包覆盖 `linux-x64-gnu`、`linux-arm64-gnu`、`darwin-x64`、`darwin-arm64`。
 
+### 2026-10-26 兼容性更新（DSH 0.2.1-rc.3）
+
+- client 与 server 两仓的 `engines.dsh`、全部 `@deepseek-ai/dsh-*` peer/dependency、运行时门禁集合、
+  README 兼容表全部升到精确 `0.2.1-rc.3`；server 插件 `DSH_VERIFIED_RUNTIME` 与 manifest 同步。
+- `pnpm typecheck` / `pnpm test` / `pnpm build` 两仓通过；client 491 passed / 1 skipped，server 59 passed。
+- 隔离 `DSH_HOME` 下用 rc.3 桌面版启动 host：`/api/state` 返回 `verifiedRuntimes:["0.2.1-rc.3"]`，
+  sidebar「远程工作区」与三步连接向导正常渲染，无 iframe、无 JS 异常。
+- 详细证据、升级步骤与已知遗留见 `doc/dsh-rc3-compatibility.md`。真实 SSH target 的端到端仍需按
+  `doc/qa-v2-report.md` 在 rc.3 上重跑。
+
 ## 2. 版本策略
 
 - 仓库版本 = 发布版本；临时部署后缀只在本机，永不提交、推送、打 tag 或发布（见 AGENTS）。

@@ -19,8 +19,14 @@
  *   3. type-only imports that point at shell-internal modules → `./models.ts`.
  *
  * Usage (re-run after a shell upgrade; the output is committed):
- *   node scripts/vendor-workspace-rows.mjs [--dsh <checkout>]
+ *   node scripts/vendor-workspace-rows.mjs [--dsh <checkout>] [--source-label <label>]
+ *
+ * `--source-label` is the only provenance written to NOTICE.md. Pass a tag and
+ * commit such as `dsh-v0.2.1-rc.2 (687f282e86)`; when omitted the script tries
+ * `git describe`/`rev-parse` in the checkout and falls back to a placeholder.
+ * Never write a machine-specific absolute path into the committed NOTICE.
  */
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,6 +40,26 @@ const dshRoot = resolve(
   dshArgIndex === -1 ? join(process.env['HOME'] ?? '', 'Desktop/project/deepseek-harness') : process.argv[dshArgIndex + 1],
 )
 const uiWorkspace = join(dshRoot, 'packages', 'client', 'ui-workspace', 'src', 'client')
+
+/** Read a git fact from the checkout, or undefined when it is not a git tree. */
+function gitFact(...args) {
+  try {
+    return execFileSync('git', ['-C', dshRoot, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return undefined
+  }
+}
+
+const labelIndex = process.argv.indexOf('--source-label')
+const sourceLabel = (labelIndex === -1 ? undefined : process.argv[labelIndex + 1])
+  ?? (() => {
+    const tag = gitFact('describe', '--tags', '--exact-match')
+    const commit = gitFact('rev-parse', '--short=10', 'HEAD')
+    if (tag !== undefined && commit !== undefined) return `${tag} (commit ${commit})`
+    if (commit !== undefined) return `commit ${commit}`
+    return undefined
+  })()
+  ?? '<dsh-checkout>'
 
 /** Prefix for the vendored rows module classes. */
 const ROWS_PREFIX = 'dsh-rwv-rows-'
@@ -141,7 +167,7 @@ for (const [name, content] of Object.entries(generated)) {
 
 writeFileSync(join(dirname(outDir), 'NOTICE.md'), `# Vendored: the official workspace row layer
 
-Source checkout: \`${dshRoot}\`
+Source checkout: \`${sourceLabel}\`
 Upstream paths:
 
 - \`packages/client/ui-workspace/src/client/rows/Rows.tsx\`

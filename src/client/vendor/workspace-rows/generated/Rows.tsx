@@ -17,7 +17,7 @@
  * session and workspace hover cards are suppressed while a menu is open.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { RefObject } from 'react'
+import type { ReactElement, RefObject } from 'react'
 import clsx from 'clsx'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import {
@@ -229,7 +229,12 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   onToggle: () => void
   onCreate: () => void
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; delete: () => void } | undefined
+  actions?: {
+    rename: () => void
+    delete: () => void
+    /** Local connection rows add mode/refresh here instead of duplicating row links. */
+    extra?: readonly { id: string; label: string; icon?: import('react').ReactElement; danger?: boolean; onSelect: () => void }[]
+  } | undefined
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
@@ -242,6 +247,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   const active = containsCurrentDescendant || (group.expanded && group.containsCurrent)
   const [menuOpen, setMenuOpen] = useState(false)
   const workspaceMenuItems = [
+    ...(actions?.extra ?? []).map(item => ({ id: item.id, label: item.label, ...(item.icon === undefined ? {} : { icon: item.icon }), ...(item.danger === undefined ? {} : { danger: item.danger }) })),
     { id: 'rename', label: t('rename'), icon: <IconEditOutlineRegular /> },
     { id: 'delete', label: t('delete.workspace'), icon: <IconTrashOutlineRegular />, danger: true },
   ]
@@ -282,6 +288,8 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
               // Unknown ids leave before the dispatch: a future menu row must
               // not inherit the destructive branch as an else fallback.
               /* v8 ignore next -- Menu can emit only the rename and delete rows supplied above. */
+              const extra = actions.extra?.find(item => item.id === id)
+              if (extra !== undefined) { extra.onSelect(); return }
               if (id !== 'rename' && id !== 'delete') return
               if (id === 'rename') actions.rename()
               else actions.delete()
@@ -300,7 +308,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
             )}
           />
         )}
-        <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500}>
+        <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500} portal>
           <button
             type="button"
             className={css.iconButton}
@@ -326,6 +334,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
         t={t}
       />}
       openDelayMs={800}
+      grouped
       disabled={menuOpen}
       copyText={row.cwd}
       copyLabel={t('copy')}
@@ -504,7 +513,7 @@ export function SearchResultItem({ result, currentId, onOpen, onUnarchive, t }: 
         <span className={css.searchResultTitle}>{result.title || t('session.untitled')}</span>
         {result.archived && (
           <span className={css.rowActions}>
-            <Tooltip label={t('actions.unarchive')} side="bottom" align="end" delayMs={500}>
+            <Tooltip label={t('actions.unarchive')} side="bottom" align="end" delayMs={500} portal>
               <button
                 type="button"
                 className={css.iconButton}
@@ -700,6 +709,7 @@ export function SessionNodeItem({
       anchor={ownRow}
       content={<SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />}
       openDelayMs={800}
+      grouped
       disabled={menuOpen || drag?.active === true}
       copyText={row.blank || row.title === '' ? undefined : row.title}
       copyLabel={t('copy')}

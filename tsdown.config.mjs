@@ -3,8 +3,7 @@
  *
  * Host half (ESM, node): the plugin entry plus the two entries the loader
  * mounts as their own rows — `./connection` (the per-target `ctx.ssh` inside
- * an agent-preset realm) and `./server` (the headless execution-world role
- * that runs on the remote machine) with its `./server/entry` process entry.
+ * an agent-preset realm), `./rsession` and `./session-persistence`.
  *
  * Client half (browser, CJS closure factory): one bundle registering through
  * `window.__ModuleLoader__.load({ id: 'dsh-remote-workspace', factory })`.
@@ -35,14 +34,6 @@ const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand)(
 
 const PLUGIN_ID = 'dsh-remote-workspace'
 
-// The server bundle runs on a remote host where nothing but the dsh
-// installation is resolvable, and the runtime module interception maps bare
-// package names but not subpath exports (`@deepseek-ai/dsh-ssh/schemas`). So the
-// server carries its protocol schemas and output collector inline; only the
-// loader's own cordis and schemastery stay external, because a cordis copy
-// would split the service registry.
-const SERVER_EXTERNAL = ['@deepseek-ai/cordis', '@deepseek-ai/schemastery']
-
 const hostConfig = {
   entry: {
     index: 'src/index.ts',
@@ -59,20 +50,6 @@ const hostConfig = {
   dts: false,
   clean: false,
   sourcemap: false,
-}
-
-const serverConfig = {
-  entry: { server: 'src/server/index.ts' },
-  outDir: 'lib',
-  format: ['esm'],
-  platform: 'node',
-  target: 'node22',
-  fixedExtension: false,
-  dts: false,
-  clean: false,
-  sourcemap: false,
-  external: SERVER_EXTERNAL,
-  noExternal: (id) => (SERVER_EXTERNAL.includes(id) ? undefined : true),
 }
 
 const clientConfig = {
@@ -120,4 +97,4 @@ const clientConfig = {
   },
 }
 
-export default [hostConfig, serverConfig, clientConfig]
+export default [hostConfig, clientConfig]

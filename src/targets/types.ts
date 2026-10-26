@@ -102,7 +102,20 @@ export interface RemoteTargetRecord {
   readonly platformProbe?: RemotePlatformProbeRecord
   /** The server package last deployed (or reused) for this target. */
   readonly serverPackage?: RemoteServerPackageRecord
-  /** Remote runtime coordinates. */
+  /** v1: the installation's stable client id (also stored in the domain global). */
+  readonly clientId?: string
+  /** This connection's executor setting (`local` default: fresh servers usually lack model keys). */
+  readonly executor?: 'server' | 'local'
+  /** v1: the per-client profile this target's server runs (`graydovee-remote-workspace-<clientId>`). */
+  readonly profileName?: string
+  /** v1: last profile server port (hint only; the process prints the real one). */
+  readonly profilePort?: number
+  /** v1: runtime kind/dir/versions (hints for the next connect; never correctness inputs). */
+  readonly runtimeKind?: 'isolated' | 'global'
+  readonly runtimeDir?: string
+  readonly pluginVersion?: string
+  readonly serverDshVersion?: string
+  /** Remote runtime coordinates (v0 fields; kept until the old provisioner retires). */
   readonly remote: RemoteRuntimeRecord
   readonly status: 'unknown' | 'ready' | 'failed' | 'stopped'
   readonly lastError?: string
@@ -266,6 +279,8 @@ export const packageSourceSchema = z.enum(['auto', 'download', 'upload', 'reuse'
 export const packagePolicySettingsSchema = z.object({
   policy: z.enum(['auto', 'download', 'upload', 'ask']),
   mirror: z.string(),
+  /** v1 client identity; additive optional until first ensureClientId(). */
+  clientId: z.string().regex(/^[a-z0-9]{12}$/u).optional(),
 }).strict()
 
 /** Stored target record; unknown fields from a newer version are dropped loudly. */
@@ -308,6 +323,16 @@ export const targetRecordSchema = z.object({
     sha256: z.string().length(64),
     version: z.string().min(1),
   }).strict().optional(),
+  // v1 additive optional fields (architecture §12): old documents validate
+  // unchanged, so the storage domain stays at version 1.
+  clientId: z.string().regex(/^[a-z0-9]{12}$/u).optional(),
+  executor: z.enum(['server', 'local']).optional(),
+  profileName: z.string().regex(/^graydovee-remote-workspace-[a-z0-9]{12}$/u).optional(),
+  profilePort: z.number().int().min(1).max(65_535).optional(),
+  runtimeKind: z.enum(['isolated', 'global']).optional(),
+  runtimeDir: z.string().min(1).optional(),
+  pluginVersion: z.string().min(1).optional(),
+  serverDshVersion: z.string().min(1).optional(),
   stubPath: z.string().min(1).optional(),
   officialWorkspaceId: z.string().min(1).optional(),
   remote: runtimeSchema,
@@ -390,6 +415,15 @@ export interface PublicTarget {
   readonly platformProbe?: RemotePlatformProbeRecord
   /** The server package last deployed (badge/troubleshooting; holds no credential). */
   readonly serverPackage?: RemoteServerPackageRecord
+  /** v1 additive state (all optional; see `RemoteTargetRecord`). */
+  readonly clientId?: string
+  readonly executor?: 'server' | 'local'
+  readonly profileName?: string
+  readonly profilePort?: number
+  readonly runtimeKind?: 'isolated' | 'global'
+  readonly runtimeDir?: string
+  readonly pluginVersion?: string
+  readonly serverDshVersion?: string
   readonly remote: RemoteRuntimeRecord
   readonly status: 'unknown' | 'ready' | 'failed' | 'stopped'
   readonly lastError?: string
@@ -404,6 +438,13 @@ export interface PackagePolicySettings {
   readonly policy: PackagePolicy
   /** Base URL prefixed to GitHub release URLs when set (CN-reachable mirror). */
   readonly mirror: string
+  /**
+   * The client installation's stable id (v1 `graydovee-remote-workspace-<id>`).
+   *
+   * Additive optional on the domain global: an old document without it still
+   * validates and is upgraded in place on the first `ensureClientId()`.
+   */
+  readonly clientId?: string
 }
 
 /** Strip everything the browser must not see from a stored target. */
@@ -425,6 +466,14 @@ export function toPublicTarget(record: RemoteTargetRecord): PublicTarget {
     ...(record.reuseDsh === undefined ? {} : { reuseDsh: record.reuseDsh }),
     ...(record.platformProbe === undefined ? {} : { platformProbe: record.platformProbe }),
     ...(record.serverPackage === undefined ? {} : { serverPackage: record.serverPackage }),
+    ...(record.clientId === undefined ? {} : { clientId: record.clientId }),
+    ...(record.executor === undefined ? {} : { executor: record.executor }),
+    ...(record.profileName === undefined ? {} : { profileName: record.profileName }),
+    ...(record.profilePort === undefined ? {} : { profilePort: record.profilePort }),
+    ...(record.runtimeKind === undefined ? {} : { runtimeKind: record.runtimeKind }),
+    ...(record.runtimeDir === undefined ? {} : { runtimeDir: record.runtimeDir }),
+    ...(record.pluginVersion === undefined ? {} : { pluginVersion: record.pluginVersion }),
+    ...(record.serverDshVersion === undefined ? {} : { serverDshVersion: record.serverDshVersion }),
     remote: record.remote,
     status: record.status,
     ...(record.lastError === undefined ? {} : { lastError: scrubSecrets(record.lastError) }),

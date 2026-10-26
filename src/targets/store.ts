@@ -17,6 +17,7 @@ import {
   type RemoteTargetRecord,
   type RemoteWorkspaceRecord,
 } from './types.ts'
+import { generateClientId, isClientId } from './client-id.ts'
 
 /** Smallest credential scope/id segments `ctx.credentials` accepts. */
 const CREDENTIAL_SCOPE = 'remote-workspace'
@@ -84,10 +85,53 @@ export class TargetStore {
     return this.require().global.get()
   }
 
-  /** Replace the global package-source policy. */
+  /**
+   * Replace the global package-source policy.
+   *
+   * The clientId lives in the same global slot (additive optional) and must not
+   * be dropped by a policy write: a lost clientId would orphan the server's
+   * per-client profile on the next connect.
+   */
   async setPackagePolicy(settings: PackagePolicySettings): Promise<void> {
-    await this.require().global.set(packagePolicySettingsSchema.parse(settings))
+    const current = this.require().global.get() as PackagePolicySettings
+    await this.require().global.set(packagePolicySettingsSchema.parse({
+      ...settings,
+      ...(settings.clientId === undefined && current.clientId !== undefined ? { clientId: current.clientId } : {}),
+    }))
   }
+
+  /** The persisted v1 client id, when one has been generated. */
+  clientId(): string | undefined {
+    const value = (this.require().global.get() as PackagePolicySettings).clientId
+    return value !== undefined && isClientId(value) ? value : undefined
+  }
+
+  /**
+   * Read or lazily generate the installation's client id.
+   *
+   * The id is stable for the life of this storage domain (and therefore this
+   * client installation); every concurrent caller shares one write. A stored
+   * malformed value is treated as absent and replaced rather than trusted: the
+   * id names a server profile and must be path-safe.
+   */
+  async ensureClientId(): Promise<string> {
+    const existing = this.clientId()
+    if (existing !== undefined) return existing
+    this.clientIdAttempt ??= (async () => {
+      const current = this.require().global.get() as PackagePolicySettings
+      const generated = generateClientId()
+      await this.require().global.set(packagePolicySettingsSchema.parse({ ...current, clientId: generated }))
+      return generated
+    })()
+    try {
+      return await this.clientIdAttempt
+    } finally {
+      this.clientIdAttempt = undefined
+    }
+  }
+
+  /** The in-flight clientId write, so two first-callers cannot generate two ids. */
+  private clientIdAttempt: Promise<string> | undefined
 
   /** Every stored target, oldest first. */
   listTargets(): RemoteTargetRecord[] {

@@ -21,7 +21,7 @@
  */
 
 /** The dsh runtimes this client has verified. Membership decides; never a range. */
-export const DSH_VERIFIED_RUNTIMES: readonly string[] = ['0.2.1-rc.2']
+export const DSH_VERIFIED_RUNTIMES: readonly string[] = ['0.2.1-rc.3']
 
 /** Human text for messages and the wizard: `0.2.1-rc.2`. */
 export const DSH_VERIFIED_SUMMARY = DSH_VERIFIED_RUNTIMES.join(' / ')

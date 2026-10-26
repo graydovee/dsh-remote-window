@@ -115,6 +115,9 @@ export function scanDshScript(options: { dshHome?: string } = {}): string {
     // `set -u` only: a failed probe must still let the remaining lines run, so
     // the host always receives every record it can and judges on what exists.
     'set -u',
+    // zsh aborts the whole script when a glob has no match; the candidate
+    // loops below deliberately tolerate missing nvm/fnm trees.
+    'if [ -n "${ZSH_VERSION:-}" ]; then setopt nonomatch 2>/dev/null || true; fi',
     'export LC_ALL=C',
     homeAssignment,
     // The deployed node first: see the module comment (exec: node: not found).

@@ -7,7 +7,7 @@ function candidate(overrides: Partial<DshCandidate> = {}): DshCandidate {
   return {
     path: '/usr/local/bin/dsh',
     realPath: '/usr/local/bin/dsh',
-    version: '0.2.1-rc.2',
+    version: '0.2.1-rc.3',
     compatible: true,
     executable: true,
     selfContained: true,

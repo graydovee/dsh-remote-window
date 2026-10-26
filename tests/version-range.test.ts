@@ -21,26 +21,26 @@ import {
 describe('parseDshVersion', () => {
   it('parses a bare release, a release with v prefix and a prerelease', () => {
     expect(parseDshVersion('0.2.1')).toEqual({ major: 0, minor: 2, patch: 1, prerelease: [] })
-    expect(parseDshVersion('v0.2.1-rc.2')).toEqual({ major: 0, minor: 2, patch: 1, prerelease: ['rc', '2'] })
+    expect(parseDshVersion('v0.2.1-rc.3')).toEqual({ major: 0, minor: 2, patch: 1, prerelease: ['rc', '3'] })
     expect(parseDshVersion('0.3.0-beta.10')).toEqual({ major: 0, minor: 3, patch: 0, prerelease: ['beta', '10'] })
   })
 
   it('finds the first version-looking token inside noisy output', () => {
-    expect(parseDshVersion('dsh 0.2.1-rc.2')?.minor).toBe(2)
+    expect(parseDshVersion('dsh 0.2.1-rc.3')?.minor).toBe(2)
     expect(parseDshVersion('  v0.2.1\n')).toEqual({ major: 0, minor: 2, patch: 1, prerelease: [] })
     expect(parseDshVersion('no version here')).toBeUndefined()
     expect(parseDshVersion('')).toBeUndefined()
   })
 
   it('drops an empty trailing prerelease segment', () => {
-    expect(parseDshVersion('0.2.1-rc.2.')?.prerelease).toEqual(['rc', '2'])
+    expect(parseDshVersion('0.2.1-rc.3.')?.prerelease).toEqual(['rc', '3'])
   })
 })
 
 describe('formatDshVersion', () => {
   it('canonicalizes the spelling used by the verified list', () => {
-    expect(formatDshVersion(parseDshVersion('v0.2.1-rc.2')!)).toBe('0.2.1-rc.2')
-    expect(formatDshVersion(parseDshVersion('0.2.1-rc.2+build.7')!)).toBe('0.2.1-rc.2')
+    expect(formatDshVersion(parseDshVersion('v0.2.1-rc.3')!)).toBe('0.2.1-rc.3')
+    expect(formatDshVersion(parseDshVersion('0.2.1-rc.3+build.7')!)).toBe('0.2.1-rc.3')
     expect(formatDshVersion(parseDshVersion('0.2.1')!)).toBe('0.2.1')
   })
 })
@@ -57,14 +57,14 @@ describe('compareDshVersion', () => {
   })
 
   it('puts a release above its own prereleases', () => {
-    expect(cmp('0.2.1-rc.2', '0.2.1')).toBeLessThan(0)
-    expect(cmp('0.2.1', '0.2.1-rc.2')).toBeGreaterThan(0)
+    expect(cmp('0.2.1-rc.3', '0.2.1')).toBeLessThan(0)
+    expect(cmp('0.2.1', '0.2.1-rc.3')).toBeGreaterThan(0)
   })
 
   it('compares numeric prerelease identifiers by value', () => {
     // The lexical trap: 'rc.10' < 'rc.2' as strings, but rc.10 is the later one.
-    expect(cmp('0.2.1-rc.10', '0.2.1-rc.2')).toBeGreaterThan(0)
-    expect(cmp('0.2.1-rc.2', '0.2.1-rc.10')).toBeLessThan(0)
+    expect(cmp('0.2.1-rc.10', '0.2.1-rc.3')).toBeGreaterThan(0)
+    expect(cmp('0.2.1-rc.3', '0.2.1-rc.10')).toBeLessThan(0)
   })
 
   it('ranks numeric identifiers below alphanumeric ones', () => {
@@ -72,8 +72,8 @@ describe('compareDshVersion', () => {
   })
 
   it('makes a prefix list the smaller version', () => {
-    expect(cmp('0.2.1-rc.2', '0.2.1-rc.2.1')).toBeLessThan(0)
-    expect(cmp('0.2.1-rc.2.1', '0.2.1-rc.2')).toBeGreaterThan(0)
+    expect(cmp('0.2.1-rc.3', '0.2.1-rc.3.1')).toBeLessThan(0)
+    expect(cmp('0.2.1-rc.3.1', '0.2.1-rc.3')).toBeGreaterThan(0)
   })
 
   it('compares alphanumeric identifiers by ASCII order', () => {

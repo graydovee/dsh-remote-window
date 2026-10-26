@@ -531,6 +531,16 @@ export function useAppState(): AppState {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+/** Current store snapshot for non-React consumers (slot registration). */
+export function appStateSnapshot(): AppState {
+  return state
+}
+
+/** Subscribe to store changes outside React; returns the unsubscribe. */
+export function subscribeAppState(listener: () => void): () => void {
+  return subscribe(listener)
+}
+
 /**
  * Whether the overlay is open. The footer button only needs this bit, and a
  * primitive snapshot keeps it from re-rendering on every SSE progress frame.

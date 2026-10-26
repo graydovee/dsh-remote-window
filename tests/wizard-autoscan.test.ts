@@ -14,7 +14,7 @@ const STATE = {
   workspaceRefs: [],
   serverWorkspaces: {},
   pluginVersion: '0.1.0-alpha.1',
-  verifiedRuntimes: ['0.2.1-rc.2'],
+  verifiedRuntimes: ['0.2.1-rc.3'],
   defaultProfile: 'remote-server',
   platform: 'darwin',
 }
@@ -52,7 +52,7 @@ vi.mock('../src/client/api.ts', () => ({
 const CANDIDATE = {
   path: '/usr/local/bin/dsh',
   realPath: '/usr/local/bin/dsh',
-  version: '0.2.1-rc.2',
+  version: '0.2.1-rc.3',
   compatible: true,
   executable: true,
   selfContained: true,
@@ -63,7 +63,7 @@ function scanDone(candidates: unknown[] = [CANDIDATE]) {
   return {
     stage: 'done',
     probe: { platform: 'linux', arch: 'x64', libc: 'gnu', tag: 'linux-x64-gnu', home: '/home/tester', tools: {} },
-    package: { artifact: 'dsh-remote-server-0.2.1-rc.2-linux-x64-gnu.tar.gz', version: '0.2.1-rc.2', cached: false },
+    package: { artifact: 'dsh-remote-server-0.2.1-rc.3-linux-x64-gnu.tar.gz', version: '0.2.1-rc.3', cached: false },
     dshHome: '/home/tester/.dsh',
     profiles: [],
     candidates,

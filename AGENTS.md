@@ -1,25 +1,30 @@
-# AGENTS.md — dsh-remote-workspace
+# AGENTS.md — dsh-remote-workspace（v2）
 
-本文件是给维护者和代码 agent 的开发契约。用户如何安装和使用请看 README.md；这里记录源码边界、
-跨仓库契约、实测限制、测试和发布流程。代码、测试与本文件冲突时，先以可复现的当前实现为准，
-再补充本文件。
+本文件是维护者与代码 agent 的开发契约；用户文档见 README。v1 基线（profile/双模式/协议）以
+`doc/refactor-v1-requirements.md`、`doc/refactor-v1-architecture.md`、`doc/refactor-v1-protocol.md` 为准；
+v2 的 server 主区改为 client native 对话（`session-main.tsx`），不再挂载 iframe。文档与代码冲突时，
+先以可复现实现修正，不得静默改需求。旧文件 `doc/architecture.md`、`doc/api-contract.md`、
+`doc/acceptance-gap.md` 中的 stdio/WSL 段落只是历史背景，不再作为实现契约。
 
-## 项目边界
+## 项目边界（v2）
 
-本仓库是 Remote Session 架构的 client 半边：
-
-- 本机运行 agent loop、模型请求、凭据和 web UI。
-- SSH 目标或 Windows 的 WSL 发行版运行 server 半边、文件系统、进程、终端、沙箱桥接和会话日志。
-- 目标机没有监听端口；client 通过 SSH/WSL stdio 建立一条分帧 RPC 通道。
-- server 仓库为 https://github.com/graydovee/dsh-remote-workspace-server。
-
-公开仓库不得写入真实主机、用户名、内网地址、本机绝对路径、密码、token 或私人部署信息。示例使用
-tester@203.0.113.10、/home/user 等占位值。Git 身份和 push 凭据使用开发者自己的本地配置，不在文档、
-脚本或提交中固化。
+- **server 是一台能独立工作的普通 DSH；client 是它的远程入口。**
+- 本仓库是 **client 半边**：`dsh-remote-workspace` 插件（host 行 + browser client + local 模式执行世界）。
+- server 运行普通 `dsh web` + 每个 client 一个专用 profile
+  `graydovee-remote-workspace-<clientId>`，其中安装 server 插件 `dsh-remote-workspace-server`
+  （独立仓库发布；client 包内置精确同版本的 tarball）。
+- client 通过**一条 SSH 连接**访问 server；profile server 只绑 `127.0.0.1`，不监听公网端口。
+- 执行端：server 模式（agent/模型/日志在 server，client 自绘 native 对话主区）与 local 模式
+  （agent/模型在本机，文件/进程/沙箱/日志在 server）二选一，按会话记录；两种模式共享 server 会话日志
+  与 workspace。
+- 目标机运行 `dsh --profile <p> --host 127.0.0.1 --port 0 --no-open`，stdout 打印
+  `dsh web: http://127.0.0.1:<port>/?token=<token>`；client 经 SSH `forwardOut` 访问它。
+- 公开仓库不得写入真实主机、用户名、内网地址、本机绝对路径、密码、token 或私人部署信息。示例使用
+  `tester@203.0.113.10`、`/home/user`、`/tmp/...`。Git 身份/push 凭据用开发者本地配置。
 
 ## 本地命令
 
-Node 使用 22.19 以上或 24 以上；依赖管理只用 pnpm。
+Node 22.19+ 或 24+；依赖管理只用 pnpm。
 
     pnpm install
     pnpm typecheck
@@ -27,164 +32,208 @@ Node 使用 22.19 以上或 24 以上；依赖管理只用 pnpm。
     pnpm build
     pnpm pack --pack-destination ~/.dsh/tarballs
 
-额外检查：
+额外命令：
 
-    node scripts/vendor-workspace-rows.mjs --dsh <dsh 源码 checkout>
+    node scripts/vendor-workspace-rows.mjs --dsh <0.2.1-rc.2 checkout> \
+      --source-label 'dsh-v0.2.1-rc.2 (687f282e86)'
+    node scripts/bundle-server-plugin.mjs --tarball <server-plugin tgz>
     DSH_SMOKE_CLI=<dsh 启动器> npx vitest run tests/profile.smoke.test.ts
-    node scripts/build-server-package.mjs --all --dsh-version 0.2.1-rc.2
 
-pnpm typecheck 是 tsc --noEmit，仓库没有 lint 脚本。pnpm build 生成 host、server、client 三类
-lib 产物；lib/ 已入库但绝不能手改，必须改 src 后重新构建。macOS 上
-tests/workspace-refs.test.ts 的四条 realpath 失败是 /var 与 /private/var 的既有环境差异；报告测试
-结果时要单独标注，不要改代码迎合它。
+`src/client/vendor/workspace-rows` 的 provenance 仍是 rc.2（rc.3 只升级运行时钉版，vendor DOM 未改）。
+升级运行时或重新 vendor 前，按 `doc/dsh-rc3-compatibility.md` 复核 row API/样式边界。
 
-## 两仓库逐字节同步契约
+`pnpm typecheck` 是 `tsc --noEmit`，没有 lint 脚本。`pnpm build` 生成 host/client 产物；`lib/` 已入库但
+绝不能手改，必须改 `src/` 后重新构建。
 
-以下文件在两个仓库中必须逐字节相同：
+## 两仓共享文件（逐字节）
+
+P1 的逐字节契约只有三个文件：
 
     src/protocol.ts
-    src/server/controller.ts
-    src/server/index.ts
-    src/server/processes.ts
-    src/server/session-store.ts
     src/frame/codec.ts
     src/frame/mux.ts
-    src/frame/psk.ts
-    src/provision/package-build.ts
 
-这些文件被 client 构建成远端 server bundle，也被 server 仓库用于 release 和 conformance。改动任意一处时，
-必须在两个 checkout 同一次变更中修改、构建、测试，并在提交前比较：
+改动任一文件必须在两个 checkout 同一次变更中修改、构建、测试，并在提交前比较：
 
-    for f in protocol.ts server/controller.ts server/index.ts server/processes.ts server/session-store.ts frame/codec.ts frame/mux.ts frame/psk.ts provision/package-build.ts; do
+    for f in protocol.ts frame/codec.ts frame/mux.ts; do
       cmp -s "src/$f" "../dsh-remote-workspace-server/src/$f" || echo "DIFF: $f"
     done
 
-协议当前为 REMOTE_SESSION_PROTOCOL = 3；官方执行世界 RPC 仍为 v1。方法集合是
-server.hello、reg.list/create/rename/delete、persist.list/titles/rename/create/open/append/flush/close/locate。
-协议变化必须同时更新两仓、status.json、server.hello、测试和发布说明。
+旧 stdio server bundle 的 8 文件同步集（`src/server/**`、`src/frame/psk.ts` 等）已退出 v2 契约并删除；
+不要恢复。`src/protocol.ts` 中旧 `REMOTE_SESSION_PROTOCOL=3` 类型随旧 server 一并移除。
 
 ## 架构与依赖方向
 
-tsdown 有三个 target：
+tsdown targets：
 
-1. host：Node ESM，入口为 index、connection、rsession、session-persistence、protocol。
-2. server：src/server/index.ts 的远端 bundle。只 external Cordis 和 schemastery；DSH 运行时不能解析的
-   dsh-ssh 子路径、schema 和 zod 必须内联。
-3. client：浏览器 CJS 工厂，由 window.__ModuleLoader__.load 注册。只 external 平台模块；Node 内置模块
-   和非 inline-safe 的跨插件值导入会触发纯度门禁，跨插件协作必须走 Cordis service。
+1. **host**：Node ESM，入口 `index` 以及 loader 需要的子入口（protocol/connection/rsession/
+   session-persistence）。
+2. **client**：浏览器 CJS 工厂，经 `window.__ModuleLoader__.load` 注册；只 external 平台模块；Node
+   内置模块/非 inline-safe 跨插件值导入触发纯度门禁；跨插件协作走 Cordis service。
 
-主要目录：
+主要目录（v2）：
 
-    src/index.ts                    插件主行、HTTP 路由、存储域和 sessionPersistence 路由
-    src/provision/                  探测、运行时包、profile、上传、启动和缓存
-    src/provision/transport.ts      SSH/WSL 共享的 RemoteTransport 抽象
-    src/targets/                    目标记录、凭据引用、脱敏和平台谓词
-    src/ssh/                        ssh2、host key、SSH config、WSL transport
-    src/preset/world.ts             每个 target 的 isolate realm
-    src/connection/                 realm 内 ctx.ssh 适配器
-    src/rsession/                   persist.* 的 SessionPersistence 门面
-    src/session-persistence/        本地 JSONL 与远端 stub 的路由层
-    src/client/                     sidebar、三层树、向导、store、动词和样式
-    src/client/vendor/workspace-rows 官方行组件的内置副本，不得手写替换
+    src/index.ts                 插件 host 行：HTTP/SSE 路由、portal、v1/P1 接线
+    src/portal/                  同源反向代理（HTTP prefix + WS exact、Host/Origin/cookie 规则）
+    src/remote/                  P1 插件客户端：tunnel HTTP、handshake、mux WS、帧适配
+    src/ssh/                     ssh2 连接、host key、forwardOut
+    src/targets/                 target 记录、clientId、凭据引用、脱敏
+    src/provision/               runtime/专用 profile/server 插件离线安装、profile 生命周期
+    src/session/                 executor 状态机、anchors、local runtime/session、mode apply
+    src/session-persistence/     本地 JSONL 与 server persist.* 的路由层
+    src/rsession/                remote persist 门面
+    src/preset/world.ts          local 模式执行世界 preset
+    src/connection/              执行世界：ctx.ssh → RemoteMux 适配
+    src/client/                  v2 远程段 UI（树/对话框/native 对话主区/执行端）、官方组件与行 vendor
+    assets/server-plugin/        内置 server 插件 tarball + checksums.json
 
-依赖方向必须保持为 targets → ssh/provision → service → realm/session → client。client 只能依赖
-平台模块和明确允许的纯模块（例如 targets/methods.ts），不得 import host service 或 Node API。
+依赖方向：`targets → ssh/provision → service → session/connection → client`。client 只能依赖平台模块和
+明确的纯模块（如 `targets/methods.ts`），不得 import host service 或 Node API。
 
 ## 不能违反的行为约束
 
-- SSH 凭据、模型 API key 和任何 secret 只在本机；错误、日志和 SSE detail 必须经过 scrubSecrets。
-- 未知 SSH host key 必须展示 SHA-256 并等待显式确认；已 pin 的 key 发生变化必须中止。WSL 没有 host key。
-- 每个 HTTP 路由先过 trustedRequest，body 上限 1 MiB；API 名称允许含斜杠，例如 connect/start，不要加斜杠守卫。
-- 不替换官方全局服务，不改官方 patch 已有行；添加工作区动作和 sidebar.workspaces 的行为必须保持。
-- 每个 target 的连接行必须惰性：构造 preset 不得连接不可达主机；preset 挂载失败是粘滞且永久的。
-- 存储域 version 永远为 1。只能添加 optional 字段；没有迁移机制，bump 会让旧数据无法读取。
-- mux 对未知流的 CREDIT、END、ABORT、OPEN_OK、OPEN_FAIL 忽略迟到消息；未知流的 DATA 才是致命失步。
-- 重新安装后必须让插件批量 URL 的 rev 变化，否则浏览器会继续使用旧缓存。
-- 官方行是 vendor 的组件。不要自己重写行样式或增加缩进；修改 vendor 前先运行生成脚本并保留来源说明。
-- 对话框和 toast 挂在 RemoteTree 的树上，不能挂在 panel 上；否则 sidebar 触发器会没有宿主。
-- 新会话必须先进入官方草稿页；不得自建 turn 预置，也不得用「打开工作区」顺手把会话建出来。
-- 草稿是保存但仍属草稿的会话：下次在同一工作区新会话必须复用它，但它不得出现在会话列表里。
-  只有它正被打开时，才在该工作区最上方显示一条「新会话」临时行，切到其它会话即消失。
-  进入草稿不得产生成功提示；失败必须可见。
-- engines.dsh 与全部 @deepseek-ai/dsh-* peer 依赖写精确的 0.2.1-rc.2。zod 固定为 4.4.3，禁止 ^。
-- `@deepseek-ai/dsh-ssh`、`dsh-fs-ssh`、`dsh-subprocess-ssh`、`dsh-sandbox-ssh` 必须是**精确版本的
-  dependencies**（同样钉在 0.2.1-rc.2）：harness 安装里没有它们，而插件按值 import / 按名挂载；
-  web profile 模板是 `autoInstallPeers: false`，只写 peer 会让干净安装加载失败。
-- 运行时版本契约只有一处来源 `DSH_VERIFIED_RUNTIMES`；禁止 semver 区间；扩窗只改该常量并附验收。
-- target 只在一次**成功**连接后落盘（pin 与凭据一起写）。host-key 确认、探测失败、密码错误、启动失败
-  都不得写 target，也不得留下「没有凭据」的行。
-- 第 3 步进入即自动执行只读探测（连接主机 → 探测远端环境）；运行时选择在探测之后：列表里点选一个
-  已扫描到的 dsh，或选「部署新运行时」再决定上传 / 远程下载。
-- TS 保持 strict、noUncheckedIndexedAccess、verbatimModuleSyntax、allowImportingTsExtensions；相对导入带 .ts，
-  类型导入使用 import type。可选 wire 字段用条件展开，注释记录现象和结论。
+**安全**
 
-## SessionPersistence 的实测契约
+- SSH 凭据、模型 API key 和任何 secret 只在需要的一端；错误、日志、SSE detail 必须 scrub。
+- 未知 SSH host key 展示 SHA-256 并等待显式确认；已 pin 的 key 变化必须中止。
+- profile server 的 token/官方 cookie 只在 client host 内存；浏览器永远拿不到；portal 不转发
+  `Set-Cookie`，不把 client GUI cookie 带给 server。
+- 每个 client 插件 HTTP 路由先过 `trustedRequest`，body ≤ 1 MiB；server 插件路由/WS 先过
+  `ctx.connection.admit(req)`，body ≤ 1 MiB（mux/portal 流除外）。
+- 不替换官方全局服务；server 插件对官方 `workspaceRegistry` 的 prototype 写守卫是**唯一**受控例外，
+  必须带版本守卫、幂等标记与失败降级（architecture §4）。
 
-apply() 构造 RoutingSessionPersistence 并 provide 为 sessionPersistence。按 header.cwd 路由：
+**数据权威**
 
-- 本地 cwd 委托官方 session-persistence-jsonl，root 仍是 ~/.dsh/sessions。
-- 远程 stub cwd 走 RemotePersistence 和 persist.*；远端真实路径只在 realm 的 stub→remote alias 中出现。
-- 官方行名是 session-persistence-jsonl，不是 sessions。
-- patch 覆盖必须保持 name；需要替换时使用 disabled: true，再在 apply() 中 provide，insert 行不会自动构造。
-- inject 中不能写 workspaceRegistry；dsh-workspace 会与 sessionPersistence 互等，必须通过 ctx.get 懒解析。
-- 自建 RemotePersistence 要用吸收注册的 stub context 构造，否则二次 provide 会抛错。
-- 0.2.1-rc.2 的官方 JSONL 后端是 apply(ctx, config) 插件行：用 isolate 拿子 scope，await applyJsonl(scope, { root })，
-  再从 scope.get 取服务；每次委托前等待 localReady。不要恢复旧版 tracker.install 补丁。
-- create、open、list 三个出口都要把 header cwd 重锚到本地 stub；否则 workspace registry 会报 cwd conflict。
+- workspace 清单/标题/id/顺序/pin/archive：server 官方 `ctx.workspaceRegistry`，id 用官方 uuid；不得再
+  引入 `sha256(path)` 工作区 id，不得保留插件自己的 pinned/archived/order 副本。
+- 会话清单/标题/运行态/rename/fork/cancel：server 官方 `ctx.sessionController`；标题必须由插件 JSONL
+  title fold 补齐（按 `(sessionId,sizeBytes)` 记忆化，尾部回刷 `session/title`；blank 判 `turn/start`）。
+- 会话日志读写：官方 `ctx.sessionPersistence`，单写者由官方 JSONL flock 裁决；不得自造锁/抢占。
+  `SessionAlreadyOwnedError` 呈现为 `session/writer-held`；v1 用**显式错误**，不做只读/接管。
+- 存储域 `dsh_remote_workspace` 版本恒为 1；只能加 optional 字段。旧 workspace refs 清理，不做 bump。
+- local 模式 anchor 是插件私有材料（`<DSH_HOME>/remote-workspaces/<clientId>/<targetId>/<hash>`），
+  绝不注册进官方 workspace registry、不出现在本地工作区列表；随插件/连接清理。
+- 搜索是 client 瞬时过滤，不落盘、不发 P1。
+- 删除会话：官方无能力，v1 不做。
+- 远端会话 header cwd 是 server 真实路径；local 模式 client routing 负责 anchor ↔ server path 重锚，
+  协议不隐式翻译。
 
-写入路径由 routing 管理 session/event、session/flush、session/disposed 钩子，使用 RemoteLiveWriter 和 DrainedHandle。
-同一 session 的并发 write open 必须借出活跃 writer；withBrowser 重试按 target 串行；resume 按 session id 串行。
-server 句柄表只在内存中，server 重启后 RemoteHandle 只允许因 unknown remote session handle 自愈一次。
+**执行端与占用**
 
-## Sidebar 和行契约
+- 默认执行端 **`local`**（新连接；server 通常没配模型 key），连接设置存 client；已有会话保留 server 端
+  `executor` 记录（跨 client 共享）。只有显式切换/server 已配置凭据时才用 server 模式。
+- 切换按 D20：preview 必须列当前 turn + 其它 active turn；apply 必须带 `previewRevision` 与
+  `cancelActiveTurns:true`；缺清单拒绝执行；任何取消失败显式报错。
+- server 模式主区是 **client 自绘 native 对话面板**（`session-main.tsx`）：timeline/SSE/prompt/cancel/
+  approval 走 P1；视觉尽量复用官方 Markdown/tool blocks/primitives，不使用 iframe 或 server UI DOM。
+  打开会话前仍必须 `session/prepare-server`（managed handle），官方 UI 若被直接打开则复用 live agent，
+  不二次 resume；unmanaged 切换只允许重启 profile（D20 确认 + cancel/whenIdle/flush）。
+- 开发说明（不是模型 prompt）：local 模式只注入 remote working-directory + execution host；SSH/mux/
+  sandbox/anchor 生命周期属于 DSH/插件实现，不进入模型上下文。SSH 意外关闭自动重连最多 5 次（指数
+  退避）；认证/host-key 错误不重试，用户主动 stop 不触发。
+- 停进程/释放 handle 前必须 cancel → `agent.whenIdle()`（3 s 预算）→ `sessionPersistence.flush()`；
+  超时不得静默 SIGTERM。
+- local 模式打开顺序：host 先 create/resume 让 client catalog 有 summary，再 `uiWorkspace.openSession`；
+  超时显示可重试错误，不吞点击。
+- 断开/删除/切换清理 client 官方 selection：用受运行时守卫的 `uiWorkspace.clearMain()`；fallback
+  `ctx.layout.selectPanel(null)`，只清属于本 target 的 `dsh.sessions.current`，绝不误清本地会话；
+  禁止白屏（I3）。
 
-- 区域插入 sidebar.workspaces 父元素的第一位，不占用该 slot；slot 使用 display: contents。
-- 折叠时通过 data-sidebar-collapsed=true 移出无障碍树与命中测试；锚点不存在就不挂载。host、side、body
-  的高度链都要 min-height: 0。
-- 工作区行是 ProjectRowItem，会话行是 SessionNodeItem；新会话行使用 blank: true。连接行 workspaceId
-  必须是 conn:<targetId>，不能传 undefined。
-- 行菜单固定使用 rename 和 delete.workspace 两个 key；会话自有菜单先从 hookContext 取 close()。
-- 隐藏 shell 官方行的选择器必须带 [data-slot="sidebar.workspaces"] 前缀，只改 display。
-- 连接断开时清掉该 target 及其工作区展开状态；重连重新展开。不要把两个事件合并。
-- 置顶/归档写插件自己的 pinnedSessions/archivedSessions；会话重命名走 POST /api/session-rename 到 persist.rename，
-  不因重命名打开会话；分叉走 shell 的 uiWorkspace.forkSession；打开走 /api/open-session 和 ctx.agents.resume。
-- 标题从 persist.titles 读取日志中的最后一个 session/title，按 (id,sizeBytes) 记忆化，并发上限 4。
+**profile / 部署**
 
-## SSH、WSL 与部署
+- 启动命令固定：`DSH_HOME=… PATH="<runtime>/node/bin:<runtime>/dsh/node_modules/.bin:$PATH" exec <dsh>
+  --profile <p> --host 127.0.0.1 --port 0 --no-open`；`--profile` 在 app 参数前，不要写
+  `dsh web --profile`。
+- 解析 stdout 单行 `^dsh web: http://127\.0\.0\.1:(\d+)/\?token=([A-Za-z0-9_-]+)$`；token 只进
+  `server.log`（0600）和 host 内存。
+- 单 client profile lease（clientId/instanceId/pid/port/heartbeat，TTL 20 s）在 server 插件；第二实例
+  `profile-in-use`、异 client `profile-foreign-client`、stale 才可接管。
+- 专用 profile：离线解包内置 `dsh-remote-workspace-server-<client-version>.tgz` + 写 4 个 profile 文件
+  + marker；不依赖 server 网络/pnpm。marker 不匹配才重装；失败 `server-plugin-*` 错误，不静默回退。
+- 独立 runtime 自动安装/升级；全局 runtime 只检测复用，v1 拒绝修改共享全局 runtime/非专用 profile
+  插件，返回 `runtime-global-unsupported` / `plugin-profile-not-managed`，不得静默写。
+- 一个 profile 一个 client；client 断开 → cancel/flush → 停 profile server、关隧道。
+- 不新增版本区间：运行时契约唯一来源 `DSH_VERIFIED_RUNTIMES`，只接受实测 `0.2.1-rc.3`。
+- `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 精确 `0.2.1-rc.3`；zod 固定 `4.4.3`；
+  `engines.node` 保持 `^22.19.0 || >=24.0.0`。
+- `@deepseek-ai/dsh-ssh`、`dsh-fs-ssh`、`dsh-subprocess-ssh`、`dsh-sandbox-ssh` 是精确版本
+  **dependencies**（harness 安装里没有；local 模式按值 import/按名挂载）。
+- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.3`）；内置 server 插件 tarball 版本必须与它精确一致。
+  本机调试可用修订后缀，但部署后 `git checkout -- package.json`，修订号永不提交/发布。
 
-WSL 只在 Windows 暴露。host 和 client 都必须调用 targets/methods.ts::methodAvailable；非 Windows 的 wsl-distros
-和 connect/start 返回 unsupported。wsl -l -v 是 UTF-16LE，wsl -d X -- command 是 UTF-8；发行版名可含空格，
-Installing 行可能没有 VERSION 列。探测不得启动发行版，也不要为预填用户名调用 whoami。
+**UI 复用**
 
-多行 WSL 脚本必须通过 stdin 走 /bin/sh -s；上传用 cat > path，不能用 base64 heredoc。packStage 不得写死
-/usr/bin/tar，必须使用 PATH 中的 tar。Windows staging 要识别 pnpm.cjs/pnpm.mjs、node/node.exe、包清单中的
-bin JS；NTFS 丢可执行位时用 test -e 加 chmod +x，并以 --version 成功作为判据。packageFiles 的 path
-永远是远端 POSIX 路径。
+- 官方行是 vendor 组件（`ProjectRowItem`/`SessionNodeItem`）：不得重写行样式/加缩进；改动前重跑
+  `scripts/vendor-workspace-rows.mjs` 并保留 NOTICE 来源；复用边界/自实现清单见
+  `doc/official-workspace-reuse.md`（v2 以 §13 为准；§12 为 v1 历史）。
+- 对话框/toast 挂在 RemoteTree 的树上；同一类浮层用 `useSingleHost`。
+- 隐藏 shell 官方行选择器必须带 `[data-slot="sidebar.workspaces"]` 前缀，只改 `display`。
+- 连接行 workspaceId 必须是 `conn:<targetId>`；行菜单固定 rename/delete.workspace 两个 key。
+- 远程段不写 client 共享 `workspace.json`/`sessions`；local 模式日志只写 server。
+- embed/portal 是 **v1 回退历史**，native server 主区不再挂载；仅保留代码/协议，不要新增功能。
+  embed 只通过 server 插件 `tapIndex` 注入 bootstrap/CSS；portal 保持纯字节代理，不解析 HTML。
+  storage shim 前缀只影响 iframe realm；深链/切换遵守 protocol §9/§16.2。
+- 重新安装后必须让插件批量 URL 的 rev 变化，否则浏览器缓存旧代码。
 
-部署顺序固定为 connect → probe → runtime → upload → start。runtime 和 upload 通过 marker 幂等，失败时要
-保留可诊断的进度。每个 target 只启动一个 server 进程；浏览器 client、realm 和浏览器重试共享同一通道与
-RemoteClient。RemoteClient.close 只关闭自己的 peer，不能调用 mux.close 拆掉传输层。
+## 数据位置与清理
 
-远端 server 没有沙箱 backend 时必须返回官方 facts 对象：
-{ argv, enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }。
-不能返回裸 argv 数组，也不能用 z.unknown() 掩盖 schema 错误。
+| 位置 | 内容 |
+|---|---|
+| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录、旧 workspace refs（待清理）、全局包策略 |
+| client `~/.dsh/.credentials.yaml` | SSH/凭据引用（官方 store，0600） |
+| client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
+| client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
+| server `~/.dsh/sessions/**` | 官方会话日志（两种模式共用；权威） |
+| server `~/.dsh/storages/workspace.json` | 官方 workspace registry（权威，single layout） |
+| server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile + 插件 + lease/log/pid |
+| server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 runtime（固定目录） |
+| server `~/.dsh/remote-workspace/state/`、`locks/` | executor 记录、registry/bootstrap 锁 |
+| server `~/.dsh/remote-server-sessions/**`（旧） | 保留、不展示、不迁移 |
 
-## 版本、测试与发布
+- 卸载/禁用：清 client 本地锚点、旧 shell 条目与本地缓存；不删 server 官方 sessions/workspace/凭据，
+  不删旧 `remote-server-sessions`。
+- 清理调试实例：先 kill，确认端口关闭，`realpath` 后删临时目录；不删其它 tarball。
 
-仓库版本就是发布版本，当前为 0.1.0-alpha.3；两仓必须一致。本机调试部署可以在执行 pnpm build 前追加
-0.1.0-alpha.3.1、0.1.0-alpha.3.2 等修订后缀，部署后用 git checkout -- package.json src/server/index.ts 并
-重新 build。修订号永不提交、push、打 tag 或发布。
+## 空调试实例（本地 UI 验收）
 
-提交前至少运行 pnpm typecheck、pnpm test、pnpm build，并完成一次 web profile 的实际安装验收：
+用独立 `DSH_HOME` 起干净 web profile，不碰真实 `~/.dsh`。`<dsh>` 为桌面版
+`<应用目录>/Contents/Resources/runtime/cli/bin/dsh` 或 PATH 里的 `dsh`；QA/Linux 可直接
+`npm install -g @deepseek-ai/dsh@0.2.1-rc.3`（纯 npm 分发，bin=dsh）。
 
-1. 使用 pnpm pack 生成 tarball。
-2. dsh plugin --profile web remove/add 该 tarball。
-3. 重启 dsh web。
-4. 验证新建 SSH、首次 host-key 确认、目录浏览、工作区/会话打开、重命名、分叉、断开和重连。
-5. 需要时运行 profile smoke、conformance 和两仓 cmp。
+    tmp=$(mktemp -d /tmp/dsh-empty.XXXXXX)
+    export DSH_HOME="$tmp/home"
+    <dsh> --profile web --dump-config >/dev/null          # 生成出厂 profile
+    pnpm build && pnpm pack --pack-destination "$tmp"
+    <dsh> plugin --profile web add "$tmp"/dsh-remote-workspace-*.tgz
+    # pnpm 11 报 ERR_PNPM_IGNORED_BUILDS 并非 0 退出时：依赖已装好，手工把
+    # dsh-remote-workspace 追加进 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles。
+    mkdir -p "$tmp/work" && cd "$tmp/work"
+    DSH_HOME="$tmp/home" <dsh> web --host 127.0.0.1 --port <port> --no-open   # 后台任务
 
-server runtime 包只在 server 仓库发布：tag 为 server-v<dsh-version>，矩阵为 linux-x64-gnu、linux-arm64-gnu、
-darwin-x64、darwin-arm64，并同时上传 .tar.gz、.sha256、.manifest.json。client 下载包后必须校验同源 checksum。
+把打印的 token URL 给用户。改代码后：重打包，解到
+`$DSH_HOME/profiles/web/node_modules/dsh-remote-workspace`（`--strip-components=1`），重启实例。
 
-README 只写用户可操作的安装、使用、数据位置、兼容性和排障；不要把临时调试版本、内部测试编号、
-个人路径或凭据写回 README。开发约束只更新本文件。
+清理：`job_kill <job>` → `pgrep -fl "<tmp>"` 应为空 → `curl` 端口失败 → `realpath "<tmp>"` → 删除；
+仅在装插件生成过时删 `/private/tmp/.pnpm-store`。
+
+禁止：动真实 `~/.dsh`/正式 profile；复制真实凭据；连真实主机；`pnpm approve-builds`；删其它 tarball。
+全新 home 出现官方默认工作区/会话属正常，不要当脏数据。
+
+## 测试与发布
+
+- 提交前至少：`pnpm typecheck`、`pnpm test`、`pnpm build`；两仓共享文件 `cmp`。
+- 改动涉及 portal/embed/registry guard/executor/mode switch 时补对应集成测试；QA 以
+  `doc/refactor-v1-requirements.md` §7 A–J 验收，证据可引用 `/tmp/dsh-qa`（不写 secret/真实路径）。
+- 发布：两仓同版本；server 仓库产出 `dsh-remote-workspace-server-<version>.tgz` + `.sha256` +
+  `.manifest.json`；client 仓库用 `scripts/bundle-server-plugin.mjs` 内置并写 `checksums.json`，
+  `pnpm pack` 必须带 `assets/server-plugin/`。
+- runtime 包（node+dsh）仍只在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、
+  darwin-arm64）；client 下载后必须校验同源 sha256。v1 全局 runtime 修改不开放，只检测复用。
+- README 只写用户可操作内容；开发约束只更新本文件。
+
+## 当前遗留 / 禁止扩展
+
+- 旧 `doc/architecture.md`、`doc/api-contract.md`、`doc/acceptance-gap.md` 描述的 stdio/WSL 架构只是历史
+  背景，不再作为实现契约；不要据此写用户文档。
+- `lib/` 是构建产物，禁止手改；改 `src/` 后重新 `pnpm build`。

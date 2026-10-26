@@ -32,7 +32,7 @@ let outFile = ''
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'dsh-pack-stage-'))
   stage = join(dir, 'stage')
-  outFile = join(dir, 'dsh-remote-server-0.2.1-rc.2-linux-arm64-gnu.tar.gz')
+  outFile = join(dir, 'dsh-remote-server-0.2.1-rc.3-linux-arm64-gnu.tar.gz')
   await writeFile(join(dir, 'keep.txt'), 'x')
 })
 

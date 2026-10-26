@@ -286,6 +286,58 @@ ${ROW_STYLES}
   color: var(--dsw-alias-label-caption);
 }
 
+.dsh-rw-runtime-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.dsh-rw-connect-plan {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-connect-plan li::marker {
+  color: var(--dsw-alias-label-caption);
+}
+
+.dsh-rw-connect-summary {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-connect-summary-row {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-rw-connect-summary-row dt {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-connect-summary-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+  color: var(--dsw-alias-label-primary);
+}
+
 /* ---------------------------------------------------------- method cards */
 
 .dsh-rw-methods {
@@ -536,6 +588,42 @@ ${ROW_STYLES}
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
   word-break: break-word;
+}
+
+.dsh-rw-progress-entry {
+  display: flex;
+  flex-direction: column;
+}
+
+.dsh-rw-progress-entry .dsh-rw-progress-row {
+  border-bottom: 0;
+}
+
+.dsh-rw-progress-entry + .dsh-rw-progress-entry {
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.dsh-rw-hostkey-inline {
+  margin: 2px 0 10px 25px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-rw-hostkey-inline p {
+  margin: 0 0 6px;
+}
+
+.dsh-rw-hostkey-inline code {
+  display: block;
+  margin: 4px 0 6px;
+  padding: 6px 8px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-secondary);
+  overflow-wrap: anywhere;
 }
 
 .dsh-rw-hostkey {
@@ -808,6 +896,41 @@ ${ROW_STYLES}
   mask: ${PLUG_MASK} center / contain no-repeat;
 }
 
+/* While connecting, the connect control itself becomes a spinner. The globe
+   stays still: it reports the link state, the button reports the attempt. */
+.dsh-rw-conn[data-connect="connecting"] .dsh-rwv-rows-rowActions {
+  opacity: 1;
+  pointer-events: none;
+}
+
+.dsh-rw-conn[data-connect="connecting"] .dsh-rwv-rows-rowActions > button:last-child::before {
+  content: '';
+  width: 13px;
+  height: 13px;
+  flex: none;
+  background: transparent;
+  -webkit-mask: none;
+  mask: none;
+  border: 1.5px solid var(--dsw-alias-border-l2);
+  border-top-color: var(--dsw-alias-label-secondary);
+  border-radius: 50%;
+  animation: dsh-rw-conn-spin 0.8s linear infinite;
+}
+
+/* A disconnected/failed row still needs its ⋮ menu (delete/refresh/mode); the
+   connect control stays available beside it. */
+.dsh-rw-conn[data-state="stopped"] .dsh-rwv-rows-rowActions > *:first-child,
+.dsh-rw-conn[data-state="unknown"] .dsh-rwv-rows-rowActions > *:first-child,
+.dsh-rw-conn[data-state="failed"] .dsh-rwv-rows-rowActions > *:first-child {
+  display: inline-flex;
+}
+
+/* With the menu visible, keep the failure warning left of the whole action
+   group rather than on top of the ⋮ button. */
+.dsh-rw-conn[data-state="failed"] .dsh-rw-conn-status {
+  inset-inline-end: 56px;
+}
+
 /* Connection state colours that globe: green connected / red failed /
    neutral otherwise. Only the glyph's colour is ours. */
 .dsh-rw-conn[data-state="ready"] .dsh-rwv-rows-folder {
@@ -959,22 +1082,31 @@ ${ROW_STYLES}
   overflow: hidden;
 }
 
-/* Mirrors the shell's own section header metrics so the two sections read as
-   peers: same row height, same label weight, same secondary tone. */
+/* Exactly the shell's own section header metrics, measured from the deployed
+   WorkspaceBrowser stylesheet (.sectionHeader / .sectionLabel): 36px row,
+   a 4px inline start, a 20px line box, and the sidebar's inherited 14px base
+   font in the tertiary tone at normal weight. Visually the two section titles
+   (远程工作区 / 工作区) have to read as peers — same indent, size and colour. */
 .dsh-rw-side-head {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  /* Matches the rows' own inset, so the title lines up with the connection glyph. */
-  padding: 0 8px;
-  color: var(--dsw-alias-label-secondary);
+  gap: 4px;
+  height: 36px;
+  /* 4px matches the shell's section label; 8px on the inline end keeps the row
+     controls where the official header's actions sit (its root adds 12px of
+     inline-end padding and the header pulls 4px back). */
+  padding: 0 8px 0 4px;
+  color: var(--dsw-alias-label-tertiary);
 }
 .dsh-rw-side-title {
   flex: 1 1 auto;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary);
+  /* Inherit the sidebar's 14px base, exactly like the shell's section label
+     (it declares no font-size of its own). */
+  font-size: inherit;
+  font-weight: 400;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -990,6 +1122,32 @@ ${ROW_STYLES}
 .dsh-rw-side:hover .dsh-rw-side-actions,
 .dsh-rw-side:focus-within .dsh-rw-side-actions {
   opacity: 1;
+}
+
+/* Fixed execution-world chip shown in place of the official agent-preset
+   picker while a remote draft is open. It is status, not a mode menu: the
+   target is a property of the workspace, and the host guard rejects any
+   other preset for the same stub. */
+.dsh-rw-remote-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.dsh-rw-remote-preset-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary);
 }
 
 /* While the column is collapsed the shell leaves our node in the DOM (its own
@@ -1015,6 +1173,1101 @@ ${ROW_STYLES}
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-state-error-primary);
+  word-break: break-word;
+}
+
+/* -------------------------------------- v2 native server conversation area */
+
+/* Layout mirrors the official conversation: one full-height column with a
+   compact header, a centered reading column and a bottom composer. Colors and
+   spacing use the shell's design tokens so it reads as the same product. */
+.dsh-rw-session {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  /* Official embedded-conversation geometry (ConversationRoot .embeddedBody). */
+  --dsh-chat-content-width: min(calc(100% - 32px), 920px);
+  --dsh-composer-card-max-width: min(calc(100% - 16px), 952px);
+  --dsh-composer-side-clearance: 8px;
+  --dsh-composer-dock-inset: 8px;
+  --dsh-composer-text-max-height: 336px;
+}
+
+.dsh-rw-session-hero { overflow: hidden; }
+
+.dsh-rw-session-hero-center {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  width: 100%;
+  padding: 24px 0 32px;
+  overflow-y: auto;
+}
+
+.dsh-rw-session-hero-center > .ST7X_W_composerStack {
+  width: 100%;
+  max-width: 952px;
+  margin: 0 auto;
+}
+
+.dsh-rw-session-hero-center .ST7X_W_heroWorkspaceRow {
+  align-items: center;
+}
+
+.dsh-rw-session-hero-center button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.dsh-rw-session-dock { flex: none; width: 100%; }
+
+.dsh-rw-session-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 18px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+.dsh-rw-session-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dsh-rw-session-head-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.dsh-rw-session-head-route {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-session-head-executor {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-session-head-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-session-head-status[data-status="running"] { color: var(--dsw-alias-state-success-primary); }
+.dsh-rw-session-head-status[data-status="error"] { color: var(--dsw-alias-state-error-primary); }
+.dsh-rw-session-head-reconnect { color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-secondary)); }
+
+.dsh-rw-session-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 12px 0;
+  padding: 6px 10px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-rw-session-banner code {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.dsh-rw-session-banner-error {
+  color: var(--dsw-alias-state-error-primary);
+  border: 0.5px solid var(--dsw-alias-state-error-primary);
+}
+
+.dsh-rw-session-banner-approval {
+  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-primary));
+}
+
+.dsh-rw-session-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.dsh-rw-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: var(--dsh-chat-content-width);
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 18px 0 24px;
+}
+
+.dsh-rw-session-more {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+
+.dsh-rw-session-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 64px 16px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.dsh-rw-session-empty p { margin: 0; }
+
+.dsh-rw-session-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.dsh-rw-session-row[data-role="user"] { justify-content: flex-end; padding: 10px 0 4px; }
+
+.dsh-rw-session-user {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: min(85%, 640px);
+  padding: 10px 14px;
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 14px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.dsh-rw-session-pending { padding-top: 5px; flex: none; }
+
+.dsh-rw-session-row[data-role="assistant"] { padding: 6px 0; }
+
+.dsh-rw-session-assistant {
+  width: 100%;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.dsh-rw-session-reasoning { width: 100%; }
+
+.dsh-rw-session-reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.dsh-rw-session-reasoning-toggle { display: inline-flex; }
+
+.dsh-rw-session-reasoning-body {
+  margin: 2px 0 6px 16px;
+  padding-left: 10px;
+  border-left: 2px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.dsh-rw-session-turn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.dsh-rw-session-turn[data-phase="start"] { border-top: 0.5px solid var(--dsw-alias-border-l3); margin-top: 10px; }
+.dsh-rw-session-turn[data-phase="end"] { margin: 6px 0 8px; }
+
+.dsh-rw-session-running {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 2px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-rw-session-error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-rw-session-error-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.dsh-rw-session-error-text code { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+
+/* Tool cards */
+.dsh-rw-session-tool {
+  width: 100%;
+  margin: 2px 0;
+}
+
+/* The official Code/Json/Terminal/Read/Search/Diff blocks draw their own card;
+   this shell only supplies the status line, so it must not double the border. */
+.dsh-rw-session-tool-body {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.dsh-rw-session-tool-body > * { width: 100%; }
+
+.dsh-rw-session-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-session-tool-toggle,
+.dsh-rw-session-tool-icon { display: inline-flex; flex: none; color: var(--dsw-alias-label-tertiary); }
+.dsh-rw-session-tool[data-status="error"] .dsh-rw-session-tool-icon { color: var(--dsw-alias-state-error-primary); }
+.dsh-rw-session-tool-kind { flex: none; }
+.dsh-rw-session-tool-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); font-size: 11px; }
+.dsh-rw-session-tool-status { margin-left: auto; flex: none; color: var(--dsw-alias-label-tertiary); }
+.dsh-rw-session-tool-note { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+
+.dsh-rw-session-tool-code {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px 10px 8px;
+  border-top: 0.5px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Approval */
+.dsh-rw-session-approval {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-state-warning-primary, var(--dsw-alias-border-l3));
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-session-approval[data-status="denied"],
+.dsh-rw-session-approval[data-status="expired"] { border-color: var(--dsw-alias-border-l3); }
+
+.dsh-rw-session-approval-head { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 18px; }
+.dsh-rw-session-approval-icon { display: inline-flex; flex: none; color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-secondary)); }
+.dsh-rw-session-approval[data-status="allowed"] .dsh-rw-session-approval-icon { color: var(--dsw-alias-state-success-primary); }
+.dsh-rw-session-approval-tool { color: var(--dsw-alias-label-primary); font-size: 11px; }
+.dsh-rw-session-approval-status { margin-left: auto; flex: none; color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.dsh-rw-session-approval-reason { margin: 4px 0 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+.dsh-rw-session-approval-actions { display: flex; gap: 6px; padding-top: 8px; }
+
+/* Composer */
+.dsh-rw-session-composer {
+  flex: none;
+  padding: 8px 24px 14px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.dsh-rw-session-composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: min(100%, 820px);
+  margin: 0 auto;
+  padding: 8px 8px 8px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-session-composer-box:focus-within { border-color: var(--dsw-alias-border-l4); }
+.dsh-rw-session-composer[data-running] .dsh-rw-session-composer-box { border-color: var(--dsw-alias-state-success-primary); }
+
+.dsh-rw-session-composer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 220px;
+  padding: 2px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  overflow-y: auto;
+}
+
+.dsh-rw-session-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.dsh-rw-session-composer-attach {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+  font-size: 11px;
+  line-height: 16px;
+  cursor: not-allowed;
+}
+
+.dsh-rw-session-composer-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: min(100%, 820px);
+  margin: 4px auto 0;
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.dsh-rw-session-jump {
+  position: absolute;
+  left: 50%;
+  bottom: 132px;
+  translate: -50% 0;
+  z-index: 2;
+  padding: 3px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  box-shadow: var(--dsw-shadow-sm, 0 2px 8px rgb(0 0 0 / 8%));
+}
+
+.dsh-rw-session-error-text {
+  width: min(100%, 820px);
+  margin: 4px auto 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-session-hidden-status { display: none; }
+
+.dsh-rw-session-interrupted {
+  margin: 4px 0 0;
+  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-tertiary));
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-session-unknown {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.dsh-rw-session-unknown code { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+
+.dsh-rw-session-plain { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* --------------------------------------------------- v1 remote tree chrome */
+
+.dsh-rw-search-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 2px 8px 4px;
+}
+
+.dsh-rw-search {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 18px;
+  outline: none;
+}
+
+.dsh-rw-search:focus {
+  border-color: var(--dsw-alias-border-l4);
+}
+
+.dsh-rw-conn-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0 8px 4px 32px;
+  padding: 4px 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+.dsh-rw-conn-mode-label {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.dsh-rw-conn-mode-credentials {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-remote-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 8px 4px 32px;
+  padding: 4px 6px;
+  border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-banner-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-link);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.dsh-rw-banner-link:hover {
+  text-decoration: underline;
+}
+
+.dsh-rw-refresh-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  margin: 2px 8px 4px 32px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-refresh-row:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Workspace drop target (official ProjectRowItem only supplies drag start/end;
+   the enclosing group owns hit testing, as in the shell's own browser). */
+.dsh-rw-ws-group {
+  position: relative;
+}
+
+.dsh-rw-ws-group[data-drop-active="before"]::before,
+.dsh-rw-ws-group[data-drop-active="after"]::after {
+  content: '';
+  z-index: 1;
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--dsw-alias-state-business-primary);
+  pointer-events: none;
+}
+
+.dsh-rw-ws-group[data-drop-active="before"]::before { top: -1px; }
+.dsh-rw-ws-group[data-drop-active="after"]::after { bottom: -1px; }
+
+/* Add-workspace dialog */
+.dsh-rw-addworkspace-modal {
+  width: min(900px, calc(100vw - 48px)) !important;
+  max-width: min(900px, calc(100vw - 48px)) !important;
+  height: min(820px, calc(100vh - 48px)) !important;
+  max-height: min(820px, calc(100vh - 48px)) !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.dsh-rw-addworkspace-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.dsh-rw-addworkspace-content > :last-child {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.dsh-rw-addworkspace-modal > :last-child {
+  flex: none;
+}
+
+.dsh-rw-mkdir {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dsh-rw-mkdir > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dsh-rw-mkdir > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-width: max-content;
+}
+
+.dsh-rw-addworkspace-modal .dsh-rw-add-workspace {
+  min-height: 0;
+  overflow: visible;
+}
+
+.dsh-rw-add-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 240px;
+}
+
+.dsh-rw-add-path {
+  font-family: var(--dsw-font-family-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  word-break: break-all;
+}
+
+.dsh-rw-dir-list {
+  display: flex;
+  flex-direction: column;
+  height: min(300px, 34vh);
+  flex: none;
+  overflow-y: auto;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+}
+
+.dsh-rw-dir-list > .dsh-rw-hint {
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.dsh-rw-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-dir-row:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dsh-rw-dir-row:disabled {
+  color: var(--dsw-alias-label-caption);
+  cursor: default;
+}
+
+.dsh-rw-dir-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-dir-kind {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+}
+
+/* Deployment confirmation strip under an expanded connection. */
+.dsh-rw-deploy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 8px 4px 32px;
+  padding: 4px 6px;
+  border-radius: var(--dsw-radius-sm);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-deploy-title {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-deploy-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Connection overview cards (the 远程连接 main page) */
+.dsh-rw-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dsh-rw-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dsh-rw-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.dsh-rw-card-phase,
+.dsh-rw-card-mode {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-card[data-phase="ready"] .dsh-rw-card-phase {
+  color: var(--dsw-alias-state-success-primary);
+  border-color: var(--dsw-alias-state-success-primary);
+}
+
+.dsh-rw-card[data-phase="failed"] .dsh-rw-card-phase {
+  color: var(--dsw-alias-state-error-primary);
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-rw-card-endpoint {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  word-break: break-all;
+}
+
+.dsh-rw-card-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dsh-rw-card-facts dt {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-card-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dsh-rw-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Minimal v1 connect dialog */
+.dsh-rw-connect-modal {
+  width: min(820px, calc(100vw - 48px)) !important;
+  max-width: min(820px, calc(100vw - 48px)) !important;
+  max-height: min(780px, calc(100vh - 48px)) !important;
+}
+
+.dsh-rw-connect-modal .dsh-rw-connect-identity {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-connect-identity-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-rw-connect-identity-item span {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-connect-identity-wide {
+  grid-column: span 2;
+}
+
+.dsh-rw-connect-identity-item strong {
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-ssh-alias-row {
+  flex-wrap: nowrap;
+}
+
+.dsh-rw-ssh-alias-row > select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dsh-rw-ssh-alias-row > button {
+  flex: 0 0 auto;
+}
+
+.dsh-rw-connect-layout {
+  display: grid;
+  grid-template-columns: 178px minmax(0, 1fr);
+  gap: 22px;
+  min-height: 420px;
+}
+
+.dsh-rw-connect-stepnav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 16px;
+  border-right: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-rw-connect-stepnav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-connect-stepnav-item:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-rw-connect-stepnav-item[data-active="true"] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+}
+
+.dsh-rw-connect-stepnav-item[data-done="true"] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-rw-connect-stepnav-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.dsh-rw-connect-stepnav-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-rw-connect-stepnav-item[data-active="true"] .dsh-rw-connect-stepnav-index {
+  border-color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.dsh-rw-connect-stepbody {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .dsh-rw-connect-layout {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    min-height: 0;
+  }
+
+  .dsh-rw-connect-stepnav {
+    flex-direction: row;
+    padding: 0 0 12px;
+    border-right: 0;
+    border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+    overflow: auto;
+  }
+
+  .dsh-rw-connect-stepnav-item {
+    width: auto;
+    flex: none;
+  }
+}
+
+.dsh-rw-connect-dialog {
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+}
+
+@media (max-width: 720px) {
+  .dsh-rw-connect-modal {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+  }
+}
+
+.dsh-rw-connect-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 260px;
+}
+
+.dsh-rw-connect-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 0.6fr 1fr;
+  gap: 8px;
+}
+
+.dsh-rw-connect-hostkey {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dsh-rw-connect-hostkey code {
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+}
+
+/* Execution-end dialog */
+.dsh-rw-mode-dialog,
+.dsh-rw-mode-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.dsh-rw-mode-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dsh-rw-mode-confirm ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* ------------------------------------------------ server-mode main area */
+
+/* The iframe is the whole main panel: the official UI inside it already has
+   its own chrome, and the embed CSS hides the duplicated navigation. Nothing
+   of ours is drawn above it (no second title bar). */
+.dsh-rw-portal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--dsw-alias-bg-base);
+}
+
+.dsh-rw-portal-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--dsw-alias-bg-base);
+}
+
+.dsh-rw-portal-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  pointer-events: none;
+}
+
+.dsh-rw-portal-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+}
+
+.dsh-rw-portal-error-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.dsh-rw-portal-error-text > span {
+  color: var(--dsw-alias-label-tertiary);
   word-break: break-word;
 }
 

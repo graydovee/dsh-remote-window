@@ -1,51 +1,41 @@
 /**
- * The remote tree — rendered with the **official** workspace row components.
+ * The v1 remote tree — the same official rows, now fed by server authority.
  *
- * The rows are not drawn here: `ProjectRowItem` (a group/workspace row) and
- * `SessionNodeItem` (a session row) are vendored verbatim from the shell's
- * `ui-workspace` client into `./vendor/workspace-rows`, together with their
- * stylesheet and the `workspace` locale dictionaries. So a remote workspace and
- * a remote session look and behave exactly like the shell's own — 34px/32px
- * rows, hover swaps (folder → chevron, time → row actions), title marquee,
- * hover cards, the `⋮` menu, selected/hover backgrounds — with no row styling
- * of our own.
- *
- * What this file owns is the walk, because our hierarchy has one level the
- * shell's does not: connection → workspace → session. No level is indented —
- * the shell's own tree is flat (see {@link Level}), so ours is too.
- *
- * Row verbs are the official ones with our meanings (the menu is fixed to a
- * rename/delete pair plus the `+` button, so the *labels* are what change):
- *
- *   connection  ＋ 添加工作区   ⋮ 连接/断开 · 删除连接
- *   workspace   ＋ 新会话       ⋮ 重命名工作区 · 移除工作区
- *   session     (click the row)  ⋮ 置顶/重命名/分叉/归档
+ * Hierarchy stays connection → server workspace → server session. Row
+ * presentation is still the vendored `ProjectRowItem` / `SessionNodeItem`; this
+ * file owns only the walk, the lazy loading and the drag
+ * wrappers. Every write (pin/archive/order/rename/remove/create) goes through
+ * `remote-store` to the P3 contract; nothing here keeps a second list.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import { IconWarningTriangleOutlineRegular, MenuItemButton, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PublicTarget, RemoteSession } from './api.ts'
+import {
+  Button, IconArchiveOutlineRegular, IconBranchOutlineRegular, IconEditOutlineRegular, IconGlobeOutlineRegular, IconPinFillRegular,
+  IconPinOutlineRegular, IconRefreshOutlineRegular, IconUnarchiveOutlineRegular,
+  IconWarningTriangleOutlineRegular, MenuItemButton, Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives'
+import { NoticeToastHost } from './common.tsx'
 import { t } from './locales.ts'
-import { store, targetNodeKey, useAppState, workspaceNodeKey } from './store.ts'
-import type { AppState } from './store.ts'
-import { serverListState } from './workspace-join.ts'
-import type { WorkspaceRow as WorkspaceRowModel } from './workspace-join.ts'
-import { AddWorkspaceDialog } from './list.tsx'
-import { ConfirmDialog } from './confirm-dialog.tsx'
-import { RenameSessionDialog } from './rename-dialog.tsx'
-import { WorkspaceRenameDialog } from './workspace-rename-dialog.tsx'
-import { SessionMenu, SessionRowActions } from './session-row-parts.tsx'
-import { workspaceFlags } from './session-verbs.ts'
-import type { SessionFlags } from './session-verbs.ts'
+import { planRemoteDrop, planRemoteSessionDrop } from './remote-data.ts'
+import type { RemoteSessionNode, RemoteWorkspaceGroup } from './remote-data.ts'
+import {
+  applyDeployment, connectRemoteTarget, disconnectRemoteTarget, dismissRemoteNotice, forkRemoteSession,
+  loadRegistryChanges, loadRemoteSessions,
+  notifyRemoteError, notifyRemoteSuccess, openAddWorkspace, openModeDialog, openRemoteDraft,
+  openRemoteSession, previewProfileRestart, refreshTargetComplete, remoteSearchFor, requestDeleteWorkspace,
+  requestForgetTarget, requestRenameSession, requestRenameWorkspace, retryPendingLocalReveal,
+  reorderSessions, reorderWorkspaces,
+  targetNodeKey, toggleRemoteNode, toggleSessionArchive, toggleSessionPin, useRemoteAppState, workspaceNodeKey,
+} from './remote-store.ts'
+import type { RemoteConnectionView } from './remote-store.ts'
 import {
   ProjectRowItem, SessionNodeItem, rowRenderSlots, rowsTranslate,
 } from './vendor/workspace-rows/index.ts'
 import type { GroupNode, SessionNode } from './vendor/workspace-rows/index.ts'
+import { RemoteDialogs } from './remote-dialogs.tsx'
+import { rowsCss } from './vendor/workspace-rows/generated/classnames.ts'
 
-/** Relabel one official row verb for a specific row. */
-type VerbTranslate = (key: string, params?: Record<string, unknown>) => string
-
-/** Tick the clock so relative row times stay honest while the panel is open. */
+/** Tick relative times while the tree is open. */
 function useNow(): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -55,68 +45,33 @@ function useNow(): number {
   return now
 }
 
-/**
- * One level's wrapper.
- *
- * **No indent anywhere.** The shell's own tree is flat: a workspace row and the
- * session rows under it both carry the official row CSS's base inset
- * (`padding-inline-start: calc(8px + var(--dsh-workspace-indent, 0px))`) with
- * `--dsh-workspace-indent: 0px` on every group section — measured on the deployed
- * shell: workspace row padding 8px, session row padding 8px, first child at x=20
- * for both. So this plugin sets no indent either, and its three levels line up
- * exactly like the shell's rows (the connection row reads as the header above
- * the workspace rows).
- */
+/** One hierarchy wrapper (state/connection glyph positioning lives in CSS). */
 function Level(props: {
   state?: string
   className?: string
-  /** A live connect attempt or its failure, so CSS can place the row's status. */
   connect?: 'connecting' | 'failed' | undefined
   children: ReactNode
 }): ReactElement {
   return (
-    <div className={props.className} data-state={props.state} data-connect={props.connect}>
+    <div
+      className={props.className}
+      data-state={props.state}
+      data-connect={props.connect}
+      title={props.connect === 'connecting' ? t('tree.conn.connecting') : undefined}
+    >
       {props.children}
     </div>
   )
 }
 
-/**
- * The row's own statement about a connect attempt.
- *
- * It sits immediately **left of the 连接 seat** (the row's last action button),
- * which is the only place a disconnected row shows: a spinner while the attempt
- * runs, and a warning glyph whose tooltip is the reason once it failed. The
- * global error line at the bottom of the section is still written, but it is not
- * where the user's attention is after clicking a row.
- * @param props.connecting - an attempt for this target is in flight.
- * @param props.error - why the last attempt failed, if it did.
- * @returns the status element, or null when there is nothing to say.
- */
-function ConnectStatus(props: {
-  connecting: boolean
-  error?: { message: string } | undefined
-}): ReactElement | null {
-  if (props.connecting) {
-    return (
-      <span className="dsh-rw-conn-status" data-kind="connecting" role="status" aria-live="polite">
-        <span className="dsh-rw-conn-spinner" aria-hidden="true" />
-        <span className="dsh-rw-visually-hidden">{t('tree.conn.connecting')}</span>
-      </span>
-    )
-  }
+/** The connection row's own connect/failure statement (same seat as before). */
+function ConnectStatus(props: { connecting: boolean; error?: string | undefined }): ReactElement | null {
   if (props.error === undefined) return null
-  const reason = t('tree.conn.failedReason', { message: props.error.message })
+  const reason = t('tree.conn.failedReason', { message: props.error })
   return (
     <span className="dsh-rw-conn-status" data-kind="failed">
-      <Tooltip label={reason} side="bottom" align="end" delayMs={100}>
-        <span
-          className="dsh-rw-conn-warning"
-          role="img"
-          // Screen readers and automation get the reason without hovering.
-          aria-label={reason}
-          title={reason}
-        >
+      <Tooltip label={reason} side="bottom" align="center" delayMs={100}>
+        <span className="dsh-rw-conn-warning" role="img" aria-label={reason} title={reason}>
           <IconWarningTriangleOutlineRegular size={14} />
         </span>
       </Tooltip>
@@ -124,38 +79,32 @@ function ConnectStatus(props: {
   )
 }
 
-/** The shell's row verb for one connection, relabelled to what we actually do. */
-function connectionTranslate(target: PublicTarget, connecting: boolean): VerbTranslate {
-  const connected = target.status === 'ready'
-  const connectLabel = connecting ? t('tree.conn.connecting') : t('tree.conn.connect')
+type VerbTranslate = (key: string, params?: Record<string, unknown>) => string
+
+function connectionTranslate(connected: boolean, connecting: boolean, failed = false): VerbTranslate {
+  const connectLabel = connecting
+    ? t('tree.conn.connecting')
+    : failed ? t('tree.conn.reconnect') : t('tree.conn.connect')
   return (key, params) => {
     if (key === 'rename') return connected ? t('tree.conn.disconnect') : connectLabel
     if (key === 'delete.workspace') return t('tree.forgetConnection')
-    // The `+` slot is the only row action a connection has besides its menu: when
-    // the connection is down it is the 连接 button (a disconnected host cannot add
-    // a workspace anyway), and when it is up it adds one.
     if (key === 'actions.newSession' || key === 'actions.newSession.aria') {
-      return connected ? t('tree.conn.addWorkspace') : connectLabel
+      return connected ? t('remote.workspace.add') : connectLabel
     }
     return rowsTranslate(key, params)
   }
 }
 
-/** Row verbs for a remote workspace. */
-function workspaceTranslate(workspace: WorkspaceRowModel): VerbTranslate {
+function workspaceTranslate(title: string): VerbTranslate {
   return (key, params) => {
-    // The official menu has exactly two fixed slots (`rename` / `delete`), so
-    // 重命名工作区 takes the first one and 刷新会话列表 is gone (architecture A8:
-    // the list refreshes on expand and after every verb anyway).
-    if (key === 'rename') return t('tree.workspace.rename')
-    if (key === 'delete.workspace') return t('tree.workspace.forget')
-    if (key === 'actions.newSession' || key === 'actions.newSession.aria') return t('tree.workspace.newSession')
-    if (key === 'actions.workspace.aria') return t('tree.workspace.aria', { name: workspace.title })
+    if (key === 'rename') return t('remote.workspace.rename')
+    if (key === 'delete.workspace') return t('remote.workspace.remove')
+    if (key === 'actions.newSession' || key === 'actions.newSession.aria') return t('remote.session.new')
+    if (key === 'actions.workspace.aria') return t('tree.workspace.aria', { name: title })
     return rowsTranslate(key, params)
   }
 }
 
-/** Row verbs for a remote session. */
 function sessionTranslate(title: string): VerbTranslate {
   return (key, params) => {
     if (key === 'actions.session.aria') return t('tree.session.aria', { name: title })
@@ -163,98 +112,101 @@ function sessionTranslate(title: string): VerbTranslate {
   }
 }
 
-/** One stored remote session as the official session row consumes it. */
-function sessionNode(session: RemoteSession, flags: SessionFlags): SessionNode {
-  return {
-    id: session.id,
-    title: session.title ?? '',
-    blank: false,
-    running: false,
-    runningSubagentCount: 0,
-    completed: false,
-    // Pin/archive come from the shell's own sets (see `session-verbs.ts`), so
-    // the row's indicator, grayed archived look and ordering are the official
-    // presentation rather than a copy of it.
-    pinned: flags.pinned.has(session.id),
-    archived: flags.archived.has(session.id),
-    // The row's time column: last activity, falling back to creation.
-    updatedAt: session.updatedAt ?? session.createdAt ?? Date.now(),
-  }
+/** The session row's `⋮` entries, aligned with the official 0.2.1 order. */
+function SessionMenu(props: {
+  targetId: string
+  workspaceId: string
+  node: RemoteSessionNode
+  close: () => void
+}): ReactElement {
+  const { node } = props
+  const act = (run: () => void): void => { props.close(); run() }
+  return (
+    <>
+      {!node.archived && (
+        <MenuItemButton
+          icon={node.pinned ? <IconPinFillRegular /> : <IconPinOutlineRegular />}
+          onSelect={() => { act(() => { void toggleSessionPin(props.targetId, node.id) }) }}
+        >
+          {rowsTranslate(node.pinned ? 'menu.unpinSession' : 'menu.pinSession')}
+        </MenuItemButton>
+      )}
+      <MenuItemButton
+        icon={<IconEditOutlineRegular />}
+        onSelect={() => { act(() => requestRenameSession(props.targetId, node.id)) }}
+      >
+        {rowsTranslate('rename')}
+      </MenuItemButton>
+      <MenuItemButton
+        icon={<IconBranchOutlineRegular />}
+        onSelect={() => { act(() => { void forkRemoteSession(props.targetId, node.id) }) }}
+      >
+        {rowsTranslate('menu.fork')}
+      </MenuItemButton>
+      <MenuItemButton
+        danger={!node.archived}
+        icon={node.archived ? <IconUnarchiveOutlineRegular /> : <IconArchiveOutlineRegular />}
+        onSelect={() => {
+          act(() => { void toggleSessionArchive(props.targetId, node.id) })
+        }}
+      >
+        {rowsTranslate(node.archived ? 'menu.unarchiveSession' : 'menu.archiveSession')}
+      </MenuItemButton>
+      <MenuItemButton
+        icon={<IconEditOutlineRegular />}
+        onSelect={() => {
+          act(() => {
+            void navigator.clipboard.writeText(node.id).then(
+              () => { notifyRemoteSuccess(t('tree.session.copied')) },
+              () => { notifyRemoteError(t('tree.session.copyFailed')) },
+            )
+          })
+        }}
+      >
+        {t('tree.session.copyId')}
+      </MenuItemButton>
+    </>
+  )
 }
 
-/**
- * The temporary 「新会话」 row: the draft the shell is showing right now.
- *
- * `blank: true` is the official presentation of a provisional row — the vendored
- * component prints the localized 新会话 title instead of `title`, hides the
- * timestamp and every row verb (nothing exists to rename, fork or archive before
- * the first message) and refuses to start a drag.
- *
- * `id` is the **real** draft session id rather than an empty placeholder, because
- * the row's selected look is `node.id === currentId`: with the shell's actual id
- * the row is highlighted exactly while that draft is the open conversation.
- * @param sessionId - the draft session id reported by the shell catalog.
- */
-function draftSessionNode(sessionId: string): SessionNode {
-  return {
-    id: sessionId,
-    // Blank rows never read this; kept honest in case the vendored title logic
-    // changes to prefer a non-empty title.
-    title: '',
-    blank: true,
-    running: false,
-    runningSubagentCount: 0,
-    completed: false,
-    pinned: false,
-    archived: false,
-    updatedAt: Date.now(),
-  }
+/** The row's hover buttons (archive then pin), matching the official pair. */
+function SessionActions(props: { targetId: string; node: RemoteSessionNode }): ReactElement {
+  const { node } = props
+  return (
+    <>
+      <Tooltip label={rowsTranslate(node.archived ? 'menu.unarchiveSession' : 'menu.archiveSession')} side="bottom" align="end" delayMs={500}>
+        <button
+          type="button"
+          className={rowsCss.iconButton}
+          aria-label={rowsTranslate(node.archived ? 'menu.unarchiveSession' : 'menu.archiveSession')}
+          onClick={(event: { stopPropagation(): void }) => {
+            event.stopPropagation()
+            void toggleSessionArchive(props.targetId, node.id)
+          }}
+        >
+          {node.archived ? <IconUnarchiveOutlineRegular size={14} /> : <IconArchiveOutlineRegular size={14} />}
+        </button>
+      </Tooltip>
+      {!node.archived && (
+        <Tooltip label={rowsTranslate(node.pinned ? 'menu.unpinSession' : 'menu.pinSession')} side="bottom" align="end" delayMs={500}>
+          <button
+            type="button"
+            className={rowsCss.iconButton}
+            aria-label={rowsTranslate(node.pinned ? 'menu.unpinSession' : 'menu.pinSession')}
+            onClick={(event: { stopPropagation(): void }) => {
+              event.stopPropagation()
+              void toggleSessionPin(props.targetId, node.id)
+            }}
+          >
+            {node.pinned ? <IconPinFillRegular size={14} /> : <IconPinOutlineRegular size={14} />}
+          </button>
+        </Tooltip>
+      )}
+    </>
+  )
 }
 
-/**
- * The row's seat: hover buttons and `⋮` menu entries.
- *
- * The leading slot stays empty on purpose. The official row uses it for *status*
- * dots (a running turn, a pending approval); this plugin does not observe a
- * remote session's status, and a dot meaning "this is the open one" is already
- * the row's selected background. An always-animating dot on every row read as a
- * stuck spinner (user report), so nothing is rendered there.
- *
- * @param workspace - the workspace the session belongs to.
- * @param session - the stored session.
- * @param flags - this workspace's pin/archive sets.
- * @returns the seat for `SessionNodeItem`.
- */
-function sessionSeat(
-  workspace: WorkspaceRowModel,
-  session: RemoteSession,
-  flags: SessionFlags,
-): Parameters<typeof rowRenderSlots>[0] {
-  const title = session.title ?? workspace.title
-  const verbs = {
-    workspace,
-    session,
-    title,
-    pinned: flags.pinned.has(session.id),
-    archived: flags.archived.has(session.id),
-  }
-  return {
-    leading: null,
-    menu: (close: () => void) => <SessionMenu key="menu" close={close} {...verbs} />,
-    actions: <SessionRowActions key="actions" {...verbs} />,
-  }
-}
-
-/**
- * Tree semantics for one vendored row.
- *
- * The vendored rows are plain `div`s whose activation lives in a JS click
- * handler, so a screen reader — and any browser automation — sees **no target at
- * all** for a connection or workspace row (measured: the a11y inventory of the
- * sidebar exposes only 刷新 / 新建连接). Wrapping the row in a `treeitem` with a
- * tab stop and Enter/Space forwarding makes the same action keyboard-reachable
- * without touching the vendored component or firing the click twice.
- */
+/** Tree semantics for one vendored row (the same a11y wrapper as before). */
 function TreeRow(props: {
   label: string
   expanded?: boolean
@@ -263,9 +215,6 @@ function TreeRow(props: {
 }): ReactElement {
   return (
     <div
-      // `button`, not `treeitem`: a treeitem is focusable but is not offered as
-      // an activation target to assistive tech or to automation bridges, which
-      // is exactly why the rows were unreachable before.
       role="button"
       aria-label={props.label}
       {...(props.expanded === undefined ? {} : { 'aria-expanded': props.expanded })}
@@ -282,317 +231,485 @@ function TreeRow(props: {
   )
 }
 
-/**
- * One workspace's session rows, with the **temporary draft row** on top.
- *
- * The draft row is the shell's answer to "which conversation is on screen", not a
- * list entry: it exists only while `state.currentDraft` names *this* workspace, it
- * is rendered before the list (never sorted, never counted, never a watermark
- * entry), and it disappears the moment the shell selects anything else or the
- * draft's first message makes it a real conversation.
- */
-function SessionRows(props: { workspace: WorkspaceRowModel; now: number; flags: SessionFlags }): ReactElement | null {
-  const state = useAppState()
-  const list = state.sessions[props.workspace.id]
-  const draft = state.currentDraft?.workspaceId === props.workspace.id ? state.currentDraft : undefined
-  // The draft's own session is hidden from the conversation rows — it is standing
-  // in for that row above. A host that predates the `draft` flag still reports the
-  // draft's bytes, so filtering by id is what keeps it from rendering twice.
-  const stored = (list?.items ?? []).filter(session => session.id !== draft?.sessionId)
-  const items = orderSessions(stored, props.flags)
+/** One session row. */
+function SessionRow(props: {
+  view: RemoteConnectionView
+  workspace: RemoteWorkspaceGroup
+  node: RemoteSessionNode
+  now: number
+  drag: DragState | null
+  setDrag: (next: DragState | null) => void
+  sessionOrder: readonly string[]
+  currentSessionId?: string
+}): ReactElement {
+  const { workspace, node } = props
+  const targetId = props.view.target.id
+  const workspaceId = workspace.workspace.workspaceId
+  const pinned = useMemo(() => new Set(workspace.sessions.filter(row => row.pinned).map(row => row.id)), [workspace.sessions])
+  const archived = useMemo(() => new Set(workspace.sessions.filter(row => row.archived).map(row => row.id)), [workspace.sessions])
+  const compatible = props.drag?.kind === 'session'
+    && props.drag.targetId === targetId
+    && props.drag.workspaceId === workspaceId
+  const samePin = compatible && props.drag!.pinned === pinned.has(node.id)
+  const dragProps = {
+    start: () => { props.setDrag({ kind: 'session', targetId, workspaceId, sourceId: node.id, pinned: pinned.has(node.id) }) },
+    active: samePin,
+    marker: samePin && props.drag?.over?.id === node.id ? props.drag.over.half : null,
+    hover: (half: 'before' | 'after') => {
+      const current = props.drag
+      if (current === null) return
+      props.setDrag({ ...current, over: { id: node.id, half } })
+    },
+    drop: (half: 'before' | 'after') => {
+      const current = props.drag
+      props.setDrag(null)
+      if (current === null) return
+      const plan = planRemoteSessionDrop({
+        order: props.sessionOrder,
+        sourceId: current.sourceId,
+        targetId: node.id,
+        half,
+        pinnedSessionIds: pinned,
+        archivedSessionIds: archived,
+      })
+      if ('reject' in plan) return
+      void reorderSessions(targetId, workspaceId, current.sourceId, plan.beforeId)
+    },
+    end: () => { props.setDrag(null) },
+  }
+  const group: SessionNode = {
+    id: node.id,
+    title: node.title,
+    blank: false,
+    running: node.running,
+    runningSubagentCount: node.runningSubagentCount,
+    completed: node.completed,
+    pinned: node.pinned,
+    archived: node.archived,
+    updatedAt: node.updatedAt,
+  }
+  const seat = rowRenderSlots({
+    leading: null,
+    menu: (close: () => void) => (
+      <SessionMenu key="menu" targetId={targetId} workspaceId={workspaceId} node={node} close={close} />
+    ),
+    actions: <SessionActions key="actions" targetId={targetId} node={node} />,
+  })
   return (
-    <>
-      {draft !== undefined && (
-        <TreeRow
-          label={t('tree.draft.openAria')}
-          onActivate={() => { void store.startDraftSession(props.workspace) }}
-        >
-          <SessionNodeItem
-            node={draftSessionNode(draft.sessionId)}
-            // Highlighting follows the draft: the vendored row marks itself
-            // selected when its id is the current one.
-            currentId={draft.sessionId}
-            now={props.now}
-            onOpen={() => { void store.startDraftSession(props.workspace) }}
-            onRenameRequest={() => {}}
-            renderSlot={rowRenderSlots({ leading: null, menu: null, actions: null })}
-            t={sessionTranslate(props.workspace.title)}
-          />
-        </TreeRow>
-      )}
-      {items.map(session => (
-        <SessionNodeItem
-          key={session.id}
-          node={sessionNode(session, props.flags)}
-          currentId={state.currentSessionId}
-          now={props.now}
-          onOpen={(id) => {
-            const found = items.find(candidate => candidate.id === id)
-            // An archived session is not openable (the official row marks that
-            // with `aria-description`); the click is a no-op with a notice.
-            if (found === undefined) return
-            if (props.flags.archived.has(found.id)) {
-              store.notifyError(t('tree.session.archivedNotOpenable'))
-              return
-            }
-            void store.openSession(props.workspace, found)
-          }}
-          onRenameRequest={() => {}}
-          renderSlot={rowRenderSlots(sessionSeat(props.workspace, session, props.flags))}
-          t={sessionTranslate(session.title ?? props.workspace.title)}
-        />
-      ))}
-      {list !== undefined && list.error !== undefined && (
-        <p className="dsh-rw-side-error">{t('tree.sessions.failed', { message: list.error.message })}</p>
-      )}
-      {list !== undefined && list.loading && items.length === 0 && (
-        <p className="dsh-rw-tree-empty">{t('tree.sessions.loading')}</p>
-      )}
-      {/* No draft and nothing stored: say so instead of leaving the workspace
-          silently empty (the always-present blank row used to fill this spot). */}
-      {list !== undefined && list.loaded && !list.loading && list.error === undefined
-        && items.length === 0 && draft === undefined && (
-        <p className="dsh-rw-tree-empty">{t('tree.sessions.empty')}</p>
-      )}
-    </>
+    <SessionNodeItem
+      node={group}
+      currentId={props.currentSessionId}
+      now={props.now}
+      onOpen={() => {
+        if (node.archived) {
+          notifyRemoteError(t('tree.session.archivedNotOpenable'))
+          return
+        }
+        void openRemoteSession(targetId, node.id)
+      }}
+      onRenameRequest={() => {}}
+      renderSlot={seat}
+      drag={dragProps}
+      t={sessionTranslate(node.title === '' ? rowsTranslate('session.untitled') : node.title)}
+    />
   )
 }
 
-/** One remote workspace row plus its session rows. */
-function WorkspaceRow(props: { workspace: WorkspaceRowModel; target: PublicTarget; now: number }): ReactElement | null {
-  const state = useAppState()
-  const { workspace } = props
-  const key = workspaceNodeKey(workspace.id)
-  const expanded = state.expanded[key] ?? false
-  const list = state.sessions[workspace.id]
-  const connected = props.target.status === 'ready'
-  const flags = workspaceFlags(workspace)
-  const translate = useMemo(() => workspaceTranslate(workspace), [workspace.title])
-  const group: GroupNode = {
-    key: workspace.id,
-    workspaceId: workspace.remoteWorkspaceId,
-    cwd: workspace.path,
-    // A v2 server omits `createdAt`; the hover card then shows no date rather
-    // than `Invalid Date` (contract §14.1: never drop the row over a missing
-    // field).
-    createdAt: workspace.createdAt === undefined ? undefined : Date.parse(workspace.createdAt),
-    label: workspace.title,
-    // The server's count is the truth until this device has loaded the list —
-    // and once it has, the count is the *stored* conversations it can show
-    // (drafts have no log yet, so the server count can be one higher).
-    sessionCount: list === undefined ? workspace.sessionCount ?? 0 : visibleSessions(list.items).length,
-    expanded,
-    containsCurrent: state.currentSessionId !== undefined && workspace.sessionId === state.currentSessionId,
-    sessions: [],
+/** One temporary 「新会话」 row for the open blank session. */
+function DraftRow(props: {
+  view: RemoteConnectionView
+  workspace: RemoteWorkspaceGroup
+  draft: RemoteSessionNode
+  now: number
+}): ReactElement {
+  const node: SessionNode = {
+    id: props.draft.id,
+    title: '',
+    blank: true,
+    running: false,
+    runningSubagentCount: 0,
+    completed: false,
+    pinned: false,
+    archived: false,
+    updatedAt: Date.now(),
   }
   return (
-    <>
-      <TreeRow label={props.workspace.title} expanded={expanded} onActivate={() => { store.toggleNode(key) }}>
-      <ProjectRowItem
-        group={group}
-        onToggle={() => { store.toggleNode(key) }}
-        onCreate={() => { void store.startDraftSession(workspace) }}
-        actions={{
-          rename: () => { store.requestWorkspaceRename(workspace) },
-          delete: () => { store.requestDeleteWorkspace(workspace) },
-        }}
-        // A disconnected connection cannot start sessions; the row still
-        // renders, with the plain dictionary labels.
-        t={connected ? translate : ((verb: string, params?: Record<string, unknown>) => rowsTranslate(verb, params))}
-      />
-      </TreeRow>
-      {expanded && <SessionRows workspace={workspace} now={props.now} flags={flags} />}
-    </>
+    <SessionNodeItem
+      node={node}
+      currentId={props.draft.id}
+      now={props.now}
+      onOpen={() => { void openRemoteSession(props.view.target.id, props.draft.id) }}
+      onRenameRequest={() => {}}
+      renderSlot={rowRenderSlots({ leading: null, menu: null, actions: null })}
+      t={sessionTranslate(props.workspace.workspace.title)}
+    />
   )
 }
 
-/** One connection row (the level the shell's own tree does not have) plus its workspaces. */
-function ConnectionRow(props: { target: PublicTarget; workspaces: WorkspaceRowModel[]; now: number }): ReactElement | null {
-  const state = useAppState()
-  const { target } = props
-  const key = targetNodeKey(target.id)
-  const expanded = state.expanded[key] ?? false
-  const connected = target.status === 'ready'
-  const feedback = state.connectFeedback[target.id]
-  const connecting = feedback?.connecting === true
-  const translate = useMemo(() => connectionTranslate(target, connecting), [target.status, connecting])
-  const sessionCount = props.workspaces.reduce(
-    (total, workspace) => total + (state.sessions[workspace.id]?.items.length ?? 0),
-    0,
+/** One workspace row plus its session rows. */
+function WorkspaceRow(props: {
+  view: RemoteConnectionView
+  group: RemoteWorkspaceGroup
+  now: number
+  drag: DragState | null
+  setDrag: (next: DragState | null) => void
+  workspaceOrder: readonly string[]
+  searchActive: boolean
+  currentSessionId?: string
+  visibleSessionIds?: ReadonlySet<string>
+}): ReactElement {
+  const { group, view } = props
+  const targetId = view.target.id
+  const workspaceId = group.workspace.workspaceId
+  const key = workspaceNodeKey(workspaceId)
+  const expanded = view.expanded[key] ?? false
+  const shown = props.searchActive || expanded
+  const sessions = props.visibleSessionIds === undefined
+    ? group.sessions
+    : group.sessions.filter(node => props.visibleSessionIds!.has(node.id))
+  const containsCurrent = props.currentSessionId !== undefined
+    && group.sessions.some(node => node.id === props.currentSessionId)
+  const sessionOrder = group.workspace.sessionIds
+  const workspaceDrag = props.drag?.kind === 'workspace' && props.drag.targetId === targetId
+  const createdAtMs = Date.parse(group.workspace.createdAt)
+  const groupNode: GroupNode = {
+    key: workspaceId,
+    workspaceId,
+    cwd: group.workspace.path,
+    createdAt: Number.isNaN(createdAtMs) ? undefined : createdAtMs,
+    label: group.workspace.title,
+    sessionCount: group.workspace.sessionCount,
+    expanded: shown,
+    containsCurrent,
+    sessions: [],
+  }
+  const halfOf = (event: { clientY: number; currentTarget: HTMLElement }): 'before' | 'after' => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+  }
+  const commitWorkspaceDrop = (half: 'before' | 'after'): void => {
+    const current = props.drag
+    if (current === null || current.kind !== 'workspace') return
+    props.setDrag(null)
+    const plan = planRemoteDrop(props.workspaceOrder, current.sourceId, workspaceId, half)
+    if ('reject' in plan) return
+    void reorderWorkspaces(targetId, current.sourceId, plan.beforeId)
+  }
+  return (
+    <div
+      className="dsh-rw-ws-group"
+      data-drop-active={workspaceDrag && props.drag?.over?.id === workspaceId ? props.drag.over.half : undefined}
+      onDragOver={workspaceDrag
+        ? (event: { preventDefault(): void; dataTransfer: { dropEffect: string } | null; clientY: number; currentTarget: HTMLElement }) => {
+          event.preventDefault()
+          if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'move'
+          const current = props.drag
+          if (current === null) return
+          props.setDrag({ ...current, over: { id: workspaceId, half: halfOf(event) } })
+        }
+        : undefined}
+      onDrop={workspaceDrag
+        ? (event: { preventDefault(): void; dataTransfer: { dropEffect: string } | null; clientY: number; currentTarget: HTMLElement }) => {
+          event.preventDefault()
+          commitWorkspaceDrop(halfOf(event))
+        }
+        : undefined}
+    >
+      <TreeRow
+        label={group.workspace.title}
+        expanded={shown}
+        onActivate={() => toggleRemoteNode(targetId, key)}
+      >
+        <ProjectRowItem
+          group={groupNode}
+          onToggle={() => toggleRemoteNode(targetId, key)}
+          onCreate={() => { void openRemoteDraft(targetId, workspaceId) }}
+          actions={{
+            rename: () => requestRenameWorkspace(targetId, workspaceId),
+            delete: () => requestDeleteWorkspace(targetId, workspaceId),
+          }}
+          drag={{
+            start: () => { props.setDrag({ kind: 'workspace', targetId, sourceId: workspaceId }) },
+            end: () => { if (props.drag?.kind === 'workspace') props.setDrag(null) },
+          }}
+          t={workspaceTranslate(group.workspace.title)}
+        />
+      </TreeRow>
+      {shown && (
+        <div role="group">
+          {group.draft !== undefined && (
+            <DraftRow view={view} workspace={group} draft={group.draft} now={props.now} />
+          )}
+          {sessions.map(node => (
+            <SessionRow
+              key={node.id}
+              view={view}
+              workspace={group}
+              node={node}
+              now={props.now}
+              drag={props.drag}
+              setDrag={props.setDrag}
+              sessionOrder={sessionOrder}
+              {...(props.currentSessionId === undefined ? {} : { currentSessionId: props.currentSessionId })}
+            />
+          ))}
+          {view.sessionsLoad.loading && group.sessions.length === 0 && (
+            <p className="dsh-rw-tree-empty">{t('remote.loading.sessions')}</p>
+          )}
+          {view.sessionsLoad.error !== undefined && group.sessions.length === 0 && (
+            <p className="dsh-rw-side-error">
+              {t('remote.sessions.failed', { message: view.sessionsLoad.error.message })}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
-  const lastConnectedAt = Date.parse(target.lastConnectedAt ?? '')
+}
+
+/** Deployment status and the two confirmation buttons (M3). */
+function DeploymentRow(props: { view: RemoteConnectionView }): ReactElement | null {
+  const deployment = props.view.connection?.deployment
+  if (deployment === undefined) return null
+  const runtimeNeeds = deployment.runtime.action !== 'reuse'
+    && (deployment.runtime.requiresConfirmation || deployment.runtime.mode === 'confirm')
+  const pluginNeeds = deployment.plugin.action !== 'reuse' && deployment.plugin.requiresConfirmation
+  const actionLabel = (action: 'install' | 'upgrade'): string =>
+    t(action === 'install' ? 'remote.deploy.install' : 'remote.deploy.upgrade')
+  if (!runtimeNeeds && !pluginNeeds) return null
+  return (
+    <div className="dsh-rw-deploy-row">
+      <span className="dsh-rw-deploy-title">{t('remote.deploy.title')}</span>
+      {runtimeNeeds && (
+        <span className="dsh-rw-deploy-item">
+          <span>
+            {t('remote.deploy.runtime')} · {actionLabel(deployment.runtime.action === 'install' ? 'install' : 'upgrade')}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={props.view.stateLoad.loading}
+            onClick={() => { void applyDeployment(props.view.target.id, 'runtime') }}
+          >
+            {t('remote.deploy.runtimeButton')}
+          </Button>
+        </span>
+      )}
+      {pluginNeeds && (
+        <span className="dsh-rw-deploy-item">
+          <span>{t('remote.deploy.plugin')} · {actionLabel(deployment.plugin.action === 'install' ? 'install' : 'upgrade')}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={props.view.stateLoad.loading}
+            onClick={() => { void applyDeployment(props.view.target.id, 'plugin') }}
+          >
+            {t('remote.deploy.pluginButton')}
+          </Button>
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** One connection row, its mode/credential chip and its workspace subtree. */
+function ConnectionRow(props: {
+  view: RemoteConnectionView
+  now: number
+  drag: DragState | null
+  setDrag: (next: DragState | null) => void
+  /** Owned by SidebarSection, so a cleared input cannot leave a stale filter. */
+  search: string
+}): ReactElement {
+  const { view } = props
+  const targetId = view.target.id
+  const key = targetNodeKey(targetId)
+  const livePhase = view.connection?.phase
+  const connected = livePhase === 'ready' || livePhase === 'degraded'
+  const connecting = view.connecting === true || livePhase === 'connecting'
+  const error = view.error ?? view.connection?.error
+  const failed = view.connectFailed === true || livePhase === 'failed'
+  const phase = connecting ? 'connecting' : failed ? 'failed' : connected ? 'ready' : livePhase ?? 'stopped'
+  const expanded = view.expanded[key] ?? false
+  const state = useRemoteAppState()
+  const searchActive = props.search.trim() !== ''
+  // Only derive a result while a query is active: the cleared state must use
+  // the unfiltered server-order groups, never a remembered search result.
+  const result = searchActive ? remoteSearchFor(targetId, props.search) : undefined
+  const groups = result === undefined
+    ? view.groups
+    : view.groups.filter(group => result.workspaceIds.has(group.workspace.workspaceId))
+  const workspaceOrder = (view.workspaces?.workspaces ?? []).map(workspace => workspace.workspaceId)
+  const sessionCount = view.groups.reduce((total, group) => total + group.sessions.length, 0)
   const group: GroupNode = {
-    // The official row keys itself `workspace:<key>`; the key identifies this
-    // node rather than a local workspace, which is fine — it is only identity,
-    // and it keeps the row's own DOM contract intact.
-    key: `conn:${target.id}`,
-    // NOT `undefined`: the vendored row reads that as the ungrouped bucket and
-    // replaces the label with 未分组. Any string keeps our own label and the
-    // hover card's workspace lines.
-    workspaceId: `conn:${target.id}`,
-    // A WSL target has no user@host:port to show, only its distribution.
-    cwd: target.kind === 'wsl'
-      ? t('list.endpoint.wsl', { distro: target.wslDistro ?? target.host })
-      : t('list.endpoint', { username: target.username, host: target.host, port: target.port }),
-    createdAt: Number.isNaN(lastConnectedAt) ? undefined : lastConnectedAt,
-    label: target.label,
+    key: `conn:${targetId}`,
+    workspaceId: `conn:${targetId}`,
+    cwd: view.target.kind === 'wsl'
+      ? t('list.endpoint.wsl', { distro: view.target.wslDistro ?? view.target.host })
+      : t('list.endpoint', { username: view.target.username, host: view.target.host, port: view.target.port }),
+    createdAt: Number.isNaN(Date.parse(view.target.lastConnectedAt ?? '')) ? undefined : Date.parse(view.target.lastConnectedAt ?? ''),
+    label: view.target.label,
     sessionCount,
     expanded,
     containsCurrent: false,
     sessions: [],
   }
+  const translate = useMemo(
+    () => connectionTranslate(connected, connecting, failed),
+    [connected, connecting, failed],
+  )
   return (
     <>
       <Level
-        state={target.status}
+        state={phase}
         className="dsh-rw-conn"
-        connect={connecting ? 'connecting' : feedback?.error === undefined ? undefined : 'failed'}
+        connect={connecting ? 'connecting' : failed ? 'failed' : undefined}
       >
-        <ConnectStatus connecting={connecting} error={feedback?.error} />
+        <ConnectStatus connecting={connecting} error={failed ? error?.message : undefined} />
         <TreeRow
-          label={target.label}
+          label={view.target.label}
           expanded={connected && expanded}
           onActivate={() => {
-            if (connected) store.toggleNode(key)
-            else void store.connectTarget(target)
+            if (connected) toggleRemoteNode(targetId, key)
+            else void connectRemoteTarget(targetId)
           }}
         >
-        <ProjectRowItem
-          // Keyed by state: switching between connected/disconnected remounts the
-          // row, which resets its (vendored, internal) menu to closed. A menu that
-          // outlives the action it performed is the defect this prevents.
-          key={`conn:${target.status}`}
-          group={group}
-          // Clicking a disconnected connection connects it; a live one folds,
-          // exactly like the shell's workspace rows fold.
-          onToggle={() => {
-            if (connected) store.toggleNode(key)
-            else void store.connectTarget(target)
-          }}
-          onCreate={() => { void (connected ? store.openAddWorkspace(target) : store.connectTarget(target)) }}
-          actions={{
-            rename: () => { void (connected ? store.stopTarget(target) : store.connectTarget(target)) },
-            delete: () => { store.requestForgetTarget(target) },
-          }}
-          t={translate}
-        />
+          <ProjectRowItem
+            key={`conn:${view.target.status}:${view.connection?.phase ?? ''}`}
+            group={group}
+            onToggle={() => {
+              if (connected) toggleRemoteNode(targetId, key)
+              else void connectRemoteTarget(targetId)
+            }}
+            onCreate={() => { void (connected ? openAddWorkspace(targetId) : connectRemoteTarget(targetId)) }}
+            actions={{
+              rename: () => { void (connected ? disconnectRemoteTarget(targetId) : connectRemoteTarget(targetId)) },
+              delete: () => requestForgetTarget(targetId),
+              extra: [
+                { id: 'mode', label: t('remote.mode.switchMenu'), icon: <IconGlobeOutlineRegular />, onSelect: () => openModeDialog(targetId) },
+                {
+                  id: 'refresh',
+                  label: t('remote.refresh'),
+                  icon: <IconRefreshOutlineRegular />,
+                  onSelect: () => { void (view.stale ? loadRegistryChanges(targetId) : refreshTargetComplete(targetId)) },
+                },
+              ],
+            }}
+            t={translate}
+          />
         </TreeRow>
       </Level>
-      {/* Children exist only through the channel: a connection that is down shows
-          nothing under it, whatever the expanded flag says (the store clears the
-          flag too, this is the render-side guarantee). */}
-      {connected && expanded && (
+      {connected && (expanded || searchActive) && (
         <>
-          {props.workspaces.length === 0
-            ? (
-              // "The server has no workspace" and "the list could not be read"
-              // are different facts (a missing `serverWorkspaces` key is not an
-              // empty array), so they read differently.
-              <p className="dsh-rw-tree-empty">
-                {serverListState(state.serverWorkspaces, target.id) === 'unavailable'
-                  ? t('tree.conn.noWorkspace.unavailable')
-                  : t('tree.conn.noWorkspace')}
-              </p>
-            )
-            : props.workspaces.map(workspace => (
-              <WorkspaceRow key={workspace.id} workspace={workspace} target={target} now={props.now} />
-            ))}
+          {state.openingDraft?.targetId === targetId && (
+            <p className="dsh-rw-tree-empty">{t('remote.draft.opening')}</p>
+          )}
+          <DeploymentRow view={view} />
+          {state.pendingLocalReveal?.targetId === targetId && (
+            <div className="dsh-rw-remote-banner" role="status">
+              <span>{t('remote.session.revealTimeout')}</span>
+              <button type="button" className="dsh-rw-banner-link" onClick={() => { void retryPendingLocalReveal() }}>
+                {t('remote.error.retry')}
+              </button>
+            </div>
+          )}
+          {view.stale && (
+            <div className="dsh-rw-remote-banner" role="status">
+              <span>{t('remote.registry.stale')}</span>
+              <button type="button" className="dsh-rw-banner-link" onClick={() => { void loadRegistryChanges(targetId) }}>
+                {t('remote.registry.load')}
+              </button>
+              {view.reloadError !== undefined && (
+                <button type="button" className="dsh-rw-banner-link" onClick={() => { void previewProfileRestart(targetId) }}>
+                  {t('remote.registry.restart')}
+                </button>
+              )}
+            </div>
+          )}
+          {view.stateLoad.loading && groups.length === 0 && (
+            <p className="dsh-rw-tree-empty">{t('remote.loading')}</p>
+          )}
+          {view.stateLoad.error !== undefined && groups.length === 0 && (
+            <p className="dsh-rw-side-error">
+              {t('remote.sessions.failed', { message: view.stateLoad.error.message })}
+            </p>
+          )}
+          {!view.stateLoad.loading && view.workspaces === undefined && groups.length === 0 && (
+            <p className="dsh-rw-tree-empty">{t('remote.empty.unavailable')}</p>
+          )}
+          {groups.map(group => (
+            <WorkspaceRow
+              key={group.workspace.workspaceId}
+              view={view}
+              group={group}
+              now={props.now}
+              drag={props.drag}
+              setDrag={props.setDrag}
+              workspaceOrder={workspaceOrder}
+              searchActive={searchActive}
+              {...(state.selection?.targetId === targetId && state.selection.sessionId !== undefined
+                ? { currentSessionId: state.selection.sessionId }
+                : {})}
+              {...(result === undefined ? {} : { visibleSessionIds: result.sessionIds })}
+            />
+          ))}
+          {searchActive && result !== undefined && !result.hasMatches && (
+            <p className="dsh-rw-tree-empty">{t('remote.search.empty')}</p>
+          )}
+          {!view.sessionsLoad.loaded && view.sessionsLoad.loading && (
+            <p className="dsh-rw-tree-empty">{t('remote.loading.sessions')}</p>
+          )}
         </>
       )}
     </>
   )
 }
 
+/** Drag state shared by every row in one tree. */
+interface DragState {
+  readonly kind: 'workspace' | 'session'
+  readonly targetId: string
+  readonly workspaceId?: string
+  readonly sourceId: string
+  readonly pinned?: boolean
+  readonly over?: { readonly id: string; readonly half: 'before' | 'after' } | undefined
+}
+
 /**
- * The whole remote tree.
- * @param props.empty - text shown when no connection is saved yet.
- * @param props.compact - sidebar presentation flag (kept for the panel copy).
+ * The whole remote tree. With no saved connection it renders nothing: the
+ * sidebar header already carries 新建连接, so an empty sentence is noise.
  */
-export function RemoteTree(props: { compact: boolean; empty?: string }): ReactElement | null {
-  const state = useAppState()
+export function RemoteTree(props: { compact: boolean; search?: string }): ReactElement | null {
+  const state = useRemoteAppState()
+  // The sidebar owns the search input; passing its value down makes the clear
+  // path independent from a possibly stale store subscription.
+  const search = props.search ?? state.search
   const now = useNow()
-  if (state.targets.length === 0) {
-    return <p className="dsh-rw-tree-empty">{props.empty ?? t('tree.empty')}</p>
-  }
-  return (
+  const [drag, setDrag] = useState<DragState | null>(null)
+  // With no connection the tree has no rows; the sidebar section owns the
+  // dialogs, so the connect dialog is not lost here.
+  const overlays = (
     <>
-    {/* Dialogs belong to the tree, not to one surface: the sidebar section is the
-        primary one, and a picker rendered only by the panel opened nothing when the
-        user clicked 添加工作区 there. */}
-    <AddWorkspaceDialog />
-    <ConfirmDialog />
-    <RenameSessionDialog />
-    <WorkspaceRenameDialog />
-    <div
-      className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}
-      role="tree"
-      aria-label={t('tree.sidebar.title')}
-    >
-      {state.targets.map(target => (
-        <ConnectionRow
-          key={target.id}
-          target={target}
-          workspaces={state.workspaces.filter(workspace => workspace.targetId === target.id)}
-          now={now}
-        />
-      ))}
-    </div>
+      <RemoteDialogs />
+      {state.notice !== undefined && <NoticeToastHost notice={state.notice} onDismiss={dismissRemoteNotice} />}
     </>
   )
-}
-
-/**
- * Whether one listed remote session is a **stored conversation** rather than a
- * draft.
- *
- * Official semantics, measured in the shipped shell: a blank session is one whose
- * log carries no `turn/start`. `new session` does create and persist the shell
- * session immediately (a few hundred bytes of session/permission/sandbox headers),
- * and the plugin's draft path keeps that log — the draft is *reusable*, the next
- * 新会话 reopens the same blank — but it is still not a conversation. So the log's
- * size alone cannot decide this any more; the host answers it directly with
- * `draft` (it opens the log and looks for `turn/start`), and that flag is what the
- * row list honours.
- *
- * The size check stays as the fallback for a host that predates the flag: a
- * session with no bytes at all has no log yet, so it cannot be a row either.
- * Either way the *currently open* draft is filtered by id in `SessionRows`, so it
- * can never appear twice even on an older host.
- *
- * A stored log with no title stays: that is a real conversation whose title was
- * never written (pre-0.1.0 logs, another device mid-write), and the row already
- * renders the localized 未命名 placeholder for it.
- * @param session - one `/api/sessions` entry.
- * @returns true when the session is a conversation the tree may list.
- */
-function isStoredSession(session: RemoteSession): boolean {
-  if (session.draft === true) return false
-  return session.sizeBytes !== undefined && session.sizeBytes > 0
-}
-
-/** The sessions a workspace's tree may show: stored conversations only. */
-function visibleSessions(items: readonly RemoteSession[]): RemoteSession[] {
-  return items.filter(isStoredSession)
-}
-
-/**
- * Order one workspace's sessions the way the shell orders its own: pinned rows
- * lead (in the shell's pin order), then most recent activity, with archived
- * rows last — and pinned/archived membership comes from the official sets.
- *
- * Drafts are dropped first ({@link isStoredSession}): they are not rows yet.
- * @param items - the stored sessions.
- * @param flags - the official pin/archive sets.
- * @returns the row order.
- */
-function orderSessions(items: readonly RemoteSession[], flags: SessionFlags): RemoteSession[] {
-  const rank = (session: RemoteSession): number => {
-    if (flags.pinned.has(session.id)) return 0
-    return flags.archived.has(session.id) ? 2 : 1
-  }
-  return visibleSessions(items).sort((left, right) => {
-    const byRank = rank(left) - rank(right)
-    if (byRank !== 0) return byRank
-    return (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
-  })
+  if (state.order.length === 0) return overlays
+  return (
+    <>
+      {overlays}
+      <div
+        className={props.compact ? 'dsh-rw-tree dsh-rw-tree--compact' : 'dsh-rw-tree'}
+        role="tree"
+        aria-label={t('tree.sidebar.title')}
+      >
+        {state.order.map(targetId => {
+          const view = state.connections[targetId]
+          return view === undefined
+            ? null
+            : <ConnectionRow key={targetId} view={view} now={now} drag={drag} setDrag={setDrag} search={search} />
+        })}
+      </div>
+    </>
+  )
 }
