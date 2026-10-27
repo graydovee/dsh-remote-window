@@ -25,6 +25,14 @@ export const PANEL_ID = 'dsh-remote-workspace'
 
 /** Native server conversation main area (registered under NATIVE_MAIN_ID). */
 export function NativeSessionPanel(): ReactElement | null {
+  return (
+    <RemoteTreeBoundary>
+      <NativeSessionPanelBody />
+    </RemoteTreeBoundary>
+  )
+}
+
+function NativeSessionPanelBody(): ReactElement | null {
   const props = useNativeSessionMainProps()
   if (props === undefined) return null
   return <NativeSessionMain {...props} />

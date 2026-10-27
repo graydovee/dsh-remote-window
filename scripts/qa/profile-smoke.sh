@@ -90,7 +90,7 @@ hs_status="$(printf '%s\n' "$hs" | head -1)"; hs_json="$(printf '%s\n' "$hs" | t
 expect_status "handshake" "200" "$hs_status"
 printf '%s\n' "$hs_json" >> "$LOG"
 expect_json "handshake protocol/pluginVersion/dshVersion/profile/clientId" \
-  'd.get("ok") and d["value"]["protocol"]==1 and d["value"]["pluginVersion"]=="0.1.0-alpha.3" and d["value"]["dshVersion"]=="0.2.1-rc.2" and d["value"]["profile"]!="" and d["value"]["clientId"]!=""' "$hs_json"
+  'd.get("ok") and d["value"]["protocol"]==1 and d["value"]["pluginVersion"]=="0.1.0-alpha.3" and d["value"]["dshVersion"]=="0.2.1-rc.3" and d["value"]["profile"]!="" and d["value"]["clientId"]!=""' "$hs_json"
 expect_json "handshake lease present" 'd.get("ok") and isinstance(d["value"].get("lease"),dict) and d["value"]["lease"].get("instanceId")' "$hs_json"
 expect_json "handshake capabilities" 'd.get("ok") and d["value"].get("capabilities",{}).get("workspaceApi")==1' "$hs_json"
 

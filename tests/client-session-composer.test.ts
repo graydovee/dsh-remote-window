@@ -17,6 +17,10 @@ vi.mock('react/jsx-dev-runtime', () => ({
   jsxDEV: () => null,
 }))
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Menu: () => null,
+  PermissionIconReadOnlyRegular: () => null,
+  PermissionIconWorkspaceWriteRegular: () => null,
+  PermissionIconFullAccessRegular: () => null,
   Button: () => null,
   Tooltip: () => null,
   CodeBlock: () => null,

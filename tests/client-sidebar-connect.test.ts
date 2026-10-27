@@ -55,6 +55,10 @@ vi.mock('../src/client/remote-store.ts', () => ({
 vi.mock('../src/client/tree.tsx', () => ({ RemoteTree: () => null }))
 vi.mock('../src/client/common.tsx', () => ({ NoticeToastHost: () => null }))
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Menu: () => null,
+  PermissionIconReadOnlyRegular: () => null,
+  PermissionIconWorkspaceWriteRegular: () => null,
+  PermissionIconFullAccessRegular: () => null,
   Button: (props: Record<string, unknown>) => { buttons.push(props); return null },
   IconPlusOutlineRegular: () => null,
   IconRefreshOutlineRegular: () => null,

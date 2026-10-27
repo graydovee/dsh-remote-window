@@ -445,19 +445,21 @@ v2 server 模式不再使用 iframe/portal。目标是用官方组件拼装，�
 | `Button`/`Tooltip`/`StateDot`/icons | header、composer、状态、折叠控件 | 同上 |
 | `ProjectRowItem`/`SessionNodeItem` | 远程树行（未改动） | vendor 0.2.1 |
 
-**官方组件缺口（因此保留了最小自绘壳）**
+**rc.3 官方 bundle 复用现状（硬约束）**
 
-- `@deepseek-ai/dsh-client-ui-conversation` 的 `/client` 入口只导出 `apply`、`UiConversation`、
-  registries/contracts/types；`ConversationRoot` / `ConversationContent` / `ConversationSession` /
-  `InputBar` 等 skeleton 组件**不在包导出**，且依赖 local session controller、ui-session、
-  conversation service 与 input slots。
-- `@deepseek-ai/dsh-client-ui-chat` 只导出 `apply`、chat 类型与 `isRunningTool` 等 helper；
-  `ChatView` / `MessageItem` / tool nodes / `ApprovalCommand` / `ReasoningRow` 均在包内部，
-  依赖 chat store、approval service、local transcript，不能拿 server timeline props 直接渲染。
-- 因此 v2 `session-main.tsx` 自绘：header、滚动/自动滚底、错误/重连条、时间线壳、approval 壳、
-  composer 壳；数据/SSE 由 remote-store 薄适配器接入 `session-timeline.ts` 的纯合并函数。
-- 若后续官方包导出 shell/composer，或 task-15 把 server 会话映射进 local conversation controller
-  的 slot 渲染链路，应替换这些壳；当前不复制官方组件源码、无 iframe/DOM/portal 依赖。
+- 官方包入口仍只导出 `apply`/`inject` 等少数符号；但 `lib/client.js` 内已包含完整组件实现。
+  client 因此用 vendor 脚本对其做**最小导出 patch**，把下列真实官方组件提供给 native 主区：
+  `InputBar` / `SessionInputShell`（composer）、`ConversationSessionHeader`（header/tabs/actions）、
+  `UserMessageNodeView` / `UserContent` / `MessageIconActions` / `AssistantMarkdown`（thread）、
+  `ApprovalPanel`（pending approval）、`ModelSelect`（模型选择）。
+- 官方 bundle 由 host 路由 `/dsh-remote-workspace/official-ui-*.js` 原样提供；wrapper 导出由
+  `tests/official-ui-assets.test.ts` 守护。适配层只做 remote 数据 → 官方 props、locale、
+  disclosure/hook、loading/error 边界。
+- **禁止只 vendor CSS、禁止照 DOM 手写近似组件、禁止用自定义样式覆盖官方视觉。**
+- 无法独立 mount 的 frame 级组件（`RightbarSeat`/右侧栏）禁止用近似 DOM 假装修复；要么实现
+  官方 `ui-session`/`sidebarRight` binding/controller，要么如实缺席并记录。
+- 视觉验收必须做同 viewport 官方/remote 截图对比，核对 layout/边距/宽度、官方 locale 文案和展开态；
+  “看起来差不多”不算完成。详细契约见 `AGENTS.md` 的 **1:1 官方 UI 复刻（硬约束）** 一节。
 
 **数据形状**
 

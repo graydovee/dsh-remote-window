@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Read server-side DSH session logs for QA evidence.
 #
-# DSH 0.2.1-rc.2 stores a session as
+# DSH 0.2.1-rc.3 stores a session as
 #   ~/.dsh/sessions/<cwd-slug>/session-<id>/session.v4.jsonl.zstd
 # The log is zstd-compressed; this helper lists/dumps it inside the container so
 # the host does not need a zstd binary.

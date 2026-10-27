@@ -8,17 +8,19 @@
  * adapters below parse the small set of shapes the official tool renderers
  * understand and fall back to `CodeBlock` when a shape is unknown.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import {
-  CodeBlock, DiffBlock, IconCheckCircleFillRegular, IconChevronDownOutlineRegular,
-  IconChevronRightOutlineRegular, IconWarningTriangleOutlineRegular, JsonBlock, ReadBlock, SearchBlock,
+  CodeBlock, DiffBlock, DisclosureRow, IconCheckCircleFillRegular,
+  IconWarningTriangleOutlineRegular, JsonBlock, ReadBlock, SearchBlock,
   TerminalBlock,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   SessionTimelineToolCallEntry, SessionTimelineToolResultEntry,
 } from './session-timeline.ts'
 import { t } from './locales.ts'
+import { loadOfficialToolUi, loadOfficialUi } from './official-ui-runtime.ts'
+import type { OfficialToolExports, OfficialUiExports } from './official-ui-runtime.ts'
 
 /* The plugin's ambient platform shim predates these block exports; declare the
    bindings used here (the browser platform module ships them). */
@@ -40,6 +42,7 @@ const CODE_LABELS = {
 const CODE_COPY = { copyLabel: t('session.block.copy'), copiedLabel: t('session.block.copied') }
 
 const TERMINAL_LABELS = {
+  commandLine: (line: number) => t('session.block.terminal.commandLine', { line }),
   signal: (signal: string) => t('session.block.terminal.signal', { signal }),
   exitCode: (code: number) => t('session.block.terminal.exitCode', { code }),
   noExitCode: t('session.block.terminal.noExitCode'),
@@ -172,7 +175,7 @@ export function parseDiffOutput(text: string): { path: string; oldText: string |
 }
 
 function readPath(args: Record<string, unknown> | undefined): string | undefined {
-  for (const key of ['path', 'file_path', 'file', 'target']) {
+  for (const key of ['path', 'file_path', 'file', 'target', 'project_path', 'cwd', 'directory']) {
     const value = args?.[key]
     if (typeof value === 'string' && value !== '') return value
   }
@@ -187,6 +190,16 @@ function readCommand(args: Record<string, unknown> | undefined): string | undefi
   return undefined
 }
 
+/** Parse tool arguments, which may arrive as an object or a JSON string. */
+function parseToolArguments(value: unknown): Record<string, unknown> | undefined {
+  let parsed: unknown = value
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value) } catch { return undefined }
+  }
+  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown> : undefined
+}
+
 /** One official-block body for a tool result. */
 function ToolResultBody(props: {
   call: SessionTimelineToolCallEntry | undefined
@@ -195,12 +208,11 @@ function ToolResultBody(props: {
   const name = props.call?.name ?? props.result.name
   const kind = toolBlockKind(name)
   const text = props.result.output
-  const args = props.call?.arguments !== undefined && typeof props.call.arguments === 'object' && props.call.arguments !== null
-    ? props.call.arguments as Record<string, unknown> : undefined
+  const args = parseToolArguments(props.call?.arguments)
   if (kind === 'terminal') {
     return (
       <TerminalBlock
-        command={typeof props.call?.arguments === 'string' ? props.call.arguments : readCommand(args) ?? t('session.tool.call')}
+        command={readCommand(args) ?? t('session.tool.call')}
         output={text}
         exitCode={props.result.isError === true ? 1 : 0}
         running={props.call?.status === 'running'}
@@ -251,7 +263,7 @@ function ToolResultBody(props: {
     const path = readPath(args) ?? name ?? 'tool'
     return <DiffBlock diffs={[{ path, oldText: before, newText: after }]} labels={DIFF_LABELS} />
   }
-  if (kind === 'json') {
+  if (kind === 'json' || text.trim().startsWith('{') || text.trim().startsWith('[')) {
     try {
       return <JsonBlock label={t('session.tool.result')} payload={JSON.parse(text)} truncatedLabel={(total: number) => t('session.block.jsonTruncated', { total })} />
     } catch {
@@ -265,58 +277,207 @@ function ToolResultBody(props: {
 function ToolCallBody(props: { entry: SessionTimelineToolCallEntry }): ReactElement | null {
   const value = props.entry.arguments
   if (value === undefined) return null
-  if (typeof value === 'string') {
-    return <CodeBlock code={value} copyLabel={t('session.block.copy')} copiedLabel={t('session.block.copied')} showHeader={false} />
+  const parsed = parseToolArguments(value)
+  if (parsed !== undefined) {
+    return <JsonBlock label={t('session.tool.arguments')} payload={parsed} defaultOpen={false} truncatedLabel={(total: number) => t('session.block.jsonTruncated', { total })} />
   }
-  return <JsonBlock label={t('session.tool.arguments')} payload={value} defaultOpen={false} truncatedLabel={(total: number) => t('session.block.jsonTruncated', { total })} />
+  return <CodeBlock code={typeof value === 'string' ? value : JSON.stringify(value, null, 2)} copyLabel={t('session.block.copy')} copiedLabel={t('session.block.copied')} showHeader={false} />
 }
 
-/** One tool invocation card. */
-export function ToolCallCard(props: { entry: SessionTimelineToolCallEntry }): ReactElement {
-  const [open, setOpen] = useState(false)
-  const status = props.entry.status ?? 'running'
+/** One-line official ToolRow-style summary for a call or result. */
+function toolSummary(entry: SessionTimelineToolCallEntry | SessionTimelineToolResultEntry, call?: SessionTimelineToolCallEntry): string {
+  const args = parseToolArguments(call?.arguments)
+  const command = readCommand(args)
+  if (command !== undefined && command !== '') return command.replace(/\s+/g, ' ').trim()
+  const path = readPath(args)
+  if (path !== undefined) return path
+  if (entry.kind === 'tool-result' && entry.output.trim() !== '') {
+    const first = entry.output.split('\n').find(line => line.trim() !== '')?.trim() ?? ''
+    if (first.startsWith('{') || first.startsWith('[')) {
+      return entry.isError === true ? t('session.tool.status.error') : t('session.tool.status.done')
+    }
+    return first
+  }
+  const query = args?.['query'] ?? args?.['pattern'] ?? args?.['prompt']
+  if (typeof query === 'string' && query !== '') return query
+  if (entry.kind === 'tool-call') return t('session.tool.status.running')
+  return entry.name === undefined ? '' : entry.name
+}
+
+/** Load the vendored official ToolRow and its conversation locale once. */
+function useOfficialToolRow(): { ui: OfficialToolExports; zh: Record<string, string> } | null {
+  const [state, setState] = useState<{ ui: OfficialToolExports; zh: Record<string, string> } | null>(null)
+  useEffect(() => {
+    let live = true
+    void Promise.all([loadOfficialToolUi(), loadOfficialUi()]).then(
+      ([ui, conversation]) => { if (live) setState({ ui, zh: (conversation as OfficialUiExports).conversationZh }) },
+      () => { /* keep the local fallback */ },
+    )
+    return () => { live = false }
+  }, [])
+  return state
+}
+
+/** Official one-disclosure hook, matching the shape ToolRow expects. */
+function useToolDisclosure(): { expanded: boolean; setExpanded: (open: boolean) => void; toggle: () => void } {
+  const [expanded, setExpanded] = useState(false)
+  return {
+    expanded,
+    setExpanded,
+    toggle: () => setExpanded(value => !value),
+  }
+}
+
+function officialToolVariant(name: string): 'search' | 'read' | 'bash' | 'write' | 'edit' | 'code' | 'others' {
+  const kind = toolBlockKind(name)
+  if (kind === 'terminal') return 'bash'
+  if (kind === 'read') return 'read'
+  if (kind === 'search') return 'search'
+  if (kind === 'diff') return 'edit'
+  if (kind === 'code') return 'code'
+  return 'others'
+}
+
+function officialToolState(entry: SessionTimelineToolCallEntry | SessionTimelineToolResultEntry): 'preparing' | 'running' | 'ok' | 'error' | 'stopped' {
+  if (entry.kind === 'tool-call') return entry.status === 'running' ? 'running' : 'preparing'
+  if (entry.isError === true) return 'error'
+  if (entry.isError === false) return 'ok'
+  return 'ok'
+}
+
+function firstErrorLine(text: string): string | undefined {
+  return text.split('\n').find(line => line.trim() !== '')?.trim()
+}
+
+function officialToolTranslate(zh: Record<string, string>): (key: string, vars?: Record<string, string | number>) => string {
+  return (key, vars) => {
+    const value = zh[key] ?? key
+    if (vars === undefined) return value
+    return value.replace(/\{(\w+)\}/gu, (_, name: string) => String(vars[name] ?? `{${name}}`))
+  }
+}
+
+/** Render the exact official ToolRow with the same call/result data. */
+function OfficialToolRow(props: {
+  entry: SessionTimelineToolCallEntry | SessionTimelineToolResultEntry
+  call?: SessionTimelineToolCallEntry | undefined
+  zh: Record<string, string>
+  ToolRow: (props: Record<string, unknown>) => unknown
+}): ReactElement {
+  const name = props.call?.name ?? props.entry.name ?? t('session.tool.result')
+  const args = parseToolArguments(props.call?.arguments)
+  const argsRaw = props.call?.arguments === undefined
+    ? null
+    : typeof props.call.arguments === 'string'
+      ? props.call.arguments
+      : JSON.stringify(props.call.arguments, null, 2)
+  const summary = toolSummary(props.entry, props.call)
+  const title = props.zh[`tool.title.${name}`] ?? name
+  const command = readCommand(args)
+  const result = props.entry.kind === 'tool-result' ? props.entry : undefined
+  const terminal = props.entry.kind === 'tool-result' && command !== undefined
+    ? {
+        card: {
+          command,
+          output: props.entry.output,
+          exitCode: props.entry.isError === true ? 1 : 0,
+          running: false,
+          background: false,
+          ...(readPath(args) === undefined ? {} : { cwd: readPath(args) }),
+        },
+        copy: { kind: 'shell', command, description: undefined },
+      }
+    : null
+  const error = result?.isError === true
+  const Row = props.ToolRow as (props: Record<string, unknown>) => ReactElement
   return (
-    <div className="dsh-rw-session-tool" data-status={status} data-kind="call">
-      <button
-        type="button"
-        className="dsh-rw-session-tool-head"
-        onClick={() => setOpen(value => !value)}
-        aria-expanded={open}
-      >
-        <span className="dsh-rw-session-tool-toggle" aria-hidden="true">
-          {open ? <IconChevronDownOutlineRegular size={12} /> : <IconChevronRightOutlineRegular size={12} />}
-        </span>
-        <span className="dsh-rw-session-tool-kind">{t('session.tool.call')}</span>
-        <code className="dsh-rw-session-tool-name">{props.entry.name}</code>
-        <span className="dsh-rw-session-tool-status">{t(`session.tool.status.${status}` as Parameters<typeof t>[0])}</span>
-      </button>
-      {open && <ToolCallBody entry={props.entry} />}
-    </div>
+    <Row
+      useDisclosure={useToolDisclosure}
+      t={officialToolTranslate(props.zh)}
+      variant={officialToolVariant(name)}
+      toolName={name}
+      icon={error ? <IconWarningTriangleOutlineRegular size={13} /> : <IconCheckCircleFillRegular size={13} />}
+      title={title}
+      summary={summary}
+      bodyRaw={argsRaw}
+      output={result?.output}
+      errorSummary={error && result !== undefined ? firstErrorLine(result.output) : undefined}
+      terminal={terminal}
+      state={officialToolState(props.entry)}
+    />
   )
 }
 
-/** One tool result card; the body is the official block chosen for the tool. */
+/** One tool invocation row; official DisclosureRow carries the collapsed chrome. */
+export function ToolCallCard(props: { entry: SessionTimelineToolCallEntry }): ReactElement {
+  const official = useOfficialToolRow()
+  const [open, setOpen] = useState(false)
+  const status = props.entry.status ?? 'running'
+  const summary = toolSummary(props.entry)
+  if (official !== null && official.ui.ToolRow !== undefined) {
+    return <OfficialToolRow entry={props.entry} zh={official.zh} ToolRow={official.ui.ToolRow} />
+  }
+  return (
+    <DisclosureRow
+      icon={<IconCheckCircleFillRegular size={13} />}
+      title={props.entry.name}
+      open={open}
+      expandable
+      expandOnRowClick
+      onToggle={() => setOpen(value => !value)}
+      running={status === 'running'}
+      collapsedContent={(
+        <>
+          <span className="dsh-rw-tool-sep" aria-hidden="true" />
+          <span className="dsh-rw-tool-summary" title={summary}>
+            {t(`session.tool.status.${status}` as Parameters<typeof t>[0])}
+          </span>
+        </>
+      )}
+    >
+      <div className="dsh-rw-tool-body">
+        <ToolCallBody entry={props.entry} />
+      </div>
+    </DisclosureRow>
+  )
+}
+
+/** One tool result row; body is lazily expanded, matching the official ToolRow. */
 export function ToolResultCard(props: {
   entry: SessionTimelineToolResultEntry
   /** The paired call supplies the command/path/arguments the official block needs. */
   call?: SessionTimelineToolCallEntry | undefined
 }): ReactElement {
+  const official = useOfficialToolRow()
+  const [open, setOpen] = useState(false)
   const error = props.entry.isError === true
+  const name = props.entry.name ?? props.call?.name ?? t('session.tool.result')
+  const summary = toolSummary(props.entry, props.call)
+  if (official !== null && official.ui.ToolRow !== undefined) {
+    return <OfficialToolRow entry={props.entry} {...(props.call === undefined ? {} : { call: props.call })} zh={official.zh} ToolRow={official.ui.ToolRow} />
+  }
   return (
-    <div className="dsh-rw-session-tool" data-status={error ? 'error' : 'done'} data-kind="result">
-      <div className="dsh-rw-session-tool-head" role="status">
-        <span className="dsh-rw-session-tool-icon" aria-hidden="true">
-          {error ? <IconWarningTriangleOutlineRegular size={13} /> : <IconCheckCircleFillRegular size={13} />}
-        </span>
-        <span className="dsh-rw-session-tool-kind">{t(error ? 'session.tool.resultError' : 'session.tool.result')}</span>
-        {props.entry.name !== undefined && props.entry.name !== ''
-          ? <code className="dsh-rw-session-tool-name">{props.entry.name}</code>
-          : null}
-        {props.entry.truncated === true && <span className="dsh-rw-session-tool-note">{t('session.tool.truncated')}</span>}
-      </div>
-      <div className="dsh-rw-session-tool-body">
+    <DisclosureRow
+      icon={error
+        ? <IconWarningTriangleOutlineRegular size={13} />
+        : <IconCheckCircleFillRegular size={13} />}
+      title={name}
+      open={open}
+      expandable
+      expandOnRowClick
+      onToggle={() => setOpen(value => !value)}
+      collapsedContent={(
+        <>
+          <span className="dsh-rw-tool-sep" aria-hidden="true" />
+          <span className={`dsh-rw-tool-summary${error ? ' dsh-rw-tool-summary-error' : ''}`} title={summary}>
+            {props.entry.truncated === true ? t('session.tool.truncated') : summary}
+          </span>
+        </>
+      )}
+    >
+      <div className="dsh-rw-tool-body">
         <ToolResultBody call={props.call} result={props.entry} />
       </div>
-    </div>
+    </DisclosureRow>
   )
 }

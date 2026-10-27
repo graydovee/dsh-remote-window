@@ -125,10 +125,14 @@ tsdown targets：
   `executor` 记录（跨 client 共享）。只有显式切换/server 已配置凭据时才用 server 模式。
 - 切换按 D20：preview 必须列当前 turn + 其它 active turn；apply 必须带 `previewRevision` 与
   `cancelActiveTurns:true`；缺清单拒绝执行；任何取消失败显式报错。
-- server 模式主区是 **client 自绘 native 对话面板**（`session-main.tsx`）：timeline/SSE/prompt/cancel/
-  approval 走 P1；视觉尽量复用官方 Markdown/tool blocks/primitives，不使用 iframe 或 server UI DOM。
-  打开会话前仍必须 `session/prepare-server`（managed handle），官方 UI 若被直接打开则复用 live agent，
-  不二次 resume；unmanaged 切换只允许重启 profile（D20 确认 + cancel/whenIdle/flush）。
+- server 模式主区是 **native 对话面板**（`session-main.tsx`）：timeline/SSE/prompt/cancel/approval 走 P1，
+  不使用 iframe 或 server UI DOM。header、composer、message/thread、reasoning、message actions、pending
+  approval 必须使用 `assets/official-ui/` 中 **同版本官方 rc.3 bundle** 的真实 React 组件；适配层只提供
+  remote 数据与 locale/hook 桥，不得再手写这些组件的视觉近似实现。官方 bundle 通过 host 路由
+  `/dsh-remote-workspace/official-ui-*.js` 原样提供，wrapper 导出的符号由
+  `tests/official-ui-assets.test.ts` 守护。打开会话前仍必须 `session/prepare-server`（managed handle），
+  官方 UI 若被直接打开则复用 live agent，不二次 resume；unmanaged 切换只允许重启 profile（D20 确认 +
+  cancel/whenIdle/flush）。
 - 开发说明（不是模型 prompt）：local 模式只注入 remote working-directory + execution host；SSH/mux/
   sandbox/anchor 生命周期属于 DSH/插件实现，不进入模型上下文。SSH 意外关闭自动重连最多 5 次（指数
   退避）；认证/host-key 错误不重试，用户主动 stop 不触发。
@@ -152,7 +156,9 @@ tsdown targets：
 - 专用 profile：离线解包内置 `dsh-remote-workspace-server-<client-version>.tgz` + 写 4 个 profile 文件
   + marker；不依赖 server 网络/pnpm。marker 不匹配才重装；失败 `server-plugin-*` 错误，不静默回退。
 - 独立 runtime 自动安装/升级；全局 runtime 只检测复用，v1 拒绝修改共享全局 runtime/非专用 profile
-  插件，返回 `runtime-global-unsupported` / `plugin-profile-not-managed`，不得静默写。
+  插件，返回 `runtime-global-unsupported` / `plugin-profile-not-managed`，不得静默写。目标版本没有缓存
+  artifact 时，client 复用 host pnpm 在 `~/.dsh/remote-assets/` 构建 `node/`+`dsh/` 包再上传；构建结果
+  与 server 仓库发布的 runtime 布局一致，失败才报 `runtime-missing`。
 - 一个 profile 一个 client；client 断开 → cancel/flush → 停 profile server、关隧道。
 - 不新增版本区间：运行时契约唯一来源 `DSH_VERIFIED_RUNTIMES`，只接受实测 `0.2.1-rc.3`。
 - `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 精确 `0.2.1-rc.3`；zod 固定 `4.4.3`；
@@ -161,6 +167,25 @@ tsdown targets：
   **dependencies**（harness 安装里没有；local 模式按值 import/按名挂载）。
 - 版本号由仓库发布版本决定（当前 `0.1.0-alpha.3`）；内置 server 插件 tarball 版本必须与它精确一致。
   本机调试可用修订后缀，但部署后 `git checkout -- package.json`，修订号永不提交/发布。
+
+**1:1 官方 UI 复刻（硬约束）**
+
+- server 模式主区是官方会话界面的 **1:1 复刻**：布局、边距、宽度、字号/行高、颜色、图标、文案、展开态和
+  交互行为必须与同版本官方 UI 一致；“看起来差不多”不算完成。
+- 一律使用 `assets/official-ui/` 中 **`0.2.1-rc.3` 官方 bundle 的真实 React 组件**；
+  **禁止只 vendor CSS**，禁止照官方 DOM 手写视觉近似组件，禁止用自定义样式覆盖官方视觉。
+- 适配层只允许做 remote 数据 → 官方 props、locale、disclosure/hook、loading/error 边界；
+  不得重画官方组件内部结构或另造交互。
+- 新增/升级官方组件必须：从精确 tag 取源、用脚本生成 patched bundle、保留 provenance/NOTICE、
+  host 原样服务、wrapper 导出受测试守护、重装后让插件批量 URL 的 rev 变化。当前入口：
+  `scripts/vendor-official-ui.mjs`（conversation/composer）、`scripts/vendor-workspace-rows.mjs`；
+  `assets/official-ui/{conversation,chat,model,approval}-client.js`。
+- 官方 bundle 只导出 `apply`/`inject` 时，只 patch **最小导出集合**，不改官方行为；导出变化必须同步测试。
+- 官方 locale 是文案唯一来源；不得自行翻译权限、模型、操作等官方标签。
+- 无法独立 mount 的 frame 级组件（如 `RightbarSeat`/右侧栏）**禁止用近似 DOM 假装修复**；
+  要么补齐官方 session binding/controller，要么如实缺席并在验收中记录。
+- 每次 UI 改动必须做同 viewport 的官方/remote 截图对比，核对 x/宽度/间距/文案/展开态；
+  组件导出和关键 DOM 用测试守护。UI 验收边界以 `doc/official-workspace-reuse.md` §13 为准。
 
 **UI 复用**
 

@@ -113,6 +113,8 @@ export interface SessionTimelineUnknownEntry extends SessionTimelineBase {
   readonly kind: 'unknown'
   readonly text: string
   readonly label?: string
+  /** Official internal bookkeeping events can be dropped from the transcript. */
+  readonly ignorable?: boolean
 }
 
 /** One normalized timeline row. */
@@ -475,6 +477,7 @@ export function adaptServerTimelineEntry(raw: ServerTimelineEntry): SessionTimel
         text: text === '' ? JSON.stringify(raw) : text,
         ...(typeof raw.type === 'string' ? { label: raw.type }
           : typeof raw.kind === 'string' ? { label: raw.kind } : {}),
+        ...(raw.ignorable === true ? { ignorable: true } : {}),
       }
   }
 }

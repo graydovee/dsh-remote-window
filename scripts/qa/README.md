@@ -7,7 +7,7 @@ new server plugin exists.
 
 ## What it guarantees
 
-- Linux container, Node 22 or 24, global `@deepseek-ai/dsh@0.2.1-rc.2`.
+- Linux container, Node 22 or 24, global `@deepseek-ai/dsh@0.2.1-rc.3`.
 - SSH published on `127.0.0.1:<port>` only; key auth only; no root login.
 - Isolated server data: `~/.dsh` inside the container is bind-mounted from
   `/tmp/dsh-qa/<name>/home`, the workspace from `/tmp/dsh-qa/<name>/work`.

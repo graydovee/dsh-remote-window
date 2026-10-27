@@ -19,6 +19,11 @@ const recorded = vi.hoisted(() => ({
 }))
 
 vi.mock('react', () => ({
+  createContext: (value: unknown) => ({
+    _currentValue: value,
+    Provider: (props: { children?: unknown }) => props.children ?? null,
+  }),
+  useContext: (context: { _currentValue: unknown }) => context._currentValue,
   useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
   useEffect: () => {},
   useMemo: (factory: () => unknown) => factory(),
@@ -38,6 +43,10 @@ vi.mock('react/jsx-dev-runtime', () => ({
   jsxDEV: (type: unknown, props: unknown) => ({ type, props: props ?? {} }),
 }))
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Menu: () => null,
+  PermissionIconReadOnlyRegular: () => null,
+  PermissionIconWorkspaceWriteRegular: () => null,
+  PermissionIconFullAccessRegular: () => null,
   MarkdownText: (props: Record<string, unknown>) => { recorded.markdown.push(props); return null },
   Button: (props: Record<string, unknown>) => { recorded.buttons.push(props); return null },
   Tooltip: (props: { children?: unknown }) => props.children ?? null,
@@ -47,9 +56,16 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   IconChevronRightOutlineRegular: () => null,
   IconRefreshOutlineRegular: () => null,
   IconWarningTriangleOutlineRegular: () => null,
+  IconCheckOutlineRegular: () => null,
+  IconCopyOutlineRegular: () => null,
+  IconEllipsisOutlineRegular: () => null,
+  writeClipboard: vi.fn(async () => true),
 }))
 vi.mock('../src/client/session-composer.tsx', () => ({
   SessionComposer: (props: Record<string, unknown>) => { recorded.composer.push(props); return null },
+}))
+vi.mock('../src/client/session-composer-official.tsx', () => ({
+  OfficialSessionComposer: (props: Record<string, unknown>) => { recorded.composer.push(props); return null },
 }))
 vi.mock('../src/client/session-tools.tsx', () => ({
   ToolCallCard: (props: Record<string, unknown>) => { recorded.tools.push({ card: 'call', props }); return null },
@@ -120,8 +136,8 @@ describe('NativeSessionMain shell', () => {
     expect(recorded.composer).toHaveLength(1)
     expect(recorded.composer[0]).toMatchObject({ running: false, disabled: false, variant: 'composer' })
     expect(recorded.markdown.length).toBeGreaterThanOrEqual(2)
-    expect(recorded.tools.map(item => item.card)).toEqual(['call', 'result'])
-    expect(recorded.tools[1]?.props.call).toMatchObject({ callId: 'call-1', name: 'bash' })
+    expect(recorded.tools.map(item => item.card)).toEqual(['result'])
+    expect(recorded.tools[0]?.props.call).toMatchObject({ callId: 'call-1', name: 'bash' })
     expect(recorded.approvals).toHaveLength(1)
     const approval = recorded.approvals[0] as { entry: unknown; onDecision: (id: string, decision: string) => void }
     expect(approval.entry).toMatchObject({ approvalId: 'approval-1' })
@@ -157,9 +173,9 @@ describe('NativeSessionMain shell', () => {
       onStop: vi.fn(),
       onApproval: vi.fn(),
     }))
-    expect(recorded.classes).toContain('ST7X_W_composerStack ST7X_W_composerHero')
-    expect(recorded.classes).toContain('bocITq_headline')
-    expect(recorded.classes).toContain('ST7X_W_heroWorkspaceRow')
+    expect(recorded.classes).toContain('dsh-rwv-conv-composerStack dsh-rwv-conv-composerHero')
+    expect(recorded.classes).toContain('dsh-rwv-hero-headline')
+    expect(recorded.classes).toContain('dsh-rwv-conv-heroWorkspaceRow')
     expect(recorded.composer).toHaveLength(1)
     expect(recorded.composer[0]).toMatchObject({ variant: 'hero' })
   })

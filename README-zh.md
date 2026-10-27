@@ -140,8 +140,8 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 
 1. 在侧栏 **远程工作区** 点 **新建连接**。
 2. 选择 `SSH`，填目标信息，首次连接确认 host key 指纹。
-3. 查看部署预览。client 安装专用 profile、匹配的 server 插件与（按需）独立 runtime，随后启动 profile
-   server 并完成握手鉴权。失败的尝试不会保存。
+3. 查看探测结果。client 检查 server 的 Node/DSH 运行时与 server 插件，决定后续步骤是部署、更新还是跳过；
+   随后启动 profile server 并完成握手鉴权。失败的尝试不会保存。
 4. 在连接行点加号，浏览目标机目录并添加为 server 工作区。
 5. 点工作区下的空白行新建会话，或点已有行继续。连接行的执行端开关切换 server/local（默认 local）。
 
@@ -182,6 +182,10 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
 ```
 
 豁免只覆盖本机宿主；server 必须运行已验证运行时——client 安装的独立 runtime，或复用该精确版本的全局 DSH。
+
+独立 runtime 会优先复用 `~/.dsh/remote-assets/` 中该平台/版本的缓存包；缓存没有时，client 用本机 pnpm
+按同一 `node/` + `dsh/` 布局构建并上传，因此升级 DSH 后首次连接可能慢一些，之后直接复用。构建只写入
+专用 profile 的独立 runtime，不改 server 的全局 DSH 或其它 profile。
 
 ## Data and security
 

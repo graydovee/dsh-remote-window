@@ -3,7 +3,7 @@
 #
 #   scripts/qa/start.sh [--name server] [--node 22|24]
 #                       [--ssh-port 22022] [--web-port 24022]
-#                       [--dsh-version 0.2.1-rc.2] [--rebuild] [--recreate]
+#                       [--dsh-version 0.2.1-rc.3] [--rebuild] [--recreate]
 #                       [--auto-ports]
 #
 # The container publishes SSH and the future dsh web port on 127.0.0.1 only.

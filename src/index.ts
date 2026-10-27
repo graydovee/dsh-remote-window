@@ -168,6 +168,29 @@ function packageRootFrom(moduleUrl: string): string {
   return join(fileURLToPath(new URL('..', moduleUrl)))
 }
 
+
+/** Serve one vendored official UI bundle (static, no secrets). */
+function serveOfficialUi(req: IncomingMessage, res: ServerResponse, file = 'conversation-client.js'): void {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.statusCode = 405
+    res.end()
+    return
+  }
+  try {
+    const body = readFileSync(join(packageRootFrom(import.meta.url), 'assets/official-ui', file))
+    res.statusCode = 200
+    res.setHeader('content-type', 'text/javascript; charset=utf-8')
+    res.setHeader('cache-control', 'no-cache')
+    res.setHeader('x-content-type-options', 'nosniff')
+    if (req.method === 'HEAD') { res.end(); return }
+    res.end(body)
+  } catch (error) {
+    res.statusCode = 500
+    res.setHeader('content-type', 'text/plain; charset=utf-8')
+    res.end(`official ui bundle unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 /** Register the plugin's routes and return a disposer. */
 function registerRoutes(ctx: Context, profiles: ProfileService): () => void {
   const disposers: Array<() => void> = []
@@ -175,6 +198,41 @@ function registerRoutes(ctx: Context, profiles: ProfileService): () => void {
     kind: 'prefix',
     path: `${ROUTE_PREFIX}/api`,
     handler: (req, res) => { void handleApi(ctx, profiles, req, res) },
+  }))
+  // Vendored official conversation bundle. Served from this plugin's own
+  // origin so the browser can evaluate the exact rc.3 component code; the
+  // route is static and contains no target data or secrets.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: `${ROUTE_PREFIX}/official-ui.js`,
+    handler: (req, res) => { serveOfficialUi(req, res) },
+  }))
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: `${ROUTE_PREFIX}/official-ui-chat.js`,
+    handler: (req, res) => { serveOfficialUi(req, res, 'chat-client.js') },
+  }))
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: `${ROUTE_PREFIX}/official-ui-approval.js`,
+    handler: (req, res) => { serveOfficialUi(req, res, 'approval-client.js') },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: `${ROUTE_PREFIX}/official-ui-model.js`,
+    handler: (req, res) => { serveOfficialUi(req, res, 'model-client.js') },
+  }))
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: `${ROUTE_PREFIX}/official-ui-tool.js`,
+    handler: (req, res) => { serveOfficialUi(req, res, 'tool-client.js') },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: `${ROUTE_PREFIX}/official-ui-trajectory.js`,
+    handler: (req, res) => { serveOfficialUi(req, res, 'trajectory-client.js') },
   }))
   // v2 same-origin session event stream (native conversation, no iframe).
   disposers.push(ctx.webServer.register({
@@ -563,6 +621,33 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
       approvalDecision(body.decision)
       const { targetId: _targetId, ...params } = body
       return await profiles.sessionApproval(targetId, params)
+    }
+    case 'session/commands': {
+      const targetId = requireString(body, 'targetId')
+      requireString(body, 'sessionId')
+      const { targetId: _targetId, ...params } = body
+      return await profiles.sessionCommands(targetId, params)
+    }
+    case 'session/command': {
+      const targetId = requireString(body, 'targetId')
+      requireString(body, 'sessionId')
+      requireString(body, 'line')
+      const { targetId: _targetId, ...params } = body
+      return await profiles.sessionCommand(targetId, params)
+    }
+    case 'session/modelCatalog': {
+      const targetId = requireString(body, 'targetId')
+      requireString(body, 'sessionId')
+      const { targetId: _targetId, ...params } = body
+      return await profiles.sessionModelCatalog(targetId, params)
+    }
+    case 'session/selectModel': {
+      const targetId = requireString(body, 'targetId')
+      requireString(body, 'sessionId')
+      requireString(body, 'provider')
+      requireString(body, 'model')
+      const { targetId: _targetId, ...params } = body
+      return await profiles.sessionSelectModel(targetId, params)
     }
     case 'session/status': {
       const targetId = requireString(body, 'targetId')

@@ -32,12 +32,15 @@ import { isCompatibleDsh, DSH_VERIFIED_RUNTIMES } from './version-range.ts'
 import { describeLocalPackage, platformArch, sha256File } from './assets.ts'
 import { parseDshScanOutput, scanDshScript, type DshScan } from './dsh-scan.ts'
 import { probeFactsFrom } from './platform.ts'
+import { buildRuntimeArtifact } from './runtime-artifact.ts'
 import {
   installIsolatedRuntime,
   planRuntime,
   resolveRuntimeArtifact,
   readRuntimeMarker,
+  runtimeAddonProbeCommand,
   runtimeArtifactName,
+  runtimePathAssignment,
   runtimePathPrefixes,
   runtimePaths,
   RuntimeError,
@@ -46,9 +49,11 @@ import {
 import {
   installProfilePeerPackage,
   installServerPlugin,
+  decideServerPluginInstall,
   readServerPluginMarker,
   resolveServerPluginTarball,
   verifyServerPluginTarball,
+  SERVER_PLUGIN_PROTOCOL,
   type ServerPluginTarball,
 } from './server-plugin.ts'
 import {
@@ -99,7 +104,7 @@ export type ConnectProgressStep = 'connect' | 'probe' | 'runtime' | 'upload' | '
 /** One progress event emitted while a connect attempt runs. */
 export interface ConnectProgressEvent {
   readonly step: ConnectProgressStep
-  readonly status: 'running' | 'ok' | 'failed'
+  readonly status: 'running' | 'ok' | 'failed' | 'skipped'
   readonly message: string
   readonly at: string
 }
@@ -158,6 +163,38 @@ export interface ConnectionStateV1 {
   readonly registry?: { readonly revision?: string; readonly epoch?: string; readonly stale?: boolean }
   readonly deployment?: DeploymentStateV1
   readonly error?: { readonly code: string; readonly message: string; readonly details?: unknown }
+}
+
+/** The deployment decision the probe step makes for one connect attempt. */
+type SetupAction = 'reuse' | 'install' | 'upgrade'
+
+interface RemoteSetupInspection {
+  readonly runtime: {
+    readonly kind: 'isolated' | 'global'
+    readonly action: SetupAction
+    readonly version: string
+    readonly installedVersion?: string
+    readonly nodeVersion?: string
+    readonly detail: string
+  }
+  readonly plugin: {
+    readonly action: SetupAction
+    readonly version: string
+    readonly installedVersion?: string
+    readonly detail: string
+  }
+  /** One log/progress line, e.g. `运行时 跳过：…；server 插件 部署：…`. */
+  readonly summary: string
+}
+
+/** The runtime facts resolved immediately before a profile start. */
+interface ResolvedRuntime {
+  readonly kind: 'isolated' | 'global'
+  readonly action: SetupAction
+  readonly launcher: string
+  readonly pathPrefixes: readonly string[]
+  readonly dshVersion: string
+  readonly runtimeDir: string
 }
 
 /** Options for {@link ProfileService}. */
@@ -389,7 +426,7 @@ export class ProfileService {
     const record = this.options.store.target(targetId)
     if (record === undefined) return undefined
     const live = this.live.get(targetId)
-    const expectedRuntime = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.2'
+    const expectedRuntime = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
     const runtimeKind = live?.runtimeKind ?? record.runtimeKind ?? 'global'
     const installedRuntime = live?.dshVersion ?? record.serverDshVersion
     const runtimeAction = installedRuntime === undefined ? 'install' : installedRuntime === expectedRuntime ? 'reuse' : 'upgrade'
@@ -507,33 +544,56 @@ export class ProfileService {
       emit('connect', 'ok', `SSH 已连接 ${effectiveRequest.username}@${effectiveRequest.host}`)
       begin('probe', '正在探测远端环境…')
       const scan = await this.scan(connection.remote)
-      emit('probe', 'ok', `远端环境 ${scan.platform ?? ''} ${scan.machine ?? ''}`.trim())
       const dshHome = request.dshHome ?? scan.dshHome ?? `${scan.home ?? ''}/.dsh`
       const paths = profilePaths(dshHome, clientId)
+      const tarball = await this.resolvePluginTarball()
+      const setup = await this.inspectRemoteSetup(connection, scan, dshHome, clientId, request, tarball)
+      emit('probe', 'ok', `远端环境 ${scan.platform ?? ''} ${scan.machine ?? ''}；${setup.summary}`.trim())
       // One profile directory has exactly one profile server. Stop any survivor
       // from a previous attempt **before** touching files/starting a new one,
       // and wait until its pid is really gone so the next start cannot race it.
       await stopProfileServer(connection.remote, paths).catch(() => false)
       await waitForProfileStopped(connection.remote, paths).catch(() => false)
-      begin('runtime', '正在准备 DSH 运行时…')
-      const runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request)
-      emit('runtime', 'ok', runtime.kind === 'global' ? '复用 server 全局 DSH' : '隔离 runtime 已就绪')
-      begin('upload', '正在检查 server 插件…')
-      const tarball = await this.resolvePluginTarball()
+      let runtime: ResolvedRuntime
+      if (setup.runtime.action === 'reuse') {
+        activeStep = 'runtime'
+        runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request, message => {
+          emit('runtime', 'running', message)
+        })
+        if (runtime.action === 'reuse') {
+          emit('runtime', 'skipped', setup.runtime.detail)
+        } else {
+          emit('runtime', 'ok', runtime.kind === 'global' ? '复用 server 全局 DSH' : runtime.action === 'upgrade' ? '隔离 runtime 已更新' : '隔离 runtime 已部署')
+        }
+      } else {
+        begin('runtime', setup.runtime.action === 'install' ? '正在部署 DSH 运行时…' : '正在更新 DSH 运行时…')
+        runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request, message => {
+          emit('runtime', 'running', message)
+        })
+        emit('runtime', 'ok', runtime.kind === 'global' ? '复用 server 全局 DSH' : runtime.action === 'upgrade' ? '隔离 runtime 已更新' : '隔离 runtime 已部署')
+      }
+      activeStep = 'upload'
       const pluginInstall = await installServerPlugin({ remote: connection.remote, paths, tarball, dshVersion: runtime.dshVersion })
       // The server plugin imports @deepseek-ai/schemastery (a peer). A global
       // DSH installed via npm is not an ancestor of the profile's node_modules,
       // so provide the peer offline from this client's own resolution.
-      const schemastery = this.resolvePeerPackage('@deepseek-ai/schemastery')
-      if (schemastery !== undefined) {
-        await installProfilePeerPackage(connection.remote, paths, { name: '@deepseek-ai/schemastery', packageDir: schemastery })
+      if (pluginInstall.installed) {
+        // The peer copy is part of installing the profile; a reused plugin
+        // already has it. Skipping the copy is what makes the probe's "skip"
+        // decision a real no-op rather than a silent second install.
+        const schemastery = this.resolvePeerPackage('@deepseek-ai/schemastery')
+        if (schemastery !== undefined) {
+          await installProfilePeerPackage(connection.remote, paths, { name: '@deepseek-ai/schemastery', packageDir: schemastery })
+        } else {
+          // Newer server tarballs inline/drop schemastery; only the older ones
+          // need this peer copy. Do not fail the deploy when it cannot be found —
+          // the handshake/start error will name the missing module if it is needed.
+          console.warn('[dsh-remote-workspace] @deepseek-ai/schemastery is not resolvable on the client; skipping the offline peer copy')
+        }
+        emit('upload', 'ok', setup.plugin.action === 'upgrade' ? 'server 插件已更新' : 'server 插件已安装')
       } else {
-        // Newer server tarballs inline/drop schemastery; only the older ones
-        // need this peer copy. Do not fail the deploy when it cannot be found —
-        // the handshake/start error will name the missing module if it is needed.
-        console.warn('[dsh-remote-workspace] @deepseek-ai/schemastery is not resolvable on the client; skipping the offline peer copy')
+        emit('upload', 'skipped', setup.plugin.detail)
       }
-      emit('upload', 'ok', pluginInstall.installed ? 'server 插件已安装' : '复用已安装的 server 插件')
       begin('start', `正在启动 profile ${paths.profile}…`)
       handle = await startProfileServer(connection.remote, paths, {
         launcher: runtime.launcher,
@@ -976,6 +1036,26 @@ export class ProfileService {
   /** Planned v2 P1: allow/deny one pending approval. */
   async sessionApproval(targetId: string, params: Record<string, unknown>): Promise<unknown> {
     return await this.rpc(targetId, 'session/approval', params)
+  }
+
+  /** P1: list official slash commands for a server session. */
+  async sessionCommands(targetId: string, params: Record<string, unknown>): Promise<unknown> {
+    return await this.rpc(targetId, 'session/commands', params)
+  }
+
+  /** P1: execute one official slash command in a server session. */
+  async sessionCommand(targetId: string, params: Record<string, unknown>): Promise<unknown> {
+    return await this.rpc(targetId, 'session/command', params)
+  }
+
+  /** P1: routable model catalog for a server session. */
+  async sessionModelCatalog(targetId: string, params: Record<string, unknown>): Promise<unknown> {
+    return await this.rpc(targetId, 'session/modelCatalog', params)
+  }
+
+  /** P1: persist one model selection on a server session. */
+  async sessionSelectModel(targetId: string, params: Record<string, unknown>): Promise<unknown> {
+    return await this.rpc(targetId, 'session/selectModel', params)
   }
 
   /** Planned v2 P1: running/approval/status snapshot for one session. */
@@ -1452,6 +1532,116 @@ export class ProfileService {
   }
 
   /**
+   * Inspect the runtime and server-plugin markers in the probe step.
+   *
+   * This is deliberately read-only on the remote: it tells the following steps
+   * whether they will deploy, update or skip. The isolated runtime's Node is
+   * executed (still read-only) because a marker alone can describe a runtime
+   * whose native addons no longer load; a failed check forces a clean redeploy.
+   */
+  private async inspectRemoteSetup(
+    connection: ProfileConnection,
+    scan: DshScan,
+    dshHome: string,
+    clientId: string,
+    request: ConnectProfileRequest,
+    tarball: ServerPluginTarball,
+  ): Promise<RemoteSetupInspection> {
+    const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
+    const global = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
+      ? undefined
+      : this.pickGlobal(scan, request)
+    let runtime: RemoteSetupInspection['runtime']
+    if (global !== undefined) {
+      const node = global.nodePath === undefined ? undefined : scan.nodes.find(candidate => candidate.path === global.nodePath)
+      runtime = {
+        kind: 'global',
+        action: 'reuse',
+        version: expectedDsh,
+        ...(node?.version === undefined || node.version === '' ? {} : { nodeVersion: node.version }),
+        detail: `复用 server 全局 DSH ${expectedDsh}${node?.version === undefined || node.version === '' ? '' : `（Node ${node.version}）`}`,
+      }
+    } else {
+      const paths = runtimePaths(dshHome, clientId)
+      const marker = await readRuntimeMarker(connection.remote, paths)
+      const plan = planRuntime({ kind: 'isolated', expectedVersion: expectedDsh, marker })
+      let action: SetupAction = plan.action
+      let nodeVersion: string | undefined
+      let runtimeUnhealthy = false
+      if (plan.action === 'reuse') {
+        const probe = await this.probeRuntimeHealth(connection.remote, paths)
+        if (probe.ok) nodeVersion = probe.version
+        else {
+          runtimeUnhealthy = true
+          action = marker === undefined ? 'install' : 'upgrade'
+        }
+      }
+      const installedVersion = marker?.version
+      runtime = {
+        kind: 'isolated',
+        action,
+        version: expectedDsh,
+        ...(installedVersion === undefined ? {} : { installedVersion }),
+        ...(nodeVersion === undefined ? {} : { nodeVersion }),
+        detail: action === 'reuse'
+          ? `复用隔离运行时 ${expectedDsh}${nodeVersion === undefined ? '' : `（Node ${nodeVersion}）`}`
+          : action === 'install'
+            ? `部署隔离运行时 ${expectedDsh}（含 Node）`
+            : runtimeUnhealthy
+              ? `修复隔离运行时 ${installedVersion ?? expectedDsh}（原生模块健康检查失败）`
+              : `更新隔离运行时 ${installedVersion ?? '旧版本'} → ${expectedDsh}`,
+      }
+    }
+    const paths = profilePaths(dshHome, clientId)
+    const pluginMarker = await readServerPluginMarker(connection.remote, paths)
+    const pluginAction: SetupAction = decideServerPluginInstall(pluginMarker, {
+      version: tarball.version,
+      sha256: tarball.sha256,
+      protocol: SERVER_PLUGIN_PROTOCOL,
+      dshVersion: expectedDsh,
+    }) === 'skip' ? 'reuse' : pluginMarker === undefined ? 'install' : 'upgrade'
+    const installedPlugin = pluginMarker?.version
+    const plugin = {
+      action: pluginAction,
+      version: tarball.version,
+      ...(installedPlugin === undefined ? {} : { installedVersion: installedPlugin }),
+      detail: pluginAction === 'reuse'
+        ? `复用 server 插件 ${tarball.version}`
+        : pluginAction === 'install'
+          ? `安装 server 插件 ${tarball.version}`
+          : `更新 server 插件 ${installedPlugin ?? '旧版本'} → ${tarball.version}`,
+    }
+    const actionLabel: Record<SetupAction, string> = { reuse: '跳过', install: '部署', upgrade: '更新' }
+    return {
+      runtime,
+      plugin,
+      summary: `运行时 ${actionLabel[runtime.action]}（${runtime.detail}）；server 插件 ${actionLabel[plugin.action]}（${plugin.detail}）`,
+    }
+  }
+
+  /**
+   * Prove the isolated runtime can actually run: Node prints a version and the
+   * dsh launcher answers through the runtime's own PATH. A marker alone is not
+   * enough — it can describe a runtime whose files were removed or corrupted.
+   */
+  private async probeRuntimeHealth(remote: ProfileRemote, paths: RuntimePaths): Promise<{ ok: boolean; version?: string }> {
+    try {
+      const node = await remote.exec(`${shellQuote(paths.nodeBin)} -v`, { maxBytes: 4096, timeoutMs: 10_000 })
+      const version = (node.stdout ?? '').trim().split('\n')[0] ?? ''
+      if (node.code !== 0 || !/^v\d+\./u.test(version)) return { ok: false }
+      const launcher = await remote.exec(
+        `DSH_HOME=${shellQuote(paths.dshHome)} ${runtimePathAssignment(paths)} ${shellQuote(paths.launcher)} --version`,
+        { maxBytes: 4096, timeoutMs: 20_000 },
+      )
+      if (launcher.code !== 0) return { ok: false, version }
+      const addon = await remote.exec(runtimeAddonProbeCommand(paths), { maxBytes: 4096, timeoutMs: 20_000 })
+      return { ok: addon.code === 0, version }
+    } catch {
+      return { ok: false }
+    }
+  }
+
+  /**
    * Pick the runtime before the profile install: a verified global dsh if the
    * host has one, otherwise the per-client isolated runtime (auto install or
    * upgrade from the injected artifact). Failing to find either is a coded
@@ -1463,8 +1653,9 @@ export class ProfileService {
     dshHome: string,
     clientId: string,
     request: ConnectProfileRequest,
-  ): Promise<{ kind: 'isolated' | 'global'; launcher: string; pathPrefixes: readonly string[]; dshVersion: string; runtimeDir: string }> {
-    const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.2'
+    onRuntimeProgress?: (message: string) => void,
+  ): Promise<ResolvedRuntime> {
+    const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
     const global = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
       ? undefined
       : this.pickGlobal(scan, request)
@@ -1472,27 +1663,46 @@ export class ProfileService {
       const prefixes: string[] = []
       if (global.nodePath !== undefined) prefixes.push(dirname(global.nodePath))
       if (global.path.includes('/')) prefixes.push(dirname(global.path))
-      return { kind: 'global', launcher: global.path, pathPrefixes: prefixes, dshVersion: expectedDsh, runtimeDir: '' }
+      return { kind: 'global', action: 'reuse', launcher: global.path, pathPrefixes: prefixes, dshVersion: expectedDsh, runtimeDir: '' }
     }
     const paths = runtimePaths(dshHome, clientId)
     const marker = await readRuntimeMarker(connection.remote, paths)
     const plan = planRuntime({ kind: 'isolated', expectedVersion: expectedDsh, marker })
     if (plan.action === 'reuse') {
-      return { kind: 'isolated', launcher: paths.launcher, pathPrefixes: runtimePathPrefixes(paths), dshVersion: expectedDsh, runtimeDir: paths.root }
+      const probe = await this.probeRuntimeHealth(connection.remote, paths)
+      if (probe.ok) {
+        return { kind: 'isolated', action: 'reuse', launcher: paths.launcher, pathPrefixes: runtimePathPrefixes(paths), dshVersion: expectedDsh, runtimeDir: paths.root }
+      }
+      onRuntimeProgress?.('隔离 runtime 不可用，正在重新部署…')
     }
+    const action: SetupAction = marker === undefined ? 'install' : 'upgrade'
     const facts0 = probeFactsFrom({ uname: scan.platform ?? '', machine: scan.machine ?? '', ostype: scan.ostype ?? '', ldd: scan.ldd ?? '' })
     const archKey0 = `${facts0.platform}-${facts0.arch}`
-    const artifactPath = await resolveRuntimeArtifact({
+    let artifactPath = await resolveRuntimeArtifact({
       version: expectedDsh,
       platformArch: archKey0,
       cacheDir: join(homedir(), '.dsh', 'remote-assets'),
       env: process.env,
     })
     if (artifactPath === undefined) {
-      throw new RuntimeError(
-        'runtime-missing',
-        `the server has no verified dsh ${expectedDsh} and no isolated runtime artifact is configured (set DSH_RW_RUNTIME_ARTIFACT)`,
-      )
+      // The published runtime tarball is not always available for a just-released
+      // dsh. Build the same node+dsh layout locally instead of failing the
+      // connection; this is the only way a new dsh can auto-upgrade the isolated
+      // runtime before the server release job has produced its artifact.
+      try {
+        const built = await buildRuntimeArtifact({
+          version: expectedDsh,
+          platform: facts0.platform,
+          arch: facts0.arch,
+          onProgress: onRuntimeProgress,
+        })
+        artifactPath = built.path
+      } catch (error) {
+        throw new RuntimeError(
+          'runtime-missing',
+          `the server has no verified dsh ${expectedDsh} and the isolated runtime artifact could not be built: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
     const content = await readFile(artifactPath)
     const info = await stat(artifactPath)
@@ -1506,7 +1716,14 @@ export class ProfileService {
       platformArch: archKey0,
     }
     await installIsolatedRuntime({ remote: connection.remote, paths, artifact, content })
-    return { kind: 'isolated', launcher: paths.launcher, pathPrefixes: runtimePathPrefixes(paths), dshVersion: expectedDsh, runtimeDir: paths.root }
+    const health = await this.probeRuntimeHealth(connection.remote, paths)
+    if (!health.ok) {
+      throw new RuntimeError(
+        'runtime-install-failed',
+        `the isolated runtime for ${clientId} was installed but failed its Node/native-addon health check; the profile server would exit before its startup line`,
+      )
+    }
+    return { kind: 'isolated', action, launcher: paths.launcher, pathPrefixes: runtimePathPrefixes(paths), dshVersion: expectedDsh, runtimeDir: paths.root }
   }
 
   /**

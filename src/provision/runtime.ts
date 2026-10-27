@@ -113,6 +113,32 @@ export function runtimeArtifactCachePath(cacheDir: string, version: string, plat
 }
 
 /**
+ * Prove the runtime's native require-builtin addon still loads.
+ *
+ * macOS hardens the signed Node binary in the runtime; npm ships the addon
+ * ad-hoc signed with no Team ID, so a freshly staged runtime can fail at
+ * `require('node-addon-require-builtin')` even though `node -v` and
+ * `dsh --version` answer. The artifact installer re-signs Node ad hoc with
+ * `disable-library-validation`, and this probe is what makes an already
+ * installed broken runtime eligible for repair instead of being reported as
+ * reusable.
+ */
+export function runtimeAddonProbeCommand(paths: RuntimePaths): string {
+  const script = [
+    "const fs = require('node:fs')",
+    "const path = require('node:path')",
+    "const { createRequire } = require('node:module')",
+    "const pnpm = path.join(process.argv[1], 'node_modules', '.pnpm')",
+    "const appBoot = fs.readdirSync(pnpm).filter(name => name.startsWith('@deepseek-ai+dsh-app-boot@'))",
+    'if (appBoot.length === 0) process.exit(2)',
+    "const req = createRequire(path.join(pnpm, appBoot[0], 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'package.json'))",
+    "try { req.resolve('node-addon-require-builtin') } catch { process.exit(0) }",
+    "req('node-addon-require-builtin')",
+  ].join('\n')
+  return `${shellQuote(paths.nodeBin)} -e ${shellQuote(script)} ${shellQuote(paths.dshDir)}`
+}
+
+/**
  * Find the runtime artifact in the client cache (or an explicit env path).
  *
  * The artifact is client-uploaded, so the file must be local. A missing file is
@@ -259,6 +285,24 @@ export function runtimeInstallScript(options: {
     'test -e "$STAGE/node/bin/node" || { echo "runtime artifact has no node/bin/node" >&2; exit 12; }',
     'test -e "$STAGE/dsh/node_modules/.bin/dsh" || { echo "runtime artifact has no dsh launcher" >&2; exit 13; }',
     `chmod +x "$STAGE/node/bin/node" "$STAGE/dsh/node_modules/.bin/dsh" 2>/dev/null || true`,
+    ...(options.artifact.platformArch.startsWith('darwin-')
+      ? [
+          'CODESIGN=/usr/bin/codesign',
+          '[ -x "$CODESIGN" ] || CODESIGN=codesign',
+          'command -v "$CODESIGN" >/dev/null 2>&1 || { echo "codesign is required to install a macOS runtime" >&2; exit 15; }',
+          'ENT="$STAGE/node-entitlements.plist"',
+          'cat > "$ENT" <<\'PLIST\'',
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+          '<plist version="1.0"><dict>',
+          '<key>com.apple.security.cs.allow-jit</key><true/>',
+          '<key>com.apple.security.cs.disable-library-validation</key><true/>',
+          '</dict></plist>',
+          'PLIST',
+          '"$CODESIGN" --force --sign - --options runtime --entitlements "$ENT" "$STAGE/node/bin/node" >/dev/null 2>&1 || { echo "failed to ad-hoc sign the runtime node" >&2; exit 16; }',
+          'rm -f "$ENT"',
+        ]
+      : []),
     'got=$("$STAGE/node/bin/node" -v 2>/dev/null || true)',
     '[ -n "$got" ] || { echo "runtime node did not answer -v" >&2; exit 14; }',
     `rm -rf "$ROOT/node.new" "$ROOT/dsh.new"`,

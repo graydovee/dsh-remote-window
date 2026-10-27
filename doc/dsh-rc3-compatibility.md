@@ -15,6 +15,7 @@
 | server 仓库 `package.json` | `engines.dsh` 与全部 dsh peer/dependency 精确改为 rc.3 |
 | server 仓库 `src/server-plugin/index.ts` | `DSH_VERIFIED_RUNTIME = '0.2.1-rc.3'`，handshake 回报 rc.3 |
 | `AGENTS.md` / `doc/refactor-v1-*.md` / `doc/official-workspace-reuse.md` | 权威基线改为 rc.3；标注 rc.2 的历史实测记录保留为升级前证据 |
+| `src/provision/runtime-artifact.ts` + `profile-service.ts` | 独立 runtime 缓存缺失时，用 host pnpm 现场构建 `node/` + `dsh/` 包并上传；首次连接变慢，之后复用缓存 |
 
 `src/client/vendor/workspace-rows/**` 仍 vendor 自 rc.2（commit `687f282e86`）。本次没有重新 vendor：
 rc.3 的官方行 DOM/slot 在本轮 UI 冒烟中仍匹配；vendor 内部不读取运行时版本号。重新 vendor 的触发条件
@@ -28,12 +29,16 @@ rc.3 的官方行 DOM/slot 在本轮 UI 冒烟中仍匹配；vendor 内部不读
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | client 类型 | `pnpm typecheck` | 通过 |
-| client 单测 | `pnpm test` | 491 passed / 1 skipped，0 failed |
+| client 单测 | `pnpm test` | 493 passed / 1 skipped，0 failed |
 | client 构建 | `pnpm build` | 通过 |
 | server 类型 | `pnpm typecheck`（server 仓库） | 通过 |
 | server 单测 | `pnpm test`（server 仓库） | 59 passed / 0 failed |
 | server 插件包 | `pnpm pack:server-plugin` | `dsh-remote-workspace-server-0.1.0-alpha.3.tgz`，sha256 `76042554e2059ef5fa1b9ac51de5ff09e1426603036fd5dcb3d3bf3179cb3cf1`，manifest `dshVersion=0.2.1-rc.3` |
 | client 内置 server tarball | `scripts/bundle-server-plugin.mjs` | 内置 tarball 与 `checksums.json` 的 sha256 一致（当前 `76042554…`） |
+| client 最终包 | `pnpm pack --pack-destination /tmp/dsh-probe-final` | `dsh-remote-workspace-0.1.0-alpha.3.tgz`，sha256 `e8a4d095c570d7d9b5e2228d5311296cb8e89ae2992c61811568a3bc28098176`，481 KB |
+| 本地 runtime 构建 | server 仓库 `node scripts/build-runtime-artifact.mjs --platform darwin --arch arm64 --dsh-version 0.2.1-rc.3` | 产出 `node/` + `dsh/` 包，sha256 `81ff6fcc…`；用于验证 client 在无发布包时的兜底路径 |
+| client builder 实测 | 临时集成测试调用 `buildRuntimeArtifact`，目标 `darwin-arm64`、空 cache | 122 s 产出 192 MB 包，sha256 `fa4d73ba…`；解包后 `node --version`=v24.21.0，`dsh --version`=0.2.1-rc.3 |
+| fallback 缓存复用 | `npx vitest run tests/provision-runtime-artifact.test.ts` | 通过；已有平台缓存包时不会重复下载/构建 |
 | 干净 profile 安装 | `dsh plugin --profile web add <client tgz>` | 依赖安装成功；pnpm 11 报 `ERR_PNPM_IGNORED_BUILDS` 非 0 退出，属已知行为，手工把 `dsh-remote-workspace` 追加进 profile `dsh.profile.bundles` 后启动 |
 | host 启动 | `dsh --profile web --host 127.0.0.1 --port <port> --no-open` | 打印 token URL；插件 client bundle 注入，sidebar「远程工作区」渲染 |
 | host API | `POST /dsh-remote-workspace/api/state` | `ok:true`，`protocol:1`，`pluginVersion:0.1.0-alpha.3`，`verifiedRuntimes:["0.2.1-rc.3"]` |
@@ -46,7 +51,7 @@ rc.3 的官方行 DOM/slot 在本轮 UI 冒烟中仍匹配；vendor 内部不读
 ## 3. API 兼容结论
 
 - 对 client 消费的官方 host API（`webServer`、`sessionPersistence`、`workspaceRegistry`、
-  `sessionController`、agent/approval 路由）没有出现 TypeScript 断链；rc.3 类型检查、491 个单测和 host
+  `sessionController`、agent/approval 路由）没有出现 TypeScript 断链；rc.3 类型检查、492 个单测和 host
   启动均为绿色。
 - plugin protocol 仍为 `1`；host 与 server 插件的握手字段未变，server manifest 只把 `dshVersion` 升到
   rc.3。

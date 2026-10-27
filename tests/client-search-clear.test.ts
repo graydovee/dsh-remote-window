@@ -17,6 +17,11 @@ const remoteApiSpies = vi.hoisted(() => ({
 const rows = vi.hoisted(() => ({ projects: [] as Array<Record<string, unknown>>, sessions: [] as Array<Record<string, unknown>> }))
 
 vi.mock('react', () => ({
+  createContext: (value: unknown) => ({
+    _currentValue: value,
+    Provider: (props: { children?: unknown }) => props.children ?? null,
+  }),
+  useContext: (context: { _currentValue: unknown }) => context._currentValue,
   useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
   useEffect: () => {},
   useMemo: (factory: () => unknown) => factory(),
@@ -65,6 +70,10 @@ vi.mock('../src/client/vendor/workspace-rows/index.ts', () => ({
 }))
 vi.mock('../src/client/vendor/workspace-rows/generated/classnames.ts', () => ({ rowsCss: { iconButton: 'icon' } }))
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Menu: () => null,
+  PermissionIconReadOnlyRegular: () => null,
+  PermissionIconWorkspaceWriteRegular: () => null,
+  PermissionIconFullAccessRegular: () => null,
   Button: (props: Record<string, unknown>) => ({ type: 'button', props }),
   MarkdownText: () => null,
   CodeBlock: () => null,

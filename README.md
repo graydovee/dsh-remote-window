@@ -164,9 +164,9 @@ package manager. Then:
 
 1. Open **Remote Workspaces** in the sidebar and choose **New connection**.
 2. Choose `SSH`, fill in the target, and confirm the host-key fingerprint on first contact.
-3. Review the deployment preview. The client installs the per-client profile, the matching server plugin
-   and (when needed) an isolated runtime, then starts the profile server and authenticates its handshake.
-   A failed attempt is not saved.
+3. Review the probe result. The client checks the server's Node/DSH runtime and server plugin, then decides
+   whether the next steps deploy, update, or skip; it then starts the profile server and authenticates its
+   handshake. A failed attempt is not saved.
 4. Use the plus action on the connection row to browse the target and add a directory as a server
    workspace.
 5. Open the blank row under a workspace for a new session, or an existing row to continue one. The
@@ -215,6 +215,11 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<installed version> 
 
 That exemption covers the local host only. The server side must run the verified runtime — either the
 isolated runtime the client installs, or a global DSH reusing that exact verified version.
+
+The isolated runtime reuses a platform/version cache under `~/.dsh/remote-assets/` first. When the cache is
+missing, the client builds the same `node/` + `dsh/` layout with the host pnpm and uploads it, so the first
+connection after a DSH upgrade can be slower; later connections reuse it. The build only populates the
+dedicated profile's isolated runtime and never modifies the server's global DSH or another profile.
 
 ## Data and security
 

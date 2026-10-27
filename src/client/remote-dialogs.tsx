@@ -58,6 +58,7 @@ const PROGRESS_STATUS = {
   pending: 'connect.status.pending',
   running: 'connect.status.running',
   ok: 'connect.status.ok',
+  skipped: 'connect.status.skipped',
   failed: 'connect.status.failed',
 } as const
 
@@ -410,7 +411,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                   <div className="dsh-rw-progress-entry" key={item}>
                     <div className="dsh-rw-progress-row" data-progress={status}>
                       <span className="dsh-rw-progress-dot">
-                        <StateDot state={status === 'running' ? 'ongoing' : status === 'ok' ? 'done' : status === 'failed' ? 'error' : 'idle'} />
+                        <StateDot state={status === 'running' ? 'ongoing' : status === 'ok' || status === 'skipped' ? 'done' : status === 'failed' ? 'error' : 'idle'} />
                       </span>
                       <span className="dsh-rw-progress-text">
                         <span className="dsh-rw-progress-title">

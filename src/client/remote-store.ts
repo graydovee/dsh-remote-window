@@ -34,6 +34,7 @@ import {
 import type {
   NativeSessionMainProps, NativeSessionRequest, NativeSessionStatus,
 } from './session-main.tsx'
+import type { ComposerAttachment, ComposerCommand, ComposerFileRef, ComposerModelGroup } from './session-composer.tsx'
 import {
   adaptServerTimelineEntry, appendOptimisticUser, applyTimelineEvent, prependTimelinePage,
   timelineAfterSeq, timelineOldestSeq, upsertTimelineEntry,
@@ -561,8 +562,12 @@ export function collapseRemoteTarget(targetId: string): void {
 
 /* --------------------------------------------------------------- selection */
 
-/** A user-initiated connect must not hang the row forever. */
-const CONNECT_TIMEOUT_MS = 60_000
+/**
+ * A user-initiated connect must not hang the row forever. Reconnect can also
+ * trigger the one-time isolated-runtime build/upload, which is much slower than
+ * an ordinary profile start, so the safety net is generous.
+ */
+const CONNECT_TIMEOUT_MS = 10 * 60_000
 
 /** Settle with the connect promise, or reject with a readable timeout. */
 async function reconnectWithTimeout(targetId: string): Promise<void> {
@@ -972,6 +977,7 @@ async function openNativeSessionView(targetId: string, workspaceId: string | und
     sessionId,
     ...(group === undefined ? {} : { workspaceId: group.workspace.workspaceId, workspaceTitle: group.workspace.title }),
     ...(session?.title === undefined ? {} : { title: session.title }),
+    ...(session?.cwd === undefined ? {} : { cwd: session.cwd }),
   }
   closeNativeView()
   const generation = nativeGeneration
@@ -1021,7 +1027,7 @@ async function loadNativeBefore(): Promise<void> {
 }
 
 /** Send one prompt and keep the optimistic user row until the server echoes it. */
-async function sendNativePrompt(text: string, clientId: string): Promise<void> {
+async function sendNativePrompt(text: string, clientId: string, attachments: readonly ComposerAttachment[] = []): Promise<void> {
   const native = state.native
   if (native === undefined) return
   const optimistic = appendOptimisticUser(
@@ -1033,6 +1039,13 @@ async function sendNativePrompt(text: string, clientId: string): Promise<void> {
     await remoteApi.sessionPrompt(native.request.targetId, native.request.sessionId, text, {
       requestId: clientId,
       mode: 'followup',
+      ...(attachments.length === 0 ? {} : {
+        attachments: attachments.map(attachment => ({
+          name: attachment.name,
+          mediaType: attachment.mediaType,
+          data: attachment.dataUrl.slice(attachment.dataUrl.indexOf(',') + 1),
+        })),
+      }),
     })
   } catch (error) {
     patchNative(previous => ({
@@ -1087,6 +1100,56 @@ async function retryNativeSession(): Promise<void> {
   await hydrateNative(nativeGeneration)
 }
 
+/** List official slash commands for the open server session. */
+async function listNativeCommands(): Promise<readonly ComposerCommand[]> {
+  const native = state.native
+  if (native === undefined) return []
+  const result = await remoteApi.sessionCommands(native.request.targetId, native.request.sessionId)
+  return (result.commands ?? []).map(command => ({ name: command.name, description: command.description }))
+}
+
+/** List the server session's routable model catalog. */
+async function listNativeModels(): Promise<readonly ComposerModelGroup[]> {
+  const native = state.native
+  if (native === undefined) return []
+  const result = await remoteApi.sessionModelCatalog(native.request.targetId, native.request.sessionId)
+  return result.groups.map(group => ({ id: group.id, name: group.name, models: group.models }))
+}
+
+/** Persist one server model selection. */
+async function selectNativeModel(provider: string, model: string, reasoningEffort?: string): Promise<void> {
+  const native = state.native
+  if (native === undefined) return
+  try {
+    await remoteApi.sessionSelectModel(native.request.targetId, native.request.sessionId, provider, model, reasoningEffort)
+  } catch (error) {
+    patchNative({ error: { code: describe(error).code, message: describeFailure(error) } })
+  }
+}
+
+/** Run one official slash command (including /permission and /model). */
+async function runNativeCommand(line: string): Promise<void> {
+  const native = state.native
+  if (native === undefined) return
+  try {
+    await remoteApi.sessionCommand(native.request.targetId, native.request.sessionId, line)
+  } catch (error) {
+    patchNative({ error: { code: describe(error).code, message: describeFailure(error) } })
+  }
+}
+
+/** Resolve `@` suggestions from the session cwd. */
+async function searchNativeFiles(query: string): Promise<readonly ComposerFileRef[]> {
+  const native = state.native
+  if (native === undefined) return []
+  const listing = await remoteApi.fsList(native.request.targetId, native.request.cwd)
+  const needle = query.toLowerCase()
+  return listing.entries
+    .filter(entry => entry.name.toLowerCase().includes(needle))
+    .slice(0, 20)
+    .map(entry => ({ name: entry.name, path: entry.path, directory: entry.type === 'directory' }))
+}
+
 /**
  * Props for the controlled native main area.
  *
@@ -1108,7 +1171,13 @@ export function useNativeSessionMainProps(): NativeSessionMainProps | undefined 
     ...(native.approvalPrompt === undefined ? {} : { approvalPrompt: native.approvalPrompt }),
     attachmentReason: t('session.composer.attachmentsDisabled'),
     onLoadBefore: () => loadNativeBefore(),
-    onSend: (text, clientId) => sendNativePrompt(text, clientId),
+    onSend: (text, clientId, attachments) => sendNativePrompt(text, clientId, attachments),
+    onCommand: line => runNativeCommand(line),
+    onListCommands: () => listNativeCommands(),
+    onListModels: () => listNativeModels(),
+    onSelectModel: (provider, model, reasoningEffort) => selectNativeModel(provider, model, reasoningEffort),
+    onSearchFiles: query => searchNativeFiles(query),
+    onPermission: preset => runNativeCommand(`/permission ${preset}`),
     onStop: () => stopNativeSession(),
     onApproval: (approvalId, decision) => answerNativeApproval(approvalId, decision),
     onRetry: () => retryNativeSession(),

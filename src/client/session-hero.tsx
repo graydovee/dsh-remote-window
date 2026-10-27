@@ -1,16 +1,16 @@
 /**
- * Empty-session hero, copied from the official 0.2.1-rc.2 DOM.
+ * Empty-session hero, rendered with the official DSH Conversation CSS.
  *
- * Classes (`ST7X_W_`, `bocITq_`, `m0vb0q_`) are the shell's real hashed CSS
- * module names from that build; the shell stylesheet paints them globally, so
- * this file supplies only the official structure and our values. The composer
- * below reuses the same official `yhfFVG_` markup.
+ * The class map is generated from the installed DSH release by
+ * `scripts/vendor-official-ui.mjs`; the structure stays the upstream DOM. This
+ * file supplies only our values (workspace/preset labels, disabled seats).
  */
 import type { ReactElement } from 'react'
-import { SessionComposer } from './session-composer.tsx'
+import { OfficialSessionComposer as SessionComposer } from './session-composer-official.tsx'
 import type { SessionComposerProps } from './session-composer.tsx'
 import { CHEVRON_PATHS, FISH_PATHS, FOLDER_PATHS, PRESET_PATHS } from './session-assets.tsx'
 import { t } from './locales.ts'
+import { conversationCss, heroCss } from './vendor/official-ui/classnames.ts'
 
 /** Props for the official empty-session hero. */
 export interface SessionHeroProps {
@@ -30,14 +30,14 @@ export function SessionHero(props: SessionHeroProps): ReactElement {
   const workspace = props.workspaceLabel ?? t('session.hero.workspace')
   const preset = props.presetLabel ?? t('session.hero.preset')
   return (
-    <div className="ST7X_W_composerStack ST7X_W_composerHero">
-      <div className="bocITq_root">
-        <div className="bocITq_stack">
-          <div className="bocITq_headline">
-            <span className="bocITq_fishHitbox">
+    <div className={`${conversationCss.composerStack} ${conversationCss.composerHero}`}>
+      <div className={heroCss.root}>
+        <div className={heroCss.stack}>
+          <div className={heroCss.headline}>
+            <span className={heroCss.fishHitbox}>
               <div data-slot="conversation.hero.brand.mark" style={{ display: 'contents' }}>
                 <svg
-                  className="bocITq_fish"
+                  className={heroCss.fish}
                   width="34"
                   height="25.015544041450777"
                   viewBox="0 0 23.16 17.04"
@@ -47,40 +47,37 @@ export function SessionHero(props: SessionHeroProps): ReactElement {
                 />
               </div>
             </span>
-            <span className="bocITq_titleGroup">
+            <span className={heroCss.titleGroup}>
               <span>{props.title ?? t('session.hero.title')}</span>
-              <span className="bocITq_previewBadge">{props.previewLabel ?? t('session.hero.preview')}</span>
+              <span className={heroCss.previewBadge}>{props.previewLabel ?? t('session.hero.preview')}</span>
             </span>
           </div>
-          <div className="bocITq_body" />
+          <div className={heroCss.body} />
         </div>
       </div>
-      <div className="ST7X_W_heroWorkspaceRow">
+      <div className={conversationCss.heroWorkspaceRow}>
         <button
           type="button"
-          className="bocITq_workspace"
+          className={heroCss.workspace}
           aria-label={t('session.hero.workspace')}
           aria-haspopup="menu"
           aria-expanded={false}
-          aria-disabled={true}
-          disabled
-          title={t('session.hero.unsupported')}
         >
           <svg
             width="16"
             height="16"
-            className="bocITq_folder"
+            className={heroCss.folder}
             viewBox="0 0 16 16"
             fill="none"
             strokeWidth="1"
             aria-hidden="true"
             dangerouslySetInnerHTML={{ __html: FOLDER_PATHS }}
           />
-          <span className="bocITq_workspaceLabel">{workspace}</span>
+          <span className={heroCss.workspaceLabel}>{workspace}</span>
           <svg
             width="12"
             height="12"
-            className="bocITq_chevron"
+            className={heroCss.chevron}
             viewBox="0 0 16 16"
             fill="none"
             strokeWidth="1"
@@ -99,9 +96,6 @@ export function SessionHero(props: SessionHeroProps): ReactElement {
               className="m0vb0q_seat"
               aria-haspopup="menu"
               aria-expanded={false}
-              aria-disabled={true}
-              disabled
-              title={t('session.hero.unsupported')}
             >
               <svg
                 width="16"
@@ -127,7 +121,7 @@ export function SessionHero(props: SessionHeroProps): ReactElement {
             </button>
           </span>
         </div>
-        <div className="ST7X_W_heroOptions">
+        <div className={conversationCss.heroOptions}>
           <div data-slot="conversation.hero.options" style={{ display: 'contents' }} />
         </div>
       </div>

@@ -255,6 +255,11 @@ export interface SessionCommandResult {
   /** Additive server diagnostic: `qa` when the QA approval gate is active. */
   readonly approvalGate?: string
   readonly decision?: 'allowed-once' | 'rejected' | 'cancelled'
+  /** `session/commands` result. */
+  readonly commands?: readonly { readonly name: string; readonly description: string; readonly input?: unknown }[]
+  /** `session/command` result. */
+  readonly executed?: boolean
+  readonly commandId?: string
   readonly [key: string]: unknown
 }
 
@@ -290,6 +295,28 @@ export function normalizeFsList(value: ServerFsList): ListDirResult {
       path: joinServerPath(value.path, entry.name),
     })),
   }
+}
+
+/** One model exposed by the server's model catalog. */
+export interface SessionModelInfo {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly reasoning?: { readonly efforts: readonly { readonly id: string; readonly name: string }[]; readonly defaultEffort?: string }
+}
+
+/** One provider group in the server model catalog. */
+export interface SessionModelGroup {
+  readonly id: string
+  readonly name: string
+  readonly models: readonly SessionModelInfo[]
+}
+
+/** `session/modelCatalog` value (provider groups + isolated failures). */
+export interface SessionModelCatalog {
+  readonly default: { readonly provider: string; readonly model: string }
+  readonly groups: readonly SessionModelGroup[]
+  readonly failures?: readonly { readonly id: string; readonly message: string }[]
 }
 
 /** `POST /api/session/fork` value. */
@@ -470,7 +497,7 @@ export type ConnectProgressStep = 'connect' | 'probe' | 'runtime' | 'upload' | '
 
 export interface ConnectProgressEvent {
   readonly step: ConnectProgressStep
-  readonly status: 'running' | 'ok' | 'failed'
+  readonly status: 'running' | 'ok' | 'failed' | 'skipped'
   readonly message: string
   readonly at: string
 }
@@ -689,6 +716,26 @@ export const remoteApi = {
   /** Send one prompt to the server-side agent (server execution mode). */
   sessionPrompt(targetId: string, sessionId: string, text: string, extra: Record<string, unknown> = {}): Promise<SessionCommandResult> {
     return call<SessionCommandResult>('session/prompt', { targetId, sessionId, text, ...extra })
+  },
+
+  /** List the official slash commands available in a server session. */
+  sessionCommands(targetId: string, sessionId: string): Promise<SessionCommandResult> {
+    return call<SessionCommandResult>('session/commands', { targetId, sessionId })
+  },
+
+  /** Execute one official slash command against a server session. */
+  sessionCommand(targetId: string, sessionId: string, line: string): Promise<SessionCommandResult> {
+    return call<SessionCommandResult>('session/command', { targetId, sessionId, line })
+  },
+
+  /** List routable server models for the model seat. */
+  sessionModelCatalog(targetId: string, sessionId: string): Promise<SessionModelCatalog> {
+    return call<SessionModelCatalog>('session/modelCatalog', { targetId, sessionId })
+  },
+
+  /** Persist one model selection on the server session. */
+  sessionSelectModel(targetId: string, sessionId: string, provider: string, model: string, reasoningEffort?: string): Promise<unknown> {
+    return call('session/selectModel', { targetId, sessionId, provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) })
   },
 
   /** Cancel the session's current turn. */

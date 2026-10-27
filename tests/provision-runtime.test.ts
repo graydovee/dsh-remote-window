@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import {
   RuntimeError,
   assertRuntimePlanConfirmed,
+  runtimeAddonProbeCommand,
   installIsolatedRuntime,
   planRuntime,
   readRuntimeMarker,
@@ -70,6 +71,23 @@ describe('runtime install script and mock artifact', () => {
     expect(script).toContain('tar -xzf')
     expect(script).toContain('"$STAGE/node/bin/node" -v')
     expect(script.indexOf('mv -f "$STAGE/node"')).toBeLessThan(script.indexOf('printf %s'))
+  })
+
+  it('ad-hoc signs the macOS runtime node so npm native addons can load', () => {
+    const paths = runtimePaths('/home/user/.dsh', CLIENT_ID)
+    const artifact = { path: '/tmp/a.tgz', name: 'a.tgz', sha256: 'b'.repeat(64), size: 10, version: VERSION }
+    const darwin = runtimeInstallScript({ paths, tarballName: 'dsh-runtime-0.2.1-rc.3-darwin-arm64.tar.gz', artifact: { ...artifact, platformArch: 'darwin-arm64' } })
+    expect(darwin).toContain('com.apple.security.cs.disable-library-validation')
+    expect(darwin).toContain('codesign')
+    expect(darwin.indexOf('codesign')).toBeLessThan(darwin.indexOf('mv -f "$STAGE/node"'))
+    const linux = runtimeInstallScript({ paths, tarballName: 'dsh-runtime-0.2.1-rc.3-linux-x64.tar.gz', artifact: { ...artifact, platformArch: 'linux-x64' } })
+    expect(linux).not.toContain('codesign')
+  })
+
+  it('probes the native require-builtin addon, not just the node version', () => {
+    const command = runtimeAddonProbeCommand(runtimePaths('/home/user/.dsh', CLIENT_ID))
+    expect(command).toContain('node-addon-require-builtin')
+    expect(command).toContain('dsh-app-boot')
   })
 
   it('resolves a runtime artifact from the cache or env and reports a missing one', async () => {

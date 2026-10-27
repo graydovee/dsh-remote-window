@@ -26,11 +26,30 @@ export const STYLE_PLUGIN_ID = 'dsh-remote-workspace'
 
 /** The complete stylesheet. */
 import { ROW_STYLES } from './vendor/workspace-rows/generated/row-styles.ts'
+import { OFFICIAL_UI_STYLES } from './vendor/official-ui/styles.ts'
+
+/**
+ * The official InputBar is the upstream component, so its CSS-module class
+ * names carry the upstream build hash (`uV2eYG` for the pinned rc.3 bundle).
+ * Mirror the vendored, readable `.dsh-rwv-input-*` selectors onto those exact
+ * names; the generated stylesheet remains the single source of truth.
+ */
+const officialInputAliasStyles = OFFICIAL_UI_STYLES.replace(
+  /\.dsh-rwv-input-([A-Za-z0-9_-]+)/gu,
+  '.uV2eYG_$1',
+)
+
+import { MODEL_SELECT_CSS } from './vendor/official-ui/model-css.ts'
 
 export const STYLE_TEXT = `
 /* The official workspace rows bring their own stylesheet; it is injected with
    ours so both surfaces (sidebar section and panel) share one <style> tag. */
 ${ROW_STYLES}
+
+/* The official Conversation/Chat CSS modules vendored from the installed DSH
+   release. Class selectors are prefixed; everything else is upstream. */
+${OFFICIAL_UI_STYLES}
+${officialInputAliasStyles}
 
 /* ---------------------------------------------------------------- footer */
 
@@ -581,6 +600,10 @@ ${ROW_STYLES}
 .dsh-rw-progress-status {
   font-size: 11px;
   color: var(--dsw-alias-label-caption);
+}
+
+.dsh-rw-progress-row[data-progress="skipped"] .dsh-rw-progress-status {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .dsh-rw-progress-message {
@@ -1182,6 +1205,7 @@ ${ROW_STYLES}
    compact header, a centered reading column and a bottom composer. Colors and
    spacing use the shell's design tokens so it reads as the same product. */
 .dsh-rw-session {
+  container-type: inline-size;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1190,10 +1214,11 @@ ${ROW_STYLES}
   min-height: 0;
   background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-primary);
-  /* Official embedded-conversation geometry (ConversationRoot .embeddedBody). */
-  --dsh-chat-content-width: min(calc(100% - 32px), 920px);
-  --dsh-composer-card-max-width: min(calc(100% - 16px), 952px);
-  --dsh-composer-side-clearance: 8px;
+  /* Official conversation geometry: 64% of the column, clamped 680-920px. */
+  --dsh-conversation-column-width: 100%;
+  --dsh-chat-content-width: clamp(680px, calc(var(--dsh-conversation-column-width) * 0.64), 920px);
+  --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
+  --dsh-composer-side-clearance: 16px;
   --dsh-composer-dock-inset: 8px;
   --dsh-composer-text-max-height: 336px;
 }
@@ -1201,6 +1226,8 @@ ${ROW_STYLES}
 .dsh-rw-session-hero { overflow: hidden; }
 
 .dsh-rw-session-hero-center {
+  --dsh-chat-content-width: clamp(680px, calc(100cqw * 0.64), 920px);
+  --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
   flex: 1 1 auto;
   display: flex;
   align-items: center;
@@ -1211,13 +1238,25 @@ ${ROW_STYLES}
   overflow-y: auto;
 }
 
-.dsh-rw-session-hero-center > .ST7X_W_composerStack {
-  width: 100%;
-  max-width: 952px;
+.dsh-rw-session .dsh-rw-session-hero-center > .dsh-rwv-conv-composerStack {
+  width: clamp(712px, calc(64cqw + 64px), 952px) !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
   margin: 0 auto;
+  transform: translateX(-3.5px);
 }
 
-.dsh-rw-session-hero-center .ST7X_W_heroWorkspaceRow {
+.dsh-rw-session .dsh-rwv-hero-root {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.dsh-rw-session .dsh-rwv-official-composer .uV2eYG_root {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.dsh-rw-session-hero-center .dsh-rwv-conv-heroWorkspaceRow {
   align-items: center;
 }
 
@@ -1226,7 +1265,114 @@ ${ROW_STYLES}
   opacity: 0.55;
 }
 
-.dsh-rw-session-dock { flex: none; width: 100%; }
+
+/* Official InputBar slots: the permission and model triggers live in separate
+ * CSS modules on the server; mirror their compact official geometry here. */
+.dsh-rw-session-dock :where(.wXeviG_trigger, .cl2Rlq_trigger) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dsh-rw-session-dock :where(.wXeviG_trigger, .cl2Rlq_trigger):hover {
+  background: var(--dsw-alias-bg-l2);
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-rw-session-dock :where(.wXeviG_triggerIcon, .cl2Rlq_triggerIcon, .wXeviG_chevron, .cl2Rlq_chevron) {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-rw-session-dock .wXeviG_triggerLabel,
+.dsh-rw-session-dock .cl2Rlq_triggerLabel {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.dsh-rw-session-dock .cl2Rlq_triggerLabel > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dsh-rw-session-dock .cl2Rlq_triggerEffort {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.dsh-rw-session-dock .cl2Rlq_root,
+.dsh-rw-session-dock ._root_4ub78_1 {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.dsh-rw-session-dock .dsh-rwv-input-standardControls {
+  gap: 4px;
+}
+.dsh-rw-session-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.dsh-rw-trace {
+  width: min(calc(100% - 48px), 920px);
+  margin: 0 auto;
+  padding: 18px 0 40px;
+}
+
+.dsh-rw-trace-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.dsh-rw-trace-label {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dsh-rw-trace-text {
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dsh-rw-trace-row[data-kind='error'] .dsh-rw-trace-text {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-rw-session-dock {
+  --dsh-chat-content-width: clamp(680px, calc(100cqw * 0.64), 920px);
+  --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
+  flex: none;
+  width: 100%;
+  padding: 8px 0 14px;
+  background: linear-gradient(to bottom, transparent 0, var(--dsw-alias-bg-base) 14px);
+  transform: translateX(-3.5px);
+}
 
 .dsh-rw-session-head {
   flex: none;
@@ -1286,6 +1432,39 @@ ${ROW_STYLES}
 
 .dsh-rw-session-head-status[data-status="running"] { color: var(--dsw-alias-state-success-primary); }
 .dsh-rw-session-head-status[data-status="error"] { color: var(--dsw-alias-state-error-primary); }
+.dsh-rw-session-head-menu-wrap { position: relative; display: inline-flex; }
+
+.dsh-rw-session-head-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-md, 10px);
+  background: var(--dsw-alias-bg-base);
+  box-shadow: var(--dsw-shadow-popover, 0 8px 24px rgba(15, 17, 21, .12));
+}
+
+.dsh-rw-session-head-menu button {
+  display: flex;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--dsw-radius-sm, 8px);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-session-head-menu button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
 .dsh-rw-session-head-reconnect { color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-secondary)); }
 
 .dsh-rw-session-banner {
@@ -1360,22 +1539,68 @@ ${ROW_STYLES}
   min-width: 0;
 }
 
-.dsh-rw-session-row[data-role="user"] { justify-content: flex-end; padding: 10px 0 4px; }
+.dsh-rw-session-row[data-role="user"] {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 0 4px;
+}
 
 .dsh-rw-session-user {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  max-width: min(85%, 640px);
-  padding: 10px 14px;
-  border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-layer-1);
-  font-size: 14px;
-  line-height: 22px;
+  max-width: min(calc(var(--dsh-chat-content-width, 748px) * 0.702), 82%);
+  padding: 10px 16px;
+  border-radius: var(--dsw-radius-xl, 20px);
+  background: var(--dsw-specific-bubble);
+  font-size: var(--dsh-content-font-size, 14px);
+  line-height: calc(22px + var(--dsh-content-font-delta, 0px));
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+.dsh-rw-session-user p { margin: 0; }
+.dsh-rw-session-user p + p { margin-top: 8px; }
+
 .dsh-rw-session-pending { padding-top: 5px; flex: none; }
+
+.dsh-rw-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+.dsh-rw-session-row:hover .dsh-rw-session-actions,
+.dsh-rw-session-row:focus-within .dsh-rw-session-actions { opacity: 1; }
+
+@media (hover: none) {
+  .dsh-rw-session-actions { opacity: 1; }
+}
+
+.dsh-rw-session-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: none;
+  border-radius: var(--dsw-radius-sm, 8px);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.dsh-rw-session-action svg { width: 15px; height: 15px; }
+.dsh-rw-session-action:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
 
 .dsh-rw-session-row[data-role="assistant"] { padding: 6px 0; }
 
@@ -2271,6 +2496,372 @@ ${ROW_STYLES}
   word-break: break-word;
 }
 
+
+
+/* Official DisclosureRow shell for tool calls: 24px summary, expanded body below. */
+.dsh-rw-tool-sep {
+  display: inline-block;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--dsw-alias-label-caption);
+  vertical-align: middle;
+}
+
+.dsh-rw-tool-summary {
+  display: inline-block;
+  max-width: min(72ch, 100%);
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.dsh-rw-tool-summary-error { color: var(--dsw-alias-state-error-primary); }
+
+.dsh-rw-tool-body {
+  padding: 2px 0 6px 22px;
+}
+
+
+/** Composer attachment chips and command/file menus (rc.3 InputBar shell). */
+.dsh-rw-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+.dsh-rw-composer-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, .25));
+  border-radius: 7px;
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, .08));
+  font-size: 12px;
+  line-height: 16px;
+}
+.dsh-rw-composer-attachment img {
+  width: 44px;
+  height: 44px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.dsh-rw-composer-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, .14);
+  font-size: 12px;
+}
+.dsh-rw-composer-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rw-composer-attachment button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: .65;
+  font-size: 14px;
+  line-height: 14px;
+}
+.dsh-rw-composer-menu {
+  position: absolute;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  max-width: min(440px, 80vw);
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 8px;
+  padding: 4px;
+  border: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, .25));
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, #252526);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.dsh-rw-composer-menu-slash,
+.dsh-rw-composer-menu-at {
+  left: 10px;
+  bottom: calc(100% - 2px);
+}
+.dsh-rw-composer-menu-permission,
+.dsh-rw-composer-menu-model {
+  left: 0;
+  bottom: calc(100% + 4px);
+}
+.dsh-rw-composer-menu-model {
+  right: 0;
+  left: auto;
+}
+.dsh-rw-composer-menu > button,
+.dsh-rw-composer-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dsh-rw-composer-menu > button:hover,
+.dsh-rw-composer-menu-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, .14));
+}
+.dsh-rw-composer-menu-name {
+  font-size: 13px;
+  line-height: 17px;
+}
+.dsh-rw-composer-menu-desc {
+  color: var(--vscode-descriptionForeground, rgba(127, 127, 127, .9));
+  font-size: 11px;
+  line-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rw-composer-model-group {
+  padding: 2px 0;
+}
+.dsh-rw-composer-model-provider {
+  padding: 6px 8px 2px;
+  color: var(--vscode-descriptionForeground, rgba(127, 127, 127, .9));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  line-height: 14px;
+}
+.dsh-rw-composer-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dsh-rw-composer-menu-empty {
+  padding: 8px 9px;
+  color: var(--vscode-descriptionForeground, rgba(127, 127, 127, .9));
+  font-size: 11px;
+  line-height: 15px;
+}
+.dsh-rw-session-dock {
+  position: relative;
+}
+.dsh-rw-session-hero-center {
+  position: relative;
+}
+
+.dsh-rwv-official-composer {
+  position: relative;
+  width: min(var(--dsh-composer-card-max-width), calc(100% - 16px));
+  margin-inline: auto;
+}
+.dsh-rwv-official-composer [data-composer-card="true"] {
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+}
+.dsh-rwv-official-composer-loading {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-descriptionForeground, rgba(127, 127, 127, .9));
+  font-size: 12px;
+}
+.dsh-rwv-official-control {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.dsh-rwv-official-chip-chevron { flex: none; color: var(--dsw-alias-label-caption); }
+.dsh-rwv-official-chip-icon,
+.dsh-rwv-official-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.dsh-rwv-official-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dsh-rwv-official-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dsh-rwv-official-chip:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dsh-rwv-official-chip:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+.dsh-rwv-official-chip-icon svg { width: 14px; height: 14px; }
+.dsh-rwv-official-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 60;
+  width: max-content;
+  min-width: 200px;
+  max-width: min(360px, 80vw);
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 10px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #fff));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.dsh-rwv-official-popover--above {
+  bottom: calc(100% + 8px);
+}
+.dsh-rwv-official-option {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.dsh-rwv-official-option:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.dsh-rwv-official-option-name {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.dsh-rwv-official-option-desc {
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground, rgba(127, 127, 127, .9));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rwv-official-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 4px 0;
+}
+.dsh-rwv-official-attachment {
+  position: relative;
+  display: flex;
+  max-width: 180px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+  color: var(--vscode-descriptionForeground, rgba(127, 127, 127, .9));
+  font-size: 11px;
+}
+.dsh-rwv-official-attachment img {
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.dsh-rwv-official-attachment-remove {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 14px;
+  cursor: pointer;
+}
+.dsh-rwv-official-attachment-remove:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+/* Official AgentPresetSeat.module.css (rc.3): the preset chip beside the
+   workspace picker. The plugin loads the vendored conversation/hero CSS but
+   not the agent-preset module, so these upstream class names were falling back
+   to the browser's default button chrome (visible border). */
+.m0vb0q_menuAnchor {
+  min-width: 54px;
+  max-width: 100%;
+}
+.m0vb0q_seat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: min(100%, 240px);
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.m0vb0q_seat:not(:disabled):hover,
+.m0vb0q_seat[aria-expanded='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.m0vb0q_seat:disabled {
+  cursor: default;
+  color: var(--dsw-alias-label-quaternary);
+}
+.m0vb0q_seatIcon { flex: none; color: var(--dsw-alias-label-primary); }
+.m0vb0q_seatLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.m0vb0q_chevron { flex: none; color: var(--dsw-alias-label-caption); }
+${MODEL_SELECT_CSS}
 `
 
 /**

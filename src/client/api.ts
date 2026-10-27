@@ -412,7 +412,7 @@ export interface PrepareWorkspaceResult {
 export type ConnectStep = 'connect' | 'probe' | 'runtime' | 'upload' | 'start'
 
 /** Status a step frame may carry. */
-export type ConnectStepStatus = 'running' | 'ok' | 'failed'
+export type ConnectStepStatus = 'running' | 'ok' | 'skipped' | 'failed'
 
 /** One frame of the `/stream/connect` SSE stream. */
 export type ConnectFrame =

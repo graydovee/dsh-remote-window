@@ -110,6 +110,12 @@ declare module 'react' {
   export type SetStateAction<S> = S | ((previous: S) => S)
   export type Dispatch<A> = (value: A) => void
 
+  export interface Context<T> {
+    Provider: (props: { value: T; children?: ReactNode }) => ReactElement
+  }
+
+  export function createContext<T>(defaultValue: T): Context<T>
+  export function useContext<T>(context: Context<T>): T
   export function useState<S>(initial: S | (() => S)): [S, Dispatch<SetStateAction<S>>]
   export function useEffect(effect: () => void | (() => void), deps?: readonly unknown[]): void
   export function useMemo<T>(factory: () => T, deps?: readonly unknown[]): T
@@ -394,6 +400,10 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
 
   /* Icons actually used by this plugin (the module re-exports the full set). */
   export const IconGlobeOutlineRegular: IconComponent
+  export const PermissionIconReadOnlyRegular: IconComponent
+  export const PermissionIconWorkspaceWriteRegular: IconComponent
+  export const PermissionIconFullAccessRegular: IconComponent
+  export const PermissionIconAutoReviewRegular: IconComponent
   export const IconChevronDownOutlineRegular: IconComponent
   export const IconChevronLeftOutlineRegular: IconComponent
   export const IconChevronRightOutlineRegular: IconComponent

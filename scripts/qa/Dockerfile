@@ -5,13 +5,13 @@
 # official Messages mock server used only as a QA model fixture.
 #
 # Build through scripts/qa/start.sh; do not hand-roll flags:
-#   docker build --build-arg NODE_MAJOR=22 --build-arg DSH_VERSION=0.2.1-rc.2 \
-#     -t dsh-qa-server:node22-0.2.1-rc.2 scripts/qa
+#   docker build --build-arg NODE_MAJOR=22 --build-arg DSH_VERSION=0.2.1-rc.3 \
+#     -t dsh-qa-server:node22-0.2.1-rc.3 scripts/qa
 ARG NODE_MAJOR=22
 FROM node:${NODE_MAJOR}-bookworm-slim
 
 ARG NODE_MAJOR
-ARG DSH_VERSION=0.2.1-rc.2
+ARG DSH_VERSION=0.2.1-rc.3
 
 LABEL org.opencontainers.image.title="dsh-remote-workspace QA server target"
 LABEL org.opencontainers.image.description="Disposable Linux SSH target with Node and global DSH for remote-workspace QA"

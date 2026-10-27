@@ -82,7 +82,8 @@
     "README.md",
     "README-zh.md",
     "LICENSE",
-    "assets/server-plugin"
+    "assets/server-plugin",
+    "assets/official-ui"
   ],
   "scripts": {
     "build": "tsdown",

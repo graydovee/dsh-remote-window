@@ -79,6 +79,10 @@ vi.mock('../src/client/vendor/workspace-rows/index.ts', () => ({
   rowsTranslate: (key: string) => key,
 }))
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Menu: () => null,
+  PermissionIconReadOnlyRegular: () => null,
+  PermissionIconWorkspaceWriteRegular: () => null,
+  PermissionIconFullAccessRegular: () => null,
   IconWarningTriangleOutlineRegular: () => null,
   IconArchiveOutlineRegular: () => null,
   IconBranchOutlineRegular: () => null,

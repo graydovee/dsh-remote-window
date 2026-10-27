@@ -17,7 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { SshForwarder } from '../src/ssh/forward.ts'
 import type { ProfileRemote, ProfileExecResult } from '../src/provision/profile-lifecycle.ts'
 import { profilePaths } from '../src/provision/profile-lifecycle.ts'
-import { ProfileService, type ProfileConnection, type ProfileConnector } from '../src/provision/profile-service.ts'
+import { ProfileService, type ConnectProgressEvent, type ProfileConnection, type ProfileConnector } from '../src/provision/profile-service.ts'
 import { remotePresetId } from '../src/preset/world.ts'
 import type { TargetStore } from '../src/targets/store.ts'
 import type { RemoteTargetRecord } from '../src/targets/types.ts'
@@ -305,6 +305,26 @@ describe('ProfileService M1 slice', () => {
     expect(result.target.id).toBe('rt-preset1')
     expect(register).not.toHaveBeenCalled()
     await service.stop(result.target.id)
+  })
+
+  it('decides runtime/plugin actions during the probe step before deploying', async () => {
+    const { connector } = fakeConnector()
+    const service = new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
+    const progress: ConnectProgressEvent[] = []
+    await service.connect({
+      label: 'probe-fixture',
+      host: '203.0.113.11',
+      port: 22,
+      username: 'tester',
+      authKind: 'password',
+      secret: 'hunter2',
+      hostKeyFingerprint: 'SHA256:fixture',
+    }, event => progress.push(event))
+    const probe = progress.find(event => event.step === 'probe' && event.status === 'ok')
+    expect(probe?.message).toContain('运行时 跳过')
+    expect(probe?.message).toContain('server 插件 部署')
+    expect(progress.find(event => event.step === 'runtime')?.status).toBe('skipped')
+    expect(progress.find(event => event.step === 'upload')?.status).toBe('ok')
   })
 
   it('connects, installs, starts, handshakes and exposes workspace/session data', async () => {

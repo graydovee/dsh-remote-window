@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('react', () => ({
   useEffect: () => {},
   useRef: (value: unknown) => ({ current: value }),
+  useState: (initial: unknown) => [typeof initial === 'function' ? (initial as () => unknown)() : initial, () => {}],
+  useMemo: (factory: () => unknown) => factory(),
 }))
 vi.mock('react/jsx-runtime', () => ({
   Fragment: Symbol.for('react.fragment'),
@@ -21,6 +23,14 @@ vi.mock('react/jsx-dev-runtime', () => ({
   jsx: (type: unknown, props: unknown) => ({ type, props: props ?? {} }),
   jsxs: (type: unknown, props: unknown) => ({ type, props: props ?? {} }),
   jsxDEV: (type: unknown, props: unknown) => ({ type, props: props ?? {} }),
+}))
+
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Menu: () => null,
+  IconChevronDownOutlineRegular: () => null,
+  PermissionIconReadOnlyRegular: () => null,
+  PermissionIconWorkspaceWriteRegular: () => null,
+  PermissionIconFullAccessRegular: () => null,
 }))
 
 interface Collected {
@@ -59,15 +69,15 @@ describe('official empty hero DOM', () => {
     const { SessionHero } = await import('../src/client/session-hero.tsx')
     const out: Collected = { classes: [], buttons: [], text: [] }
     collect(SessionHero({ composer, workspaceLabel: 'uap-lite' }), out)
-    expect(out.classes).toContain('ST7X_W_composerStack')
-    expect(out.classes).toContain('ST7X_W_composerHero')
-    expect(out.classes).toContain('bocITq_root')
-    expect(out.classes).toContain('bocITq_fish')
-    expect(out.classes).toContain('bocITq_previewBadge')
-    expect(out.classes).toContain('ST7X_W_heroWorkspaceRow')
-    expect(out.classes).toContain('bocITq_workspace')
+    expect(out.classes).toContain('dsh-rwv-conv-composerStack')
+    expect(out.classes).toContain('dsh-rwv-conv-composerHero')
+    expect(out.classes).toContain('dsh-rwv-hero-root')
+    expect(out.classes).toContain('dsh-rwv-hero-fish')
+    expect(out.classes).toContain('dsh-rwv-hero-previewBadge')
+    expect(out.classes).toContain('dsh-rwv-conv-heroWorkspaceRow')
+    expect(out.classes).toContain('dsh-rwv-hero-workspace')
     expect(out.classes).toContain('m0vb0q_seat')
-    expect(out.classes).toContain('yhfFVG_card')
+    expect(out.classes).toContain('dsh-rwv-official-composer-loading')
     expect(out.text.join(' ')).toContain('uap-lite')
   })
 
@@ -75,17 +85,17 @@ describe('official empty hero DOM', () => {
     const { SessionComposer } = await import('../src/client/session-composer.tsx')
     const out: Collected = { classes: [], buttons: [], text: [] }
     collect(SessionComposer({ ...composer, variant: 'hero' }), out)
-    expect(out.classes).toContain('yhfFVG_hero')
-    expect(out.classes).toContain('yhfFVG_card')
-    expect(out.classes).toContain('yhfFVG_input')
-    expect(out.classes).toContain('yhfFVG_placeholder')
-    expect(out.classes).toContain('yhfFVG_add')
+    expect(out.classes).toContain('dsh-rwv-input-hero')
+    expect(out.classes).toContain('dsh-rwv-input-card')
+    expect(out.classes).toContain('dsh-rwv-input-input')
+    expect(out.classes).toContain('dsh-rwv-input-placeholder')
+    expect(out.classes).toContain('dsh-rwv-input-add')
     expect(out.classes).toContain('wXeviG_trigger')
     expect(out.classes).toContain('cl2Rlq_trigger')
-    expect(out.classes).toContain('yhfFVG_primary')
-    const plus = out.buttons.find(button => button['className'] === 'yhfFVG_add')
+    expect(out.classes).toContain('dsh-rwv-input-primary')
+    const plus = out.buttons.find(button => button['className'] === 'dsh-rwv-input-add')
     expect(plus?.['disabled']).toBe(true)
-    const send = out.buttons.find(button => button['className'] === 'yhfFVG_primary')
+    const send = out.buttons.find(button => button['className'] === 'dsh-rwv-input-primary')
     expect(send?.['aria-label']).toContain('发送')
     expect(send?.['disabled']).toBe(true)
   })

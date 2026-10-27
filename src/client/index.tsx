@@ -23,6 +23,7 @@ import { NativeSessionPanel } from './panel.tsx'
 import { NATIVE_MAIN_ID } from './session-main.tsx'
 import { mountSidebarSection } from './sidebar.tsx'
 import { ensureStyles } from './styles.ts'
+import { loadOfficialUi } from './official-ui-runtime.ts'
 
 /** Client services this plugin needs: `slots` only. */
 export const inject = ['slots']
@@ -33,6 +34,10 @@ export const inject = ['slots']
  * @param ctx - the client context.
  */
 export function apply(ctx: ClientContext): void {
+  void loadOfficialUi().then(
+    () => {},
+    error => console.warn('[dsh-remote-workspace] official ui failed', error),
+  )
   bindRemoteStoreContext(ctx)
   ctx.effect(() => ensureStyles(), 'dsh-remote-workspace: stylesheet')
   // The 远程工作区 section in the LEFT SIDEBAR, directly above the shell's own
