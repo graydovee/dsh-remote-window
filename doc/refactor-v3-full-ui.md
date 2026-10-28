@@ -125,15 +125,30 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 
 本分支实测证据（2026-08 本地运行）：
 
-- client：`pnpm typecheck` 通过；`pnpm test` **576 passed / 1 skipped**（64 文件，smoke 跳过）；
+- client：`pnpm typecheck` 通过；`pnpm test` **579 passed / 1 skipped**（64 通过 + 1 跳过，65 文件）；
   `pnpm build` 通过。
 - server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
 - 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
-  `bb0bcdd09f8a1f74b48560947454f52e42e4e54cb2e24e4be4a6838d5d7579e4`，与 `assets/server-plugin/checksums.json`
+  `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
   一致。
 - server 插件在干净 `DSH_HOME` 下 rc.3 隔离冒烟：`/?dshRwFull=1` 与 `/` 字节一致（38,122 B），bootstrap
   同步打 full 标记，embed.css 585 B 未受影响，portal 风格 WS 握手到 profile 返回 101。
+
+### 浏览器 E2E 验收（临时 `DSH_HOME`，本机回环）
+
+环境：桌面版 rc.3 CLI 起干净 profile；fake sshd（回环、密码认证）与 fake OpenAI 兼容服务模拟远端与
+本机模型，全程不接触真实主机与真实凭据。
+
+- 连接对话框（v3 文案、模型来源默认 local）：SSH → host key SHA-256 展示并确认 → 全局 runtime 复用 →
+  专用 profile 离线安装 server plugin → 启动 profile server → portal 打开；首次连接暴露的 ssh2
+  host-key 崩溃已修复并加回归测试 `tests/ssh-connect.test.ts`。
+- 全屏官方 UI：iframe 内是 server profile 自带的官方 sidebar/header/会话/composer/账号菜单（同源
+  portal，`dshRwFull=1`）；client 自己的 sidebar 在挂载期间隐藏，只保留右下角浮动 rail。
+- 远程功能：输入消息 → 官方 rollout 流式回复（经 local-llm bridge → SSH 反向隧道 → fake 模型），
+  标题自动生成；刷新页面、断开重连、停止再启动后会话都会恢复；`停止` 后 profile server 进程退出。
+- 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
+  `停止`/`断开` 会关闭）；rail 覆盖在官方 UI 右下角，属设计内的唯一 client chrome。
 
 ## 5. 清理阶段（验收后）
 
