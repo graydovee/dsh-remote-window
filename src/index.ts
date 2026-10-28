@@ -28,6 +28,7 @@ import { REMOTE_WORKSPACE_PLUGIN_PROTOCOL } from './remote/plugin-client.ts'
 import { PORTAL_BASE, portalMuxPath } from './portal/proxy.ts'
 import { ProfileService, createSshProfileConnector, readPrivateKeyFile, type ConnectProgressEvent } from './provision/profile-service.ts'
 import { RemoteMuxRouter } from './remote/mux-client.ts'
+import { dispatchLocalLlmApi, parseModelSource } from './local-llm/routes.ts'
 
 /** Route prefix for the plugin's own API and SSE channel. */
 export const ROUTE_PREFIX = '/dsh-remote-workspace'
@@ -474,6 +475,7 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
     case 'v1/connect': {
       const kind = optionalString(body, 'kind') ?? 'ssh'
       if (kind !== 'ssh') throw new RouteError('unsupported', 'v1 connections are SSH-only', 400)
+      const requestedModelSource = parseModelSource(body)
       const targetId = optionalString(body, 'targetId')
       const attemptId = optionalString(body, 'attemptId')
       if (attemptId !== undefined) {
@@ -514,6 +516,7 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
             ...(saved.hostKeyFingerprint === '' ? {} : { hostKeyFingerprint: saved.hostKeyFingerprint }),
             ...(optionalString(body, 'dshHome') === undefined ? {} : { dshHome: optionalString(body, 'dshHome') as string }),
             runtimePolicy: 'auto',
+            ...(requestedModelSource === undefined ? {} : { modelSource: requestedModelSource }),
           }, reportProgress)
         } catch (error) {
           if (error instanceof HostKeyUnknownError) {
@@ -543,6 +546,7 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
           ...(optionalString(body, 'hostKeyFingerprint') === undefined ? {} : { hostKeyFingerprint: optionalString(body, 'hostKeyFingerprint') as string }),
           ...(optionalString(body, 'dshHome') === undefined ? {} : { dshHome: optionalString(body, 'dshHome') as string }),
           ...(optionalString(body, 'runtimePolicy') === 'isolated' ? { runtimePolicy: 'isolated' as const } : {}),
+          ...(requestedModelSource === undefined ? {} : { modelSource: requestedModelSource }),
         }, reportProgress)
       } catch (error) {
         // The wizard needs the fingerprint to render its confirmation panel;
@@ -559,6 +563,14 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
     case 'v1/connect/progress': {
       const id = requireString(body, 'attemptId')
       return { events: CONNECT_PROGRESS.get(id) ?? [] }
+    }
+    case 'local-llm/read':
+    case 'local-llm/save':
+    case 'local-llm/probe':
+    case 'local-llm/clear-key': {
+      const value = await dispatchLocalLlmApi(store, method, body)
+      if (value === undefined) throw new RouteError('not-found', `unknown method ${JSON.stringify(method)}`, 404)
+      return value
     }
     case 'forget-target': {
       const id = requireString(body, 'targetId')

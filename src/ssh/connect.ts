@@ -7,7 +7,7 @@
  * forwarding.
  */
 import { Client, type ConnectConfig, type SFTPWrapper, type ClientChannel } from 'ssh2'
-import { fingerprintOf, HostKeyMismatchError, HostKeyUnknownError } from './hostkey.ts'
+import { hostVerifier, type HostKeyRejection } from './hostkey.ts'
 import { scrubSecrets } from '../targets/types.ts'
 import type { RemoteFile } from '../targets/types.ts'
 
@@ -67,7 +67,12 @@ export class RemoteCommandError extends Error {
  */
 export async function connectSsh(options: SshConnectionOptions): Promise<Client> {
   const client = new Client()
-  let hostKeyError: Error | undefined
+  let hostKeyError: HostKeyRejection | undefined
+  // ssh2 needs a synchronous answer, so the reason is carried out of band and
+  // surfaced as a typed error instead of a bare handshake failure. The verifier
+  // must return `false` (never throw) so the client tears the key exchange
+  // down cleanly; a throw here crashes DSH on the server's NEWKEYS packet.
+  const verifyHostKey = hostVerifier(options.hostKeyFingerprint, (error) => { hostKeyError = error })
   const config: ConnectConfig = {
     host: options.host,
     port: options.port,
@@ -80,20 +85,7 @@ export async function connectSsh(options: SshConnectionOptions): Promise<Client>
       ? { privateKey: options.auth.privateKey, ...(options.auth.passphrase === undefined ? {} : { passphrase: options.auth.passphrase }) }
       : {}),
     ...(options.auth.kind === 'agent' ? { agent: options.auth.agent ?? process.env.SSH_AUTH_SOCK } : {}),
-    // ssh2 needs a synchronous answer, so the reason is carried out of band and
-    // surfaced as a typed error instead of a bare handshake failure.
-    hostVerifier: (key: Buffer): boolean => {
-      const actual = fingerprintOf(key)
-      if (options.hostKeyFingerprint === undefined) {
-        hostKeyError = new HostKeyUnknownError(actual)
-        throw hostKeyError
-      }
-      if (options.hostKeyFingerprint !== actual) {
-        hostKeyError = new HostKeyMismatchError(options.hostKeyFingerprint, actual)
-        throw hostKeyError
-      }
-      return true
-    },
+    hostVerifier: verifyHostKey,
   }
   await new Promise<void>((resolve, reject) => {
     client.once('ready', () => { resolve() })

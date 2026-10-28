@@ -502,6 +502,15 @@ export interface ConnectProgressEvent {
   readonly at: string
 }
 
+/** Browser-facing local-model settings; the key itself never leaves the host. */
+export interface LocalLlmReadState {
+  readonly baseUrl: string
+  readonly models: readonly string[]
+  readonly timeoutMs: number
+  readonly hasApiKey: boolean
+  readonly modelSource?: 'local' | 'server'
+}
+
 export const remoteApi = {
   /** Full first-paint snapshot (targets + connection states + workspace lists). */
   state(): Promise<StateResultV1> {
@@ -540,8 +549,40 @@ export const remoteApi = {
     readonly dshHome?: string
     readonly runtimePolicy?: 'auto' | 'isolated'
     readonly attemptId?: string
+    /** Where the server agent's model requests are served. */
+    readonly modelSource?: 'local' | 'server'
   }): Promise<{ target: PublicTargetV1; state: ConnectionStateV1 }> {
     return call<{ target: PublicTargetV1; state: ConnectionStateV1 }>('v1/connect', request)
+  },
+
+  /** Read the saved local-model settings (never the API key; only `hasApiKey`). */
+  localLlmRead(targetId?: string): Promise<LocalLlmReadState> {
+    return call<LocalLlmReadState>('local-llm/read', targetId === undefined ? {} : { targetId })
+  },
+
+  /** Save the local-model endpoint/models and optionally a new API key. */
+  localLlmSave(request: {
+    readonly baseUrl: string
+    readonly models?: readonly string[]
+    readonly timeoutMs?: number
+    readonly apiKey?: string
+    readonly targetId?: string
+  }): Promise<LocalLlmReadState> {
+    return call<LocalLlmReadState>('local-llm/save', request)
+  },
+
+  /** Probe the local OpenAI-compatible endpoint and return its model ids. */
+  localLlmProbe(request: {
+    readonly baseUrl?: string
+    readonly apiKey?: string
+    readonly timeoutMs?: number
+  }): Promise<{ models: string[] }> {
+    return call<{ models: string[] }>('local-llm/probe', request)
+  },
+
+  /** Remove the stored local-model API key. */
+  localLlmClearKey(): Promise<LocalLlmReadState> {
+    return call<LocalLlmReadState>('local-llm/clear-key', {})
   },
 
   /** Read the progress buffer for one connect attempt. */

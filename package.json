@@ -1,7 +1,7 @@
 {
   "name": "dsh-remote-workspace",
   "version": "0.1.0-alpha.3",
-  "description": "Remote entry for DeepSeek Harness: expose an SSH host as server-authoritative workspaces/sessions with dual server/local execution and a client-native server conversation panel.",
+  "description": "Remote entry for DeepSeek Harness: launch DSH on an SSH host and reproduce its official web UI full-screen inside the client, with an optional local model bridge.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

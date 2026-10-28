@@ -36,16 +36,37 @@ export class HostKeyUnknownError extends Error {
   }
 }
 
+/** Either host-key rejection: first contact or a changed key. */
+export type HostKeyRejection = HostKeyUnknownError | HostKeyMismatchError
+
 /**
  * Build ssh2's `hostVerifier` for one target.
+ *
+ * ssh2 calls this synchronously from the key-exchange state machine and only
+ * understands `boolean` (or `undefined` for async verification). Throwing out
+ * of it aborts the packet parser while the exchange is still half finished, so
+ * the server's trailing NEWKEYS packet then crashes the client with
+ * "Received packet 21 instead of 31" — in this host that uncaught protocol
+ * error takes down the whole DSH process. Answer `false` instead: ssh2
+ * disconnects cleanly, and the typed reason travels out of band to the caller.
  * @param pinned - the confirmed fingerprint, or undefined for first contact.
+ * @param onReject - receives the typed rejection (anonymous or changed key).
  * @returns a verifier that reports the fingerprint instead of silently trusting it.
  */
-export function hostVerifier(pinned: string | undefined): (key: Buffer) => boolean {
+export function hostVerifier(
+  pinned: string | undefined,
+  onReject?: (error: HostKeyRejection) => void,
+): (key: Buffer) => boolean {
   return (key: Buffer): boolean => {
     const actual = fingerprintOf(key)
-    if (pinned === undefined) throw new HostKeyUnknownError(actual)
-    if (pinned !== actual) throw new HostKeyMismatchError(pinned, actual)
+    if (pinned === undefined) {
+      onReject?.(new HostKeyUnknownError(actual))
+      return false
+    }
+    if (pinned !== actual) {
+      onReject?.(new HostKeyMismatchError(pinned, actual))
+      return false
+    }
     return true
   }
 }

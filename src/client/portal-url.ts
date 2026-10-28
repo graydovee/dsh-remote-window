@@ -26,6 +26,8 @@ export const EMBED_WORKSPACE_PARAM = 'dshRwWorkspace'
 export const EMBED_THEME_PARAM = 'dshRwTheme'
 export const EMBED_LANG_PARAM = 'dshRwLang'
 export const EMBED_PARENT_PARAM = 'dshRwParent'
+/** Full official shell (no client-embed sidebar hiding). */
+export const EMBED_FULL_PARAM = 'dshRwFull'
 
 /** Theme value forwarded to the embedded official UI (best-effort). */
 export type EmbedTheme = 'light' | 'dark' | 'system'
@@ -50,6 +52,8 @@ export interface PortalUrlInput {
   readonly lang?: EmbedLang
   /** Parent origin the embed script validates messages against. */
   readonly parentOrigin?: string
+  /** Render the complete official shell, including sidebar/rightbar. */
+  readonly full?: boolean
 }
 
 /**
@@ -87,6 +91,7 @@ export function portalUrl(input: PortalUrlInput): string {
   if (input.parentOrigin !== undefined && input.parentOrigin !== '') {
     params.set(EMBED_PARENT_PARAM, input.parentOrigin)
   }
+  if (input.full === true) params.set(EMBED_FULL_PARAM, '1')
   const query = params.toString()
   return query === '' ? portalPath(input.targetId) : `${portalPath(input.targetId)}?${query}`
 }
@@ -98,6 +103,7 @@ export interface PortalQuery {
   readonly theme?: EmbedTheme
   readonly lang?: EmbedLang
   readonly parentOrigin?: string
+  readonly full?: boolean
 }
 
 /** Narrow a theme string. */
@@ -125,12 +131,14 @@ export function parsePortalQuery(search: string): PortalQuery {
   const theme = params.get(EMBED_THEME_PARAM)
   const lang = params.get(EMBED_LANG_PARAM)
   const parent = params.get(EMBED_PARENT_PARAM)
+  const full = params.get(EMBED_FULL_PARAM)
   return {
     ...(sessionId === null || sessionId === '' ? {} : { sessionId }),
     ...(workspaceId === null || workspaceId === '' ? {} : { workspaceId }),
     ...(isEmbedTheme(theme) ? { theme } : {}),
     ...(isEmbedLang(lang) ? { lang } : {}),
     ...(parent === null || parent === '' ? {} : { parentOrigin: parent }),
+    ...(full === '1' ? { full: true } : {}),
   }
 }
 

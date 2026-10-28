@@ -2393,6 +2393,35 @@ ${officialInputAliasStyles}
   gap: 8px;
 }
 
+/* v3 model source: the connect dialog's local endpoint/key/probe block. */
+.dsh-rw-local-model {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dsw-alias-border-secondary, rgb(127 127 127 / 18%));
+}
+
+.dsh-rw-local-models-row {
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.dsh-rw-local-model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.dsh-rw-local-model-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .dsh-rw-connect-hostkey {
   display: flex;
   flex-direction: column;
@@ -2431,17 +2460,282 @@ ${officialInputAliasStyles}
   line-height: 18px;
 }
 
-/* ------------------------------------------------ server-mode main area */
+/* ------------------------------------------------------ target rail (v3) */
 
-/* The iframe is the whole main panel: the official UI inside it already has
-   its own chrome, and the embed CSS hides the duplicated navigation. Nothing
-   of ours is drawn above it (no second title bar). */
-.dsh-rw-portal {
-  position: relative;
+/* The official UI owns navigation while the frame is mounted: yield the
+   client shell's sidebar and collapse its grid column so the iframe is the
+   whole content area. The floating rail lives outside the grid (body-level
+   host) and therefore stays reachable in both states. */
+html[data-dsh-rw-portal] [data-slot="sidebar"] {
+  display: none !important;
+}
+
+html[data-dsh-rw-portal] [data-slot="root"] > div > div {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.dsh-rw-rail-host {
+  position: fixed;
+  left: 10px;
+  bottom: 14px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  pointer-events: none;
+}
+
+/* While the official full UI owns the screen, the frame's sidebar and its
+   account button sit along the left edge: dock the floating rail to the right
+   edge (where the official content keeps its margin) so nothing official is
+   covered while the rail is collapsed. */
+.dsh-rw-rail-host[data-portal="true"] {
+  right: 10px;
+  left: auto;
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.dsh-rw-rail {
+  pointer-events: auto;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  width: 100%;
-  height: 100%;
+  width: 44px;
+  max-height: calc(100vh - 96px);
+  padding: 6px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-elevated, var(--dsw-alias-bg-base)) 94%, transparent);
+  box-shadow:
+    0 8px 24px rgb(0 0 0 / 18%),
+    0 0 0 1px var(--dsw-alias-border-secondary, rgb(127 127 127 / 18%));
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  /* No width transition: the expansion must be an instant, deterministic
+     layout (background tabs can freeze animations mid-flight and leave the
+     collapsed 44px box with expanded children clipped). */
+  transition: none;
+}
+
+.dsh-rw-rail[data-expanded="true"],
+.dsh-rw-rail:focus-within {
+  width: 280px;
+}
+
+.dsh-rw-rail-head {
+  display: none;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 2px 4px 6px;
+}
+
+.dsh-rw-rail[data-expanded="true"] .dsh-rw-rail-head {
+  display: flex;
+}
+
+.dsh-rw-rail-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-rail-head-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.dsh-rw-rail-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.dsh-rw-rail-icon:hover {
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 8%));
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-rw-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dsh-rw-rail-target,
+.dsh-rw-rail-empty {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  border-radius: 10px;
+}
+
+.dsh-rw-rail-main,
+.dsh-rw-rail-empty {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-rail-main:hover,
+.dsh-rw-rail-empty:hover {
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 8%));
+}
+
+.dsh-rw-rail-glyph {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.dsh-rw-rail-target[data-active="true"] .dsh-rw-rail-glyph {
+  background: var(--dsw-alias-brand-primary, #4d6bfe);
+  color: #fff;
+}
+
+.dsh-rw-rail-target[data-phase="failed"] .dsh-rw-rail-glyph,
+.dsh-rw-rail-target[data-phase="error"] .dsh-rw-rail-glyph {
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-error, #e5484d);
+}
+
+.dsh-rw-rail-label {
+  display: none;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dsh-rw-rail[data-expanded="true"] .dsh-rw-rail-label {
+  display: flex;
+}
+
+.dsh-rw-rail-name {
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-rail-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-rail-actions {
+  display: none;
+  flex: none;
+  gap: 2px;
+}
+
+.dsh-rw-rail[data-expanded="true"] .dsh-rw-rail-actions {
+  display: flex;
+}
+
+.dsh-rw-rail-action {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.dsh-rw-rail-action:hover {
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 8%));
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-rw-rail-status {
+  flex: none;
+  margin: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-rw-rail-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentcolor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: dsh-rw-spin 800ms linear infinite;
+}
+
+@keyframes dsh-rw-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ------------------------------------------------ server-mode main area */
+
+/* The iframe covers the whole client window: v3 makes the client the remote
+   server's UI. The frame layer sits above the client shell (which keeps its
+   own state underneath) and below the floating target rail (z-index 70). */
+.dsh-rw-portal {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
   min-height: 0;
   background: var(--dsw-alias-bg-base);
 }

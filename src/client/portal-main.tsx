@@ -1,22 +1,22 @@
 /**
- * The v1 **server-mode main area**: the same-origin iframe that hosts the
- * profile server's own official DSH UI (protocol §8/§9).
+ * The v3 **remote main area**: one same-origin iframe showing the profile
+ * server's complete official DSH UI (protocol §8/§9).
  *
- * The iframe is the only surface here; no conversation is redrawn. The client
- * sidebar is the only navigation (the server plugin's embed CSS hides the
- * official sidebar/rightbar), and the two sides talk through exactly the
- * contract in `portal-url.ts`:
+ * The client no longer redraws the conversation. The frame is full-screen in
+ * the shell's main region and the server plugin's embed layer is asked for
+ * `full` mode (`dshRwFull=1`), so the official sidebar, header, conversation
+ * and right sidebar are all present and owned by the server.
  *
- *  - parent → iframe: `dsh-rw/open-session` / `dsh-rw/theme` / `dsh-rw/reload`;
- *  - iframe → parent: `dsh-rw/ready` plus same-origin `storage` events on the
- *    prefixed `dsh.sessions.current` key (never a private service API).
+ * The client keeps exactly two chrome surfaces: the floating target rail
+ * (`rail.tsx`) and the connection dialogs. Both live outside the frame.
  *
- * v1 navigates by letting the embedded page reload itself (the known UX cost in
- * protocol §9.3); the frame reducer therefore keeps the `src` stable and only
- * changes what the sidebar requested.
+ * Parent → iframe messages are kept for compatibility with the v1 deep-link
+ * contract, but full mode relies on the embedded official UI's own navigation;
+ * the only message the parent still needs is the child's readiness.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Button, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -25,8 +25,6 @@ import { t } from './locales.ts'
 import {
   IDLE_PORTAL_FRAME,
   acceptChildMessage,
-  needsEmbedNavigation,
-  openSessionMessage,
   parseSelectionStorageEvent,
   portalFrameReducer,
   portalUrl,
@@ -36,34 +34,39 @@ import {
   type PortalFrameState,
 } from './portal-url.ts'
 
-/** Main-slot key for the server-mode conversation area. */
+/** Main-slot key for the full-screen official UI area. */
 export const SERVER_MAIN_ID = 'dsh-remote-workspace-server'
 
-/** Everything one mounted server main area needs. */
+/** Attribute placed on `<html>` while a portal frame is mounted. */
+export const PORTAL_ACTIVE_ATTR = 'data-dsh-rw-portal'
+
+/** Everything one mounted main area needs. */
 export interface ServerMainRequest {
   readonly targetId: string
   /** Connection label, used only for the accessible region name. */
   readonly targetLabel: string
-  /** Workspace shown by the embedded draft (fallback deep link §16.2 b). */
+  /** Optional deep link: workspace shown by the embedded official UI. */
   readonly workspaceId?: string
-  /** Session to open; the primary §16.2 a deep link. */
+  /** Optional deep link: session opened on the first load. */
   readonly sessionId?: string
-  /** `capabilities.embed.storagePrefix` from the handshake. */
-  readonly storagePrefix: string
+  /** `capabilities.embed.storagePrefix` from the handshake (optional in v3). */
+  readonly storagePrefix?: string
   /** `capabilities.embed.mode`: reload (v1) or client-half (v1.1). */
-  readonly embedMode: EmbedNavigationMode
+  readonly embedMode?: EmbedNavigationMode
   readonly theme?: EmbedTheme
   readonly lang?: EmbedLang
 }
 
-/** The panel store: which target/session the main area currently shows. */
+/** The panel store: which target the main area currently shows. */
 interface ServerMainState {
   readonly request?: ServerMainRequest
+  /** Monotonic remount counter: a reconnect must never reuse the cached UI. */
+  readonly revision: number
   /** Session reported by the embedded UI's storage bridge. */
   readonly reportedSessionId?: string
 }
 
-let state: ServerMainState = {}
+let state: ServerMainState = { revision: 0 }
 const listeners = new Set<() => void>()
 
 function commit(patch: Partial<ServerMainState>): void {
@@ -80,21 +83,32 @@ function snapshot(): ServerMainState {
   return state
 }
 
-/** Open (or re-point) the server-mode main area. */
+/**
+ * Open (or re-point) the full-screen official UI.
+ *
+ * Every call bumps {@link ServerMainState.revision}: a reconnect, a target
+ * switch or an explicit retry must remount the iframe so the browser cannot
+ * serve the previous profile's cached document.
+ */
 export function openServerMain(request: ServerMainRequest): void {
-  commit({ request, reportedSessionId: request.sessionId })
+  commit({
+    request,
+    revision: state.revision + 1,
+    reportedSessionId: request.sessionId,
+  })
 }
 
-/** Ask the embedded UI to show another session (v1 reloads the document). */
+/** Ask the embedded UI to show another session (kept for the v1 deep-link API). */
 export function navigateServerMain(sessionId: string | undefined): void {
   if (state.request === undefined) return
   commit({
     request: { ...state.request, ...(sessionId === undefined ? { sessionId: undefined } : { sessionId }) },
+    revision: state.revision + 1,
     reportedSessionId: sessionId,
   })
 }
 
-/** Tear the main area down (disconnect / mode switch / target switch). */
+/** Tear the main area down (disconnect / target switch / plugin disposal). */
 export function closeServerMain(): void {
   if (state.request === undefined) return
   commit({ request: undefined, reportedSessionId: undefined })
@@ -107,7 +121,7 @@ export function serverMainSessionId(): string | undefined {
   return state.reportedSessionId ?? request.sessionId
 }
 
-/** Subscribe to the reported selection (the tree's remote highlight source). */
+/** Subscribe to main-area changes (the target rail's active highlight). */
 export function subscribeServerMain(listener: () => void): () => void {
   return subscribe(listener)
 }
@@ -154,6 +168,11 @@ function useServerMain(): ServerMainState {
   return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
 
+/** Hook: the current request, for the target rail's active highlight. */
+export function useServerMainRequest(): ServerMainRequest | undefined {
+  return useServerMain().request
+}
+
 /**
  * One iframe's lifecycle, kept as a thin adapter over the pure reducer.
  * @param request - current target/session request.
@@ -179,8 +198,7 @@ function usePortalFrame(request: ServerMainRequest | undefined): {
       targetId: request.targetId,
       ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
     }))
-    // The request identity (not each field) is the navigation unit; a thematic
-    // change is applied by the message effect below.
+    // The request identity (not each field) is the navigation unit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request?.targetId, dispatch])
 
@@ -191,9 +209,13 @@ function usePortalFrame(request: ServerMainRequest | undefined): {
   }
 }
 
+/** How long the official UI may take to report readiness before we show an error. */
+export const PORTAL_READY_TIMEOUT_MS = 20_000
+
 /** The iframe + its loading/error chrome. */
 export function ServerMainArea(props: { request: ServerMainRequest }): ReactElement {
   const { request } = props
+  const current = useServerMain()
   const { frame, setFrame, retry } = usePortalFrame(request)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const dispatchSelection = useCallback((sessionId: string | undefined) => {
@@ -208,29 +230,18 @@ export function ServerMainArea(props: { request: ServerMainRequest }): ReactElem
     theme: request.theme ?? documentTheme(),
     lang: request.lang ?? documentLang(),
     ...(expectedOrigin === '' ? {} : { parentOrigin: expectedOrigin }),
+    // The whole official shell: no client-side sidebar/rightbar hiding.
+    full: true,
   })
+  const storagePrefix = request.storagePrefix
 
-  // A sidebar selection made after the frame is ready becomes a navigation.
-  // The initial open already carries the session in the query, so only a later
-  // change (or one made while another session is displayed) needs this hop.
+  // The client shell yields its own sidebar while the official UI owns the
+  // navigation; the floating target rail stays outside the shell grid.
   useEffect(() => {
-    if (request.sessionId === undefined) return
-    if (frame.phase === 'idle' || frame.targetId !== request.targetId) return
-    if (!needsEmbedNavigation(frame, request.sessionId)) return
-    setFrame(previous => portalFrameReducer(previous, { type: 'navigate', sessionId: request.sessionId }))
-  }, [request.sessionId, request.targetId, frame])
-
-  // Parent → iframe navigation. The iframe keeps its document; the embed shim
-  // reloads it after persisting the requested selection (v1).
-  useEffect(() => {
-    if (frame.phase !== 'loading') return
-    if (!needsEmbedNavigation(frame, request.sessionId)) return
-    const target = iframeRef.current?.contentWindow
-    if (target === null || target === undefined) return
-    if (request.sessionId !== undefined) {
-      target.postMessage(openSessionMessage(request.sessionId), expectedOrigin)
-    }
-  }, [frame, request.sessionId, expectedOrigin])
+    if (typeof document === 'undefined') return
+    document.documentElement.setAttribute(PORTAL_ACTIVE_ATTR, request.targetId)
+    return () => { document.documentElement.removeAttribute(PORTAL_ACTIVE_ATTR) }
+  }, [request.targetId])
 
   // iframe → parent readiness.
   useEffect(() => {
@@ -248,33 +259,54 @@ export function ServerMainArea(props: { request: ServerMainRequest }): ReactElem
     return () => window.removeEventListener('message', onMessage)
   }, [expectedOrigin])
 
+  // A document that never reports readiness is a failure the user can act on.
+  useEffect(() => {
+    if (frame.phase !== 'loading') return
+    const timer = setTimeout(() => {
+      setFrame(previous => previous.phase === 'loading'
+        ? portalFrameReducer(previous, {
+          type: 'failed',
+          error: { code: 'portal-not-ready', message: t('portal.timeout', { label: request.targetLabel }) },
+        })
+        : previous)
+    }, PORTAL_READY_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [frame.phase, frame.reloadCount, current.revision, request.targetLabel, setFrame])
+
   // iframe → parent selection: same-origin storage event on the prefixed key.
   useEffect(() => {
-    if (typeof window === 'undefined' || request.storagePrefix === '') return
+    if (typeof window === 'undefined' || storagePrefix === undefined || storagePrefix === '') return
     const onStorage = (event: StorageEvent): void => {
       if (event.storageArea !== window.localStorage) return
       const selection = parseSelectionStorageEvent(
         { key: event.key, newValue: event.newValue, url: event.url },
-        { targetId: request.targetId, storagePrefix: request.storagePrefix },
+        { targetId: request.targetId, storagePrefix },
       )
       if (selection === undefined) return
       dispatchSelection(selection.sessionId)
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [request.targetId, request.storagePrefix, dispatchSelection])
+  }, [request.targetId, storagePrefix, dispatchSelection])
 
   const failed = frame.phase === 'error'
   return (
-    <div className="dsh-rw-portal" data-target={request.targetId}>
+    <div className="dsh-rw-portal" data-target={request.targetId} data-phase={frame.phase}>
       <iframe
+        // The revision is part of the key: a reconnect must remount the frame
+        // instead of letting the browser reuse the previous profile's document.
+        key={`${request.targetId}:${current.revision}:${frame.reloadCount}`}
         ref={iframeRef}
         className="dsh-rw-portal-frame"
         title={t('portal.title', { label: request.targetLabel })}
         src={src}
         // Same-origin by construction; the portal strips the profile server's
-        // cookie authority and never forwards Set-Cookie (§8.2).
+        // cookie authority and never forwards Set-Cookie (§8.2). The sandbox
+        // deliberately omits top-navigation; downloads/popups stay available
+        // because the official UI exposes them in-frame.
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
         allow="clipboard-read; clipboard-write"
+        referrerPolicy="no-referrer"
         onLoad={() => setFrame(previous => portalFrameReducer(previous, { type: 'loaded' }))}
       />
       {frame.phase === 'loading' && (
@@ -288,6 +320,7 @@ export function ServerMainArea(props: { request: ServerMainRequest }): ReactElem
           <div className="dsh-rw-portal-error-text">
             <strong>{t('portal.failed', { label: request.targetLabel })}</strong>
             <span>{frame.error?.message ?? t('portal.failedUnknown')}</span>
+            <span>{t('portal.failedHint')}</span>
           </div>
           <Button variant="outline" icon={<IconRefreshOutlineRegular size={12} />} onClick={retry}>
             {t('common.retry')}
@@ -298,14 +331,24 @@ export function ServerMainArea(props: { request: ServerMainRequest }): ReactElem
   )
 }
 
-/** The main-slot entry: renders the current request, or nothing. */
+/**
+ * The main-slot entry: renders the current request, or nothing.
+ *
+ * The frame is portalled to `document.body` so the official UI covers the
+ * whole client window (the shell sidebar included) — v3 is "the client becomes
+ * the server UI", not a panel inside the client's own layout.
+ */
 export function ServerMainPanel(): ReactElement | null {
   const current = useServerMain()
   if (current.request === undefined) return null
-  return <ServerMainArea request={current.request} />
+  const area = <ServerMainArea request={current.request} />
+  // Non-DOM hosts (SSR, component tests) get the tree inline; the browser
+  // portals it to <body> so the official UI covers the whole client window.
+  if (typeof document === 'undefined') return area
+  return createPortal(area, document.body)
 }
 
-/** Public action for the sidebar: close the server area and return to chat. */
+/** Public action for the rail: close the server area and return to chat. */
 export function closeServerMainPanel(): void {
   closeServerMain()
   selectConversationPanel()

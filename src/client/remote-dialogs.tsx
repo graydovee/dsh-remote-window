@@ -20,8 +20,8 @@ import {
   applyModeSwitch, browseAddWorkspace, cancelModeSwitch, cancelProfileRestart, closeAddWorkspace,
   closeConnectDialog, setAddWorkspacePath,
   closeArchiveActivity, closeDeleteWorkspace, closeForgetTarget, closeModeDialog, closeRenameSession,
-  closeRenameWorkspace, confirmArchiveActivity, confirmProfileRestart, modeDialogFor,
-  previewModeSwitch, setAddWorkspaceTitle, setRenameSessionValue, setRenameWorkspaceValue,
+  clearLocalLlmKey, closeRenameWorkspace, confirmArchiveActivity, confirmProfileRestart, modeDialogFor,
+  previewModeSwitch, probeLocalLlmModels, setAddWorkspaceTitle, setRenameSessionValue, setRenameWorkspaceValue,
   patchConnectDialog, submitAddWorkspace, submitConnectDialog, submitDeleteWorkspace,
   submitForgetTarget, submitRenameSession, submitRenameWorkspace, useRemoteAppState,
 } from './remote-store.ts'
@@ -72,6 +72,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
   const [aliasChoice, setAliasChoice] = useState('')
   const [configError, setConfigError] = useState<string | undefined>(undefined)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [localApiKey, setLocalApiKey] = useState('')
   const [progress, setProgress] = useState<ConnectProgressEvent[]>([])
   useEffect(() => {
     if (props.state.connectDialog?.phase === 'hostkey') setStep('connect')
@@ -121,6 +122,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
     if (dialog.username.trim() === '') return t('remote.connect.userRequired')
     if (dialog.authKind === 'password' && dialog.secret === '') return t('remote.connect.secretRequired')
     if (dialog.authKind === 'privateKey' && dialog.privateKeyPath.trim() === '') return t('remote.connect.keyRequired')
+    if (dialog.modelSource === 'local' && dialog.localBaseUrl.trim() === '') return t('connect.local.unconfigured')
     return undefined
   }
   const primaryLabel = current !== 'connect'
@@ -374,6 +376,87 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                 </Field>
               </div>
             </DisclosureRow>
+            <div className="dsh-rw-section dsh-rw-local-model">
+              <h3 className="dsh-rw-section-title">{t('connect.local.title')}</h3>
+              <p className="dsh-rw-hint">{t('connect.local.hint')}</p>
+              <SegmentedControl<'local' | 'server'>
+                id="dsh-rw-connect-model-source"
+                value={dialog.modelSource}
+                disabled={submitting}
+                label={t('connect.local.title')}
+                options={[
+                  { value: 'local', label: t('connect.local.source.local') },
+                  { value: 'server', label: t('connect.local.source.server') },
+                ]}
+                onChange={(next) => patch({ modelSource: next })}
+              />
+              {dialog.modelSource === 'server' ? (
+                <p className="dsh-rw-hint">{t('connect.local.serverHint')}</p>
+              ) : (
+                <>
+                  <Field
+                    label={t('connect.local.baseUrl')}
+                    hint={dialog.localSettingsLoading ? t('connect.local.loading') : t('connect.local.baseUrlHint')}
+                  >
+                    <input
+                      className="dsh-rw-rename-input"
+                      value={dialog.localBaseUrl}
+                      disabled={submitting || dialog.localSettingsLoading}
+                      placeholder={t('connect.local.baseUrlPlaceholder')}
+                      onChange={(event: { target: { value: string } }) => patch({ localBaseUrl: event.target.value })}
+                    />
+                  </Field>
+                  <Field
+                    label={t('connect.local.apiKey')}
+                    hint={dialog.localHasApiKey ? t('connect.local.apiKeySaved') : t('connect.local.apiKeyPlaceholder')}
+                  >
+                    <div className="dsh-rw-inline">
+                      <input
+                        className="dsh-rw-rename-input"
+                        type="password"
+                        value={localApiKey}
+                        disabled={submitting}
+                        autoComplete="off"
+                        placeholder={t('connect.local.apiKeyPlaceholder')}
+                        onChange={(event: { target: { value: string } }) => { setLocalApiKey(event.target.value) }}
+                      />
+                      {dialog.localHasApiKey && (
+                        <Button variant="ghost" size="sm" disabled={submitting} onClick={() => { void clearLocalLlmKey() }}>
+                          {t('connect.local.clearKey')}
+                        </Button>
+                      )}
+                    </div>
+                  </Field>
+                  <div className="dsh-rw-inline dsh-rw-local-models-row">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={submitting || dialog.localModelsLoading}
+                      onClick={() => {
+                        void probeLocalLlmModels(localApiKey).then(models => {
+                          if (models !== undefined) setLocalApiKey('')
+                        })
+                      }}
+                    >
+                      {dialog.localModelsLoading ? t('connect.local.refreshing') : t('connect.local.refresh')}
+                    </Button>
+                    <span className="dsh-rw-hint">
+                      {dialog.localModels.length === 0
+                        ? t('connect.local.modelsEmpty')
+                        : t('connect.local.modelsCount', { count: dialog.localModels.length })}
+                    </span>
+                  </div>
+                  {dialog.localModels.length > 0 && (
+                    <div className="dsh-rw-local-model-chips" aria-label={t('connect.local.models')}>
+                      {dialog.localModels.map(model => (
+                        <span className="dsh-rw-local-model-chip" key={model}>{model}</span>
+                      ))}
+                    </div>
+                  )}
+                  {dialog.localError !== undefined && <p className="dsh-rw-side-error">{dialog.localError}</p>}
+                </>
+              )}
+            </div>
             {configError !== undefined && <p className="dsh-rw-side-error">{configError}</p>}
           </div>
         )}
@@ -453,6 +536,9 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
             <p className="dsh-rw-hint">{t('connect.deploy.hint')}</p>
             {submitting && <p className="dsh-rw-hint" role="status">{t('remote.connect.deploying')}</p>}
             {dialog.error !== undefined && <p className="dsh-rw-side-error">{dialog.error.message}</p>}
+            {dialog.error === undefined && dialog.localError !== undefined && (
+              <p className="dsh-rw-side-error">{dialog.localError}</p>
+            )}
           </div>
         )}
           </div>

@@ -228,6 +228,7 @@ describe('ProfileService M1 slice', () => {
       authKind: 'password',
       secret: 'hunter2',
       hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })
     expect(result.target.executor).toBe('local')
     expect(registered.map(entry => entry.id)).toContain(remotePresetId(result.target.id))
@@ -240,6 +241,7 @@ describe('ProfileService M1 slice', () => {
     const service = new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
     const result = await service.connect({
       label: 'refresh-flags', host: '203.0.113.50', port: 22, username: 'tester', authKind: 'password', secret: 'x', hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })
     const before = registryReloads
     pinnedIds.push('session-1')
@@ -255,6 +257,7 @@ describe('ProfileService M1 slice', () => {
     const service = new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
     const result = await service.connect({
       label: 'v2-session-rpc', host: '203.0.113.60', port: 22, username: 'tester', authKind: 'password', secret: 'x', hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })
     expect(await service.sessionTimeline(result.target.id, { sessionId: 'session-1', afterSeq: 0 })).toMatchObject({ sessionId: 'session-1' })
     expect(await service.sessionPrompt(result.target.id, { sessionId: 'session-1', text: 'hi' })).toMatchObject({ accepted: true })
@@ -270,6 +273,7 @@ describe('ProfileService M1 slice', () => {
     const service = new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
     const result = await service.connect({
       label: 'executor-open', host: '203.0.113.40', port: 22, username: 'tester', authKind: 'password', secret: 'x', hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })
     const created = await service.sessionCreate(result.target.id, { workspaceId: 'w1', executor: 'server' })
     expect(created).toMatchObject({ sessionId: 'session-created', executor: 'server' })
@@ -301,6 +305,7 @@ describe('ProfileService M1 slice', () => {
     const service = new ProfileService({ ctx, store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
     const result = await service.connect({
       label: 'preset-existing', host: '203.0.113.30', port: 22, username: 'tester', authKind: 'password', secret: 'x', hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })
     expect(result.target.id).toBe('rt-preset1')
     expect(register).not.toHaveBeenCalled()
@@ -319,6 +324,7 @@ describe('ProfileService M1 slice', () => {
       authKind: 'password',
       secret: 'hunter2',
       hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     }, event => progress.push(event))
     const probe = progress.find(event => event.step === 'probe' && event.status === 'ok')
     expect(probe?.message).toContain('运行时 跳过')
@@ -344,6 +350,7 @@ describe('ProfileService M1 slice', () => {
       authKind: 'password',
       secret: 'hunter2',
       hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })
     expect(result.target).toMatchObject({ label: 'fixture', profileName: 'graydovee-remote-workspace-abcdef012345', pluginVersion: VERSION, serverDshVersion: DSH_VERSION })
     expect(result.state).toMatchObject({ phase: 'ready', profile: { name: 'graydovee-remote-workspace-abcdef012345', port: serverPort, pid: 4321 } })
@@ -383,6 +390,7 @@ describe('ProfileService M1 slice', () => {
       authKind: 'password',
       secret: 'x',
       hostKeyFingerprint: 'SHA256:fixture',
+      modelSource: 'server',
     })).rejects.toBeDefined()
     expect(Object.values(service.connections()).every(state => state.phase !== 'ready')).toBe(true)
   })

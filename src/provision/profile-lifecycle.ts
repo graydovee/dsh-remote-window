@@ -44,6 +44,9 @@ export const PROFILE_PLUGIN_MARKER = '.dsh-rw-plugin.json'
 /** Profile lease path, relative to the profile directory (server plugin writes it). */
 export const PROFILE_LEASE_PATH = '.dsh-rw/lease.json'
 
+/** Profile layer patch file rewritten by the client on every connect. */
+export const PROFILE_PATCH_FILE = 'cordis.patch.yml'
+
 /** One `exec` result from the profile remote. */
 export interface ProfileExecResult {
   readonly code: number | null
@@ -152,6 +155,24 @@ export function pidFileBody(pid: number): string {
 }
 
 /**
+ * Build shell `NAME='value'` assignments for the profile server's environment.
+ *
+ * The values are single-quoted (only `'` needs escaping), so a model bridge key
+ * placeholder or a path with spaces needs no further quoting. Names are
+ * validated because they become shell identifiers.
+ * @param env - extra environment entries; omitted/empty means none.
+ */
+export function profileEnvAssignments(env?: Readonly<Record<string, string>>): string {
+  if (env === undefined) return ''
+  return Object.entries(env)
+    .map(([name, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) throw new Error(`invalid profile environment name ${name}`)
+      return ` ${name}=${shellQuote(value)}`
+    })
+    .join('')
+}
+
+/**
  * The detached start body (protocol §3.1).
  *
  * The launcher flags are the CLI's: `--profile` comes **before** the app args
@@ -166,12 +187,15 @@ export function profileStartScript(
     readonly pathPrefixes?: readonly string[]
     /** Default 0 (OS-assigned); tests may pin a port. */
     readonly port?: number
+    /** Extra environment for the launched profile server (e.g. the model bridge key). */
+    readonly env?: Readonly<Record<string, string>>
   },
 ): string {
   const home = shellQuote(paths.dshHome)
   const launcher = shellQuote(options.launcher)
   const prefixes = [...(options.pathPrefixes ?? [])]
   const path = prefixes.length === 0 ? '' : `${pathAssignment(prefixes)} `
+  const env = profileEnvAssignments(options.env)
   return [
     'set -eu',
     'umask 077',
@@ -180,9 +204,9 @@ export function profileStartScript(
     `chmod 700 ${shellQuote(paths.stateDir)} 2>/dev/null || true`,
     `chmod 600 ${shellQuote(paths.logPath)} 2>/dev/null || true`,
     'if command -v setsid >/dev/null 2>&1; then',
-    `  setsid nohup env DSH_HOME=${home} ${path}${launcher} --profile ${shellQuote(paths.profile)} --host 127.0.0.1 --port ${options.port ?? 0} --no-open >> ${shellQuote(paths.logPath)} 2>&1 &`,
+    `  setsid nohup env DSH_HOME=${home}${env} ${path}${launcher} --profile ${shellQuote(paths.profile)} --host 127.0.0.1 --port ${options.port ?? 0} --no-open >> ${shellQuote(paths.logPath)} 2>&1 &`,
     'else',
-    `  nohup env DSH_HOME=${home} ${path}${launcher} --profile ${shellQuote(paths.profile)} --host 127.0.0.1 --port ${options.port ?? 0} --no-open >> ${shellQuote(paths.logPath)} 2>&1 &`,
+    `  nohup env DSH_HOME=${home}${env} ${path}${launcher} --profile ${shellQuote(paths.profile)} --host 127.0.0.1 --port ${options.port ?? 0} --no-open >> ${shellQuote(paths.logPath)} 2>&1 &`,
     'fi',
     'pid=$!',
     `printf '%s\\n' "$pid" > ${shellQuote(paths.pidPath)}`,
@@ -345,6 +369,8 @@ export async function startProfileServer(
   options: {
     readonly launcher: string
     readonly pathPrefixes?: readonly string[]
+    /** Extra environment for the launched profile server (e.g. the model bridge key). */
+    readonly env?: Readonly<Record<string, string>>
     readonly probe?: (startup: ProfileStartup) => Promise<boolean>
     readonly timeoutMs?: number
     readonly intervalMs?: number
@@ -355,6 +381,7 @@ export async function startProfileServer(
   const start = await remote.exec(profileStartScript(paths, {
     launcher: options.launcher,
     ...(options.pathPrefixes === undefined ? {} : { pathPrefixes: options.pathPrefixes }),
+    ...(options.env === undefined ? {} : { env: options.env }),
   }), { maxBytes: 4096, timeoutMs: 30_000 })
   if (start.code !== 0) {
     throw new ProfileLifecycleError(
@@ -552,7 +579,7 @@ export function profileStartupFiles(options: { readonly profile: string; readonl
     ['cordis.yml', '[]\n'],
     // The profile layer is empty on purpose: the server plugin ships its own
     // bundle patch, and the client must not overwrite a user's profile edits.
-    ['cordis.patch.yml', '[]\n'],
+    [PROFILE_PATCH_FILE, '[]\n'],
     ['pnpm-workspace.yaml', 'packages:\n  - .\n'],
   ])
 }
@@ -605,6 +632,23 @@ export async function writeProfileStartupFiles(remote: ProfileRemote, paths: Pro
   for (const [name, content] of profileStartupFiles({ profile: paths.profile })) {
     await remote.writeFile(`${paths.profileDir}/${name}`, Buffer.from(content, 'utf8'))
   }
+}
+
+/**
+ * Rewrite the profile layer patch (`cordis.patch.yml`).
+ *
+ * The local model source needs a patch carrying the **random** reverse-tunnel
+ * port, so it is regenerated on every connect — after the server plugin is
+ * installed (installation resets the file to `[]`) and before the server
+ * starts (it reads the patch at boot). `server` source writes `[]` so a
+ * reconnect under the previous local settings cannot leave a stale route.
+ * @param remote - profile remote seam.
+ * @param paths - fixed layout.
+ * @param content - YAML text (`[]\n` restores the official layers).
+ */
+export async function writeProfilePatch(remote: ProfileRemote, paths: ProfilePaths, content: string): Promise<void> {
+  await remote.exec(`command mkdir -p ${shellQuote(paths.profileDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  await remote.writeFile(`${paths.profileDir}/${PROFILE_PATCH_FILE}`, Buffer.from(content, 'utf8'))
 }
 
 /** The profile plugin marker body. */

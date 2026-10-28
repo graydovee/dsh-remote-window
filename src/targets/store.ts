@@ -13,6 +13,7 @@ import {
   packagePolicySettingsSchema,
   targetRecordSchema,
   workspaceRecordSchema,
+  type LocalLlmSettings,
   type PackagePolicySettings,
   type RemoteTargetRecord,
   type RemoteWorkspaceRecord,
@@ -23,6 +24,18 @@ import { generateClientId, isClientId } from './client-id.ts'
 const CREDENTIAL_SCOPE = 'remote-workspace'
 /** Storage domains reject hyphens; the plugin name cannot be reused here. */
 export const REMOTE_DOMAIN_NAME = 'dsh_remote_workspace'
+/**
+ * Credential id for the client-local model endpoint's API key.
+ *
+ * Fixed (not per target): the endpoint is a property of this client host, and
+ * one key serves every target whose model source is `local`.
+ */
+export const LOCAL_LLM_CREDENTIAL_ID = 'client-local-llm'
+
+/** The credential key (`remote-workspace/client-local-llm`) of the local model key. */
+export function localLlmCredentialKey(): CredentialKey {
+  return credentialKey(CREDENTIAL_SCOPE, LOCAL_LLM_CREDENTIAL_ID)
+}
 
 /**
  * One domain holds both tables plus the package-policy global.
@@ -72,6 +85,60 @@ export class TargetStore {
     return this.domain
   }
 
+  /** The whole domain global slot (policy, mirror, clientId, local model settings). */
+  globalSettings(): PackagePolicySettings {
+    return this.require().global.get() as PackagePolicySettings
+  }
+
+  /** The stored client-local model endpoint settings, when configured. */
+  localLlmSettings(): LocalLlmSettings | undefined {
+    return this.globalSettings().localLlm
+  }
+
+  /**
+   * Persist or clear the client-local model endpoint settings.
+   *
+   * The global slot also carries the package policy and the clientId; a write
+   * must never drop them (a lost clientId would orphan the server profile).
+   * @param settings - validated settings, or undefined to clear.
+   */
+  async setLocalLlmSettings(settings: LocalLlmSettings | undefined): Promise<void> {
+    const current = this.globalSettings()
+    const { localLlm: _previous, ...rest } = current
+    const next = settings === undefined ? rest : { ...rest, localLlm: settings }
+    await this.require().global.set(packagePolicySettingsSchema.parse(next))
+  }
+
+  /** Read the stored client-local model API key, if one is configured. */
+  async localLlmKey(): Promise<string | undefined> {
+    try {
+      const stored = await this.ctx.credentials.readRecord(localLlmCredentialKey())
+      if (stored === undefined || stored.kind !== 'api-key') return undefined
+      return stored.key === undefined || stored.key === '' ? undefined : stored.key
+    } catch {
+      // An unreadable credential store is "no key" for read paths; the probe
+      // then reports `local-llm-unauthorized` when the endpoint needs one.
+      return undefined
+    }
+  }
+
+  /**
+   * Store (or clear) the client-local model API key.
+   * @param key - the secret; an empty value removes the stored record.
+   */
+  async storeLocalLlmKey(key: string): Promise<void> {
+    if (key === '') {
+      await this.forgetLocalLlmKey()
+      return
+    }
+    await this.ctx.credentials.modifyRecord(localLlmCredentialKey(), async () => ({ kind: 'api-key', key }))
+  }
+
+  /** Remove the stored client-local model API key (absent is a no-op). */
+  async forgetLocalLlmKey(): Promise<void> {
+    await this.ctx.credentials.deleteRecord(localLlmCredentialKey())
+  }
+
   private targets(): KvTable<string, RemoteTargetRecord> {
     return this.require().table('targets') as unknown as KvTable<string, RemoteTargetRecord>
   }
@@ -93,10 +160,11 @@ export class TargetStore {
    * per-client profile on the next connect.
    */
   async setPackagePolicy(settings: PackagePolicySettings): Promise<void> {
-    const current = this.require().global.get() as PackagePolicySettings
+    const current = this.globalSettings()
     await this.require().global.set(packagePolicySettingsSchema.parse({
       ...settings,
       ...(settings.clientId === undefined && current.clientId !== undefined ? { clientId: current.clientId } : {}),
+      ...(settings.localLlm === undefined && current.localLlm !== undefined ? { localLlm: current.localLlm } : {}),
     }))
   }
 

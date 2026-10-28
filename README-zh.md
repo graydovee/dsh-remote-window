@@ -8,22 +8,26 @@
 [![npm](https://img.shields.io/npm/v/dsh-remote-workspace.svg)](https://www.npmjs.com/package/dsh-remote-workspace)
 
 把一台 SSH 主机打开成 DeepSeek Harness 工作区。**server 是一台能独立工作的普通 DSH；本插件让它成为
-client 的远程入口。** 工作区、会话、会话日志与共享视图状态都以 server 为权威；client 用两段式侧栏
-展示它们，并为每个会话选择执行端：
+client 的远程入口。** 工作区、会话、会话日志与共享视图状态都以 server 为权威。client 只加一条浮动
+target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺满主区**——sidebar、header、对话、
+右侧栏与第三方 UI 插件都是 server 上跑的那一份；client 不再自绘对话。
 
-- **local 模式**（默认）：agent loop 与模型凭据在 client；文件、进程、沙箱、终端与会话日志仍在 server。
-  server 一般没有配置模型 key，所以新连接默认走本机执行。
-- **server 模式**（可选）：agent loop、模型请求、凭据与工具执行都在 server；client 主区用 timeline/SSE
-  自绘 native 对话。仅当 server 已配置模型凭据时使用。
+连接时选择 agent 的**模型请求**由谁服务：
 
-两种模式写同一份 server 会话日志，所以切换执行端不是切换会话。
+- **local（默认）**：agent、会话日志与工具仍在 server，但每次模型请求经 SSH 反向隧道转发到 client
+  本机的 OpenAI 兼容 endpoint。新 server 通常没配模型 key，所以默认走这里；endpoint 未配置时阻止
+  连接，绝不静默回退到 server 模型。
+- **server（可选）**：server profile 使用自己的模型配置；仅当 server 已配置模型凭据时显式选择。
+
+两种来源写同一份 server 会话日志；切换模型来源需要重连，而不是换会话。
 
 ## Screenshots
 
 ![侧栏的「远程工作区」区域：连接 → server 工作区 → server 会话](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
-侧栏保持两段：**远程工作区**（连接 → server 工作区 → server 会话）与本机**工作区**。server 行复用
-官方行组件；连接行与会话行显示当前执行端；搜索只过滤当前 client 视图，不落盘。
+client 只保留一个远程面：浮动 **target rail**（默认收起，hover 或 `Alt+R` 展开），列已保存连接、实时
+阶段与连接/切换/忘记动作。连接后，server 自己的 sidebar 与对话就是导航；iframe 挂载期间 client shell
+sidebar 隐藏。
 
 ## Why this exists
 
@@ -36,8 +40,8 @@ Harness 只在自己运行的机器上干活。当工作必须发生在别处—
 
 由此得到三条不变量：
 
-- **凭据不过线。** server 模式用 server 的模型凭据，local 模式用 client 的；SSH 密钥只在 client。
-  错误、日志与流式明细都会脱敏。
+- **凭据不过线。** server 模型来源用 server 自己的凭据；local 来源的 key 只存 client 凭据库，由 bridge
+  注入。SSH 密钥只在 client。错误、日志与流式明细都会脱敏。
 - **目标机不监听公网端口。** profile server 只绑 `127.0.0.1`，client 经 SSH `forwardOut` 访问。
 - **每 client 一个 profile，每会话一个写者。** server 插件持有 client lease；官方 JSONL flock 跨进程
   裁决会话写者，第二个写者会得到明确的 `session/writer-held`，而不是静默写坏日志。
@@ -53,7 +57,7 @@ Harness 只在自己运行的机器上干活。当工作必须发生在别处—
 | 一个界面里多个 target | 每台一个 profile | 支持 | 支持 |
 | 会话日志权威 | 本地 | 本地 | **server** |
 | 工作区/pin/archive/顺序 | 本地 | 本地 | **server（跨 client 共享）** |
-| 每会话执行端 | 固定本机 | 固定本机 | **server 或 client** |
+| 连接的模型来源 | 固定本机 | 固定本机 | **local 隧道或 server** |
 | 换台电脑继续 | 不行 | 不行 | **可以** |
 
 ## Architecture
@@ -61,46 +65,50 @@ Harness 只在自己运行的机器上干活。当工作必须发生在别处—
 ```mermaid
 flowchart LR
   subgraph client [你的电脑]
-    UI[client Web UI<br/>远程段 · 主区]
-    CHOST[client DSH host<br/>P3 native 桥 · P1 客户端 · profile 生命周期]
-    LOOP[local 模式：<br/>agent loop + 模型 + 凭据]
-    AGENTS[client 官方服务<br/>sessions / agents / credentials]
+    UI[client Web UI<br/>target rail · 全屏 iframe]
+    CHOST[client DSH host<br/>portal · P1 客户端 · profile 生命周期]
+    LOCAL[本机模型 bridge<br/>127.0.0.1 临时端口]
+    LLM[(你的 OpenAI 兼容 LLM)]
   end
   subgraph server [SSH 目标机]
-    PROF[per-client profile server<br/>dsh web 127.0.0.1:port]
-    PLUG[server 插件<br/>P1 RPC · SSE · mux · v2 timeline]
+    PROF[per-client profile server<br/>官方 DSH UI · agent]
+    PLUG[server 插件<br/>P1 RPC · SSE · mux · embed]
     OFF[官方 DSH 服务<br/>workspaceRegistry · sessionPersistence · sessionController]
     LOG[(server ~/.dsh/sessions<br/>workspace registry · 视图状态)]
   end
-  UI -->|P3 host API<br/>HTTP + SSE| CHOST
-  CHOST -->|SSH forwardOut<br/>P1 HTTP/SSE/WS| PLUG
-  CHOST -->|native 对话<br/>timeline · prompt · approval| PROF
-  LOOP -->|远端执行世界<br/>WS mux| PLUG
+  UI -->|同源 iframe| CHOST
+  CHOST -->|portal 字节代理<br/>forwardOut| PROF
+  CHOST -->|P1 HTTP/SSE/WS| PLUG
+  PROF -->|模型请求经<br/>反向隧道 + bridge| LOCAL
+  LOCAL --> LLM
   PLUG --> OFF --> LOG
   PROF --> OFF
 ```
 
-client host 负责 SSH、host key pin、runtime/插件部署、per-client profile 生命周期、P3 native 桥与
-P1 客户端；server 插件负责握手/租约、官方服务包装的 workspace/session API、registry 写守卫/刷新、
-local 模式 persist 桥、执行世界 WS mux 与 v2 timeline/event/prompt 适配。portal/embed 只保留为 v1
-回退，不再由 native server 主区挂载。逐字契约见
+client host 负责 SSH、host key pin、runtime/插件部署、per-client profile 生命周期、P1 客户端、同源
+portal 与本机模型 bridge/tunnel。server 插件负责握手/租约、包装官方服务的 workspace/session API、
+registry 写守卫、执行世界 WS mux 与 embed bootstrap/CSS。`dshRwFull=1` 让 embed 不再注入隐藏 sidebar/
+rightbar/bottom 的 CSS，因此 iframe 里就是真实的 server UI。逐字契约见
+[doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)、
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) 与
 [doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md)。
 
 ## Feature breakdown
 
-**server 模式——client 自绘对话，server 权威。** client 主区自己渲染对话，不再嵌入 profile UI。
-历史通过 `session/timeline` 读取 server 官方 JSONL；assistant/tool/approval 实时事件经 host SSE 桥
-传输；prompt、cancel、approval 发给 server 端 managed agent。visual 层尽量复用官方 DSH 组件
-（`MarkdownText`、`TerminalBlock`、`ReadBlock`、`SearchBlock`、`DiffBlock`、`CodeBlock`、`JsonBlock`、
-按钮/tooltip/StateDot）；官方 conversation shell 未导出，header/timeline/composer 薄壳由插件自写。
-server 模式不再有 iframe，也不依赖 server 官方 UI DOM。
+**官方 UI 全屏 iframe。** client main slot 只挂一个同源 iframe，加载 profile server 的官方 `dsh web`
+UI，请求带 `dshRwFull=1`。portal 剥掉 client GUI cookie、注入 profile 自己的 cookie、不转发
+`Set-Cookie`，且 token 不进入 iframe URL。iframe sandbox 固定为
+`allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`。iframe 挂载期间 client
+shell sidebar 隐藏，target rail 保留可用。
 
-**local 模式——client agent、server 执行世界。** client routing 把私有本地 anchor 映射到 server
-会话路径；执行世界是 WebSocket mux 的 `fs`/`subprocess`/`sandbox`/`terminal`。会话日志仍写入 server
-官方 JSONL 存储，client 本地不保存副本。
+**local 模型来源。** server profile 的 `cordis.patch.yml` 声明一条官方 `llm-pi-ai` OpenAI 兼容
+route（`client-local`），指向 `http://127.0.0.1:<随机>/v1`。该端口是 SSH `forwardIn` 反向隧道，终止
+在 client 的 loopback-only bridge。bridge 只转发 `/v1/*`，把请求里的 `Authorization` 注入/覆盖为
+client 官方凭据库中的 key，不落日志；profile 只看到占位 key。endpoint、模型 id 与超时是 client 设置；
+endpoint 不可达、HTTP 401、模型列表为空或 sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退
+server 模型。
 
-**server 权威的侧栏。** workspace 清单/标题/顺序/pin/archive 来自 server 官方
+**server 权威数据。** workspace 清单/标题/顺序/pin/archive 来自 server 官方
 `workspaceRegistry`；session 清单/标题/blank/running 来自 `sessionController` + 插件 JSONL title fold。
 rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤。
 
@@ -111,9 +119,9 @@ rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤
 
 **Host key 必须确认。** 首次连接展示 host key SHA-256 并等待显式确认；之后 key 变化会中止连接。
 
-**沙箱与权限。** server profile 挂官方 sandbox provider/policy；没有隔离 backend 时明确返回 partial
-enforcement 并在 server 执行，不假装已隔离。local 模式在执行世界不可用时 fail-closed，绝不回退到
-client 本地文件系统。
+**沙箱与权限。** server profile 为 iframe 里的 agent 挂官方 sandbox provider/policy；没有隔离 backend
+时明确返回 partial enforcement 并在 server 执行，不假装已隔离。v2 executor 的远端执行世界仍保留在
+代码/数据中供旧会话使用，但新主区不再进入。
 
 ## Quick start
 
@@ -138,24 +146,28 @@ dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 
 client 包内置 server 插件 tarball，因此目标机不需要网络或包管理器。然后：
 
-1. 在侧栏 **远程工作区** 点 **新建连接**。
+1. 打开浮动 **target rail**（hover 或按 `Alt+R`），点 **新建连接**。
 2. 选择 `SSH`，填目标信息，首次连接确认 host key 指纹。
-3. 查看探测结果。client 检查 server 的 Node/DSH 运行时与 server 插件，决定后续步骤是部署、更新还是跳过；
-   随后启动 profile server 并完成握手鉴权。失败的尝试不会保存。
-4. 在连接行点加号，浏览目标机目录并添加为 server 工作区。
-5. 点工作区下的空白行新建会话，或点已有行继续。连接行的执行端开关切换 server/local（默认 local）。
+3. 选择模型来源：**local**（默认；填 OpenAI 兼容 endpoint、模型与可选 key，连接前 client 会探测
+   `/v1/models`）或 **server**（使用 server profile 自己的模型配置）。
+4. 查看探测结果。client 检查 server 的 Node/DSH 运行时与 server 插件，决定后续步骤是部署、更新还是
+   跳过；随后启动 profile server，选 local 模型时打开 SSH 反向隧道，并完成握手鉴权。失败的尝试不会
+   保存。
+5. 成功后该 target 自动激活，server 官方 DSH UI 在 iframe 中全屏打开。用 server 自己的 sidebar
+   建工作区、开会话；切换 target、重载 iframe、忘记连接都在 rail 上完成。
 
-## Execution end and session ownership
+## Model source and session ownership
 
-- 连接有默认执行端；每个会话记录创建时的执行端，直到显式切换。
-- 切换当前会话会先取消它的运行中 turn；已产生内容保留，会话 id 与历史不变，下一轮使用新执行端，
-  仍写同一份 server 日志。
-- **D20：** 如果 profile 还有其它 active turn，切换对话框会列出并要求显式确认后才一起取消，绝不静默
-  打断其它会话。
-- 同一会话只能有一个写者。server 模式由官方 UI 打开/resume 并持有官方 JSONL 锁；local 模式由插件的
-  executor 记录 + 同一把锁保证。第二个实例打开同一会话会得到 `session/writer-held`。
-- 断开连接会停止 per-client profile server、关闭隧道并取消该 profile 的 turn；server 日志、工作区与
-  共享视图状态不受影响。
+- 模型来源是连接设置，不是会话内热切换：更改它要按 D20 cancel → `whenIdle`/flush 后重启 profile。
+  对话、会话 id 与日志不变。
+- local 模型来源下，profile 的 `client-local` route 经 sshd 反向隧道指向 client host 持有的 bridge。
+  断开或异常退出会关闭 bridge、隧道、profile 及其进程，不留下孤儿端口。
+- **D20：** 如果 profile 还有 active turn，重启/切换对话框会列出它们并要求显式确认后才一起取消，绝不
+  静默打断会话。
+- 同一会话只能有一个写者。iframe 里的官方 UI 打开/resume 会话并持有官方 JSONL 锁；第二个实例打开
+  同一会话会得到 `session/writer-held`。
+- 断开连接会停止 per-client profile server、关闭 portal/隧道并取消该 profile 的 turn；server 日志、
+  工作区与共享视图状态不受影响。
 
 ## Compatibility
 
@@ -191,20 +203,21 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
 
 | 位置 | 内容 |
 | --- | --- |
-| client `~/.dsh/storages/dsh_remote_workspace.json` | 连接记录、包策略、旧 workspace refs（会清理） |
-| client `~/.dsh/.credentials.yaml` | SSH 凭据（官方存储，`0600`） |
-| client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式会话的私有 anchor（非权威） |
+| client `~/.dsh/storages/dsh_remote_workspace.json` | 连接记录（含模型来源）、本机模型 endpoint/模型/超时、包策略、旧 workspace refs（会清理） |
+| client `~/.dsh/.credentials.yaml` | SSH 凭据与本机模型 API key（官方存储，`0600`） |
+| client `~/.dsh/remote-workspaces/<clientId>/…` | v2 local 会话的私有 anchor（保留，非权威，不再展示） |
 | client `~/.dsh/remote-assets/` | 本机 runtime/包缓存 |
-| server `~/.dsh/sessions/**` | 权威会话日志（两种模式共用） |
+| server `~/.dsh/sessions/**` | 权威会话日志（两种模型来源共用） |
 | server `~/.dsh/storages/workspace.json` | 权威 workspace registry、pin/archive/顺序 |
 | server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile、server 插件、lease、日志 |
 | server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 Node/DSH runtime |
 | server `~/.dsh/remote-server-sessions/**`（旧） | 保留、不展示、不迁移 |
 
-模型 API key 与 SSH 凭据不会跨端：server 模式用 server 模型凭据，local 模式用 client 的；SSH 凭据只
-在 client。profile server 的启动 token 与官方 cookie 只在 client host 内存，浏览器永远拿不到。每个插件
-HTTP 路由都做同源/可信主机校验并限制 body 大小；错误、日志与流式明细经过脱敏。凭据文件本身由 DSH
-凭据存储写入。
+本机模型 API key 不会到 server 或浏览器：它只存 client 官方凭据库，只由 loopback bridge 读取并注入
+转发的请求；server profile 只看到占位 `DSH_RW_LOCAL_LLM_KEY`。SSH 凭据也只在 client。profile server
+的启动 token 与官方 cookie 只在 client host 内存，浏览器永远拿不到；portal 剥掉 client cookie，且不
+转发 `Set-Cookie`。每个插件 HTTP 路由都做同源/可信主机校验并限制 body 大小；错误、日志与流式明细经过
+脱敏。凭据文件本身由 DSH 凭据存储写入。
 
 ## Known limitations
 
@@ -214,17 +227,21 @@ HTTP 路由都做同源/可信主机校验并限制 body 大小；错误、日�
 - **v1 全局 runtime 只复用、不修改。** client 会检测并只读复用已验证的全局 DSH；安装/升级共享全局
   runtime 或其它 profile 的插件会被拒绝并给出可操作错误；只有专用 per-client profile 与独立 runtime
   会自动安装。
-- **local 模式仍在收尾。** 切换、打开会话与 server 日志桥已可用；远端执行世界（经 mux 的
-  fs/process/terminal）是剩余工作。能力不可用时显示官方错误，绝不回退到 client 本地文件系统。
 - **不删除会话。** 官方 DSH 没有该能力，本插件也不新增。
-- **local 模式是默认执行端。** 新连接默认使用 client agent（新 server 通常没配模型 key）；配置 server
-  凭据后再显式切到 server 模式。
-- **native server 主区，不再用 iframe。** server 模式对话由 client 自绘 timeline 渲染；历史读 server
-  JSONL，实时事件用 `afterSeq` 重连。portal/iframe 仅保留为 v1 回退，不再挂载。v2.0 不支持附件和
-  server 模型选择器；composer 会明确禁用附件。
+- **local 模型来源是默认。** 新连接默认走 client bridge（新 server 通常没配模型 key）；配置 server
+  凭据后再显式选 server 模型来源。更改来源需要重连。
+- **v2 executor（远端执行世界）不再被主区使用。** iframe 始终驱动 server agent。记录过 v2 `local`
+  executor 的旧会话留在数据里，但新 UI 不再进入；详见
+  [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)。
+- **每个 client 只挂一个 iframe。** 打开第二个远程 target 会替换 frame（前一个 target 断开或在 rail
+  中保持非激活）。没有两个 server 的分屏。
+- **本机模型 bridge 只支持 HTTP（`/v1/*`）。** 本机 endpoint 的 TLS 尚未实现；endpoint 需在 client
+  本机以明文 HTTP 可达。
+- **sshd 必须允许反向转发。** 若 `AllowTcpForwarding`/`GatewayPorts` 策略拒绝 `forwardIn`，连接会以
+  可操作错误失败，绝不静默改用 server 模型。
 - **重启 profile 会取消它的所有 turn。** 普通刷新只重读数据；加载 workspace registry 变更用进程内官方
   service reload；完整重启 profile 是 fallback，且必须经过 D20 确认。
-- **远程段是 client 插件 UI。** 需要 client 的 `web` profile；desktop/headless profile 不是本界面支持的 target。
+- **target rail 是 client 插件 UI。** 需要 client 的 `web` profile；desktop/headless profile 不是本界面支持的 target。
 - **server 世界是 POSIX。** SSH 目标需提供 POSIX shell；v1 已退役 WSL/Docker 连接方式（Docker 只用于 QA）。
 
 ## Troubleshooting
@@ -232,23 +249,24 @@ HTTP 路由都做同源/可信主机校验并限制 body 大小；错误、日�
 | 症状 | 检查 |
 | --- | --- |
 | `incompatible-version` | 本机装 DSH `0.2.1-rc.3`，或对该精确版本做豁免（见 Compatibility）。 |
-| 没有「远程工作区」区域 | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。 |
+| 没有 target rail | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。hover rail 或按 `Alt+R` 展开。 |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | client 包内置的 server 插件 tarball 丢失/版本不匹配；重装 client 插件后重连。 |
 | `server-plugin-integrity-failed` | 内置/下载的 server 插件 sha256 校验失败；重装 client 包。 |
 | `profile-in-use` / `profile-foreign-client` | 另一个 client 实例在驱动该 profile，或 clientId 被复制。用持有实例重试，或删除本机连接记录后重连。 |
 | `registry-stale` | 另一个进程改了 server workspace registry。点远程段刷新；仍失败则按 D20 确认后重连（重启 profile）。 |
 | `session/writer-held` | 该会话已被另一个实例驱动。等它结束，或刷新/重连；日志不会被写坏。 |
 | `runtime-global-unsupported` / `plugin-profile-not-managed` | v1 不修改共享全局 runtime/其它 profile；使用专用 profile/独立 runtime。 |
+| `local-llm-*`（如 `local-llm-unreachable`、`local-llm-tunnel-failed`、`local-llm-models-empty`） | 检查 client 本机 endpoint、key，或 server sshd 的反向转发策略；修好后重试，或改选 server 模型来源。 |
 | `mode-switch/cancel-failed` / `shutdown-flush-timeout` | 重启前有 turn 取消失败/未完成落盘；UI 会列出，等它们收尾后重试。 |
 | SSH 在部署前失败 | 检查账号、密钥权限、agent 与指纹；`ssh -v <host>` 是好用的下一步。 |
 | 命令提示没有可用的沙箱 backend | 目标机没有隔离 backend；这是文档化的 partial enforcement 路径。 |
 
 ## Development
 
-[AGENTS.md](AGENTS.md) 是开发契约（v1 边界、逐字节共享文件、存储与安全不变量、发布流程）。架构与协议：
-[doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md)、
-[doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md)，UI 复用矩阵见
-[doc/official-workspace-reuse.md](doc/official-workspace-reuse.md)。server 半边在
+[AGENTS.md](AGENTS.md) 是开发契约（v3 边界、逐字节共享文件、存储与安全不变量、发布流程）。当前主区与
+模型来源契约见 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)；协议仍见
+[doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) 与
+[doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md)。server 半边在
 [dsh-remote-workspace-server](https://github.com/graydovee/dsh-remote-workspace-server)。
 
 ## License

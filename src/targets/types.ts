@@ -106,6 +106,15 @@ export interface RemoteTargetRecord {
   readonly clientId?: string
   /** This connection's executor setting (`local` default: fresh servers usually lack model keys). */
   readonly executor?: 'server' | 'local'
+  /**
+   * Where the agent's model requests are served.
+   *
+   * `server` uses the profile server's own model configuration; `local` forwards
+   * them through an SSH reverse tunnel to this client's OpenAI-compatible
+   * endpoint. Absent reads as `server` for a new/explicit connection and as the
+   * executor-derived default for display (see {@link effectiveModelSource}).
+   */
+  readonly modelSource?: 'local' | 'server'
   /** v1: the per-client profile this target's server runs (`graydovee-remote-workspace-<clientId>`). */
   readonly profileName?: string
   /** v1: last profile server port (hint only; the process prints the real one). */
@@ -275,12 +284,53 @@ const runtimeSchema = z.object({
 // so every stored record still validates and the domain stays at version 1.
 export const packageSourceSchema = z.enum(['auto', 'download', 'upload', 'reuse'])
 
+/**
+ * The client-host OpenAI-compatible endpoint used as a server agent's model
+ * source (the "local model" feature).
+ *
+ * Only non-secret facts live here: the base URL, the model ids and the timeout.
+ * The API key itself lives in `ctx.credentials` under a fixed key; `apiKeyRef`
+ * is only its non-secret address (and presence hint) for diagnostics.
+ */
+export interface LocalLlmSettings {
+  /** Base URL of the endpoint (`http`/`https`, no embedded credentials). */
+  readonly baseUrl: string
+  /** Advertised model ids in preference order; empty means "probe on connect". */
+  readonly models: readonly string[]
+  /** Upstream request/probe timeout in milliseconds. */
+  readonly timeoutMs: number
+  /** Non-secret credential address (`remote-workspace/<id>`); never a secret. */
+  readonly apiKeyRef?: string
+}
+
+/** Validate one local-model settings object; URL scheme + no embedded credentials. */
+export const localLlmSettingsSchema = z.object({
+  baseUrl: z.string().min(1).max(2048).refine((value) => {
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      return false
+    }
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+      && parsed.username === ''
+      && parsed.password === ''
+      && parsed.hash === ''
+      && parsed.search === ''
+  }, 'must be an http(s) URL without credentials, query or fragment'),
+  models: z.array(z.string().min(1).max(256)).max(256),
+  timeoutMs: z.number().int().min(1_000).max(3_600_000),
+  apiKeyRef: z.string().min(1).max(256).optional(),
+}).strict()
+
 /** The domain global slot's schema (global default policy + release mirror). */
 export const packagePolicySettingsSchema = z.object({
   policy: z.enum(['auto', 'download', 'upload', 'ask']),
   mirror: z.string(),
   /** v1 client identity; additive optional until first ensureClientId(). */
   clientId: z.string().regex(/^[a-z0-9]{12}$/u).optional(),
+  /** Additive optional local-model endpoint settings (domain stays at version 1). */
+  localLlm: localLlmSettingsSchema.optional(),
 }).strict()
 
 /** Stored target record; unknown fields from a newer version are dropped loudly. */
@@ -327,6 +377,8 @@ export const targetRecordSchema = z.object({
   // unchanged, so the storage domain stays at version 1.
   clientId: z.string().regex(/^[a-z0-9]{12}$/u).optional(),
   executor: z.enum(['server', 'local']).optional(),
+  /** Additive optional local-model source (storage domain stays at version 1). */
+  modelSource: z.enum(['local', 'server']).optional(),
   profileName: z.string().regex(/^graydovee-remote-workspace-[a-z0-9]{12}$/u).optional(),
   profilePort: z.number().int().min(1).max(65_535).optional(),
   runtimeKind: z.enum(['isolated', 'global']).optional(),
@@ -418,6 +470,8 @@ export interface PublicTarget {
   /** v1 additive state (all optional; see `RemoteTargetRecord`). */
   readonly clientId?: string
   readonly executor?: 'server' | 'local'
+  /** Explicit model source; absent means "derive from the executor for display". */
+  readonly modelSource?: 'local' | 'server'
   readonly profileName?: string
   readonly profilePort?: number
   readonly runtimeKind?: 'isolated' | 'global'
@@ -445,6 +499,30 @@ export interface PackagePolicySettings {
    * validates and is upgraded in place on the first `ensureClientId()`.
    */
   readonly clientId?: string
+  /**
+   * The client-local model endpoint settings (additive optional).
+   *
+   * Kept in the same global slot as the package policy so the storage domain
+   * stays at version 1; every writer must preserve the other fields.
+   */
+  readonly localLlm?: LocalLlmSettings
+}
+
+/**
+ * The target's effective model source.
+ *
+ * An explicit `modelSource` always wins. Otherwise a server-executor target
+ * keeps its model on the server; every other target's models are the client's
+ * own (local mode runs the agent locally, so its models are local by
+ * definition). This is what the UI reports; the connect flow only forwards
+ * models when `modelSource === 'local'` is explicit or persisted.
+ * @param record - the stored target fields that decide the source.
+ */
+export function effectiveModelSource(record: {
+  readonly modelSource?: 'local' | 'server'
+  readonly executor?: 'server' | 'local'
+}): 'local' | 'server' {
+  return record.modelSource ?? (record.executor === 'server' ? 'server' : 'local')
 }
 
 /** Strip everything the browser must not see from a stored target. */
@@ -468,6 +546,7 @@ export function toPublicTarget(record: RemoteTargetRecord): PublicTarget {
     ...(record.serverPackage === undefined ? {} : { serverPackage: record.serverPackage }),
     ...(record.clientId === undefined ? {} : { clientId: record.clientId }),
     ...(record.executor === undefined ? {} : { executor: record.executor }),
+    ...(record.modelSource === undefined ? {} : { modelSource: record.modelSource }),
     ...(record.profileName === undefined ? {} : { profileName: record.profileName }),
     ...(record.profilePort === undefined ? {} : { profilePort: record.profilePort }),
     ...(record.runtimeKind === undefined ? {} : { runtimeKind: record.runtimeKind }),

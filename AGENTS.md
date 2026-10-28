@@ -1,12 +1,14 @@
-# AGENTS.md — dsh-remote-workspace（v2）
+# AGENTS.md — dsh-remote-workspace（v3）
 
 本文件是维护者与代码 agent 的开发契约；用户文档见 README。v1 基线（profile/双模式/协议）以
 `doc/refactor-v1-requirements.md`、`doc/refactor-v1-architecture.md`、`doc/refactor-v1-protocol.md` 为准；
-v2 的 server 主区改为 client native 对话（`session-main.tsx`），不再挂载 iframe。文档与代码冲突时，
+v3 的 server 主区是 **server profile 官方 DSH UI 的全屏同源 iframe**（client 不再自绘对话），模型来源
+有 **local（client 本机模型，默认）** 与 **server（server 自身模型）** 两种，契约见
+`doc/refactor-v3-full-ui.md`。v2 的 native 主区代码暂留但不再注册/挂载，验收后删除。文档与代码冲突时，
 先以可复现实现修正，不得静默改需求。旧文件 `doc/architecture.md`、`doc/api-contract.md`、
 `doc/acceptance-gap.md` 中的 stdio/WSL 段落只是历史背景，不再作为实现契约。
 
-## 项目边界（v2）
+## 项目边界（v3）
 
 - **server 是一台能独立工作的普通 DSH；client 是它的远程入口。**
 - 本仓库是 **client 半边**：`dsh-remote-workspace` 插件（host 行 + browser client + local 模式执行世界）。
@@ -14,9 +16,14 @@ v2 的 server 主区改为 client native 对话（`session-main.tsx`），不再
   `graydovee-remote-workspace-<clientId>`，其中安装 server 插件 `dsh-remote-workspace-server`
   （独立仓库发布；client 包内置精确同版本的 tarball）。
 - client 通过**一条 SSH 连接**访问 server；profile server 只绑 `127.0.0.1`，不监听公网端口。
-- 执行端：server 模式（agent/模型/日志在 server，client 自绘 native 对话主区）与 local 模式
-  （agent/模型在本机，文件/进程/沙箱/日志在 server）二选一，按会话记录；两种模式共享 server 会话日志
-  与 workspace。
+- 主区：client 的 main slot 只挂载一个同源 iframe（`/dsh-remote-workspace/portal/<targetId>/?dshRwFull=1`），
+  显示 server profile 的完整官方 DSH UI；client shell sidebar 在 iframe 挂载期间隐藏，浮动 target rail
+  是唯一的 client chrome。官方 UI 的 sidebar/header/主区/rightbar/插件 UI 全部由 server 提供。
+- 模型来源（连接设置，非会话内热切换）：`local`（默认，agent/日志/工具仍在 server，模型请求经
+  SSH 反向隧道转发到 client 本机 endpoint）与 `server`（server profile 自己的模型）。切换需重连
+  （D20：cancel → whenIdle/flush → 重启 profile）；local 未配置时阻止连接，不静默回退。
+- v2 的 executor（local agent 执行世界）保留在数据/旧会话中，但 iframe 主区始终由 server 官方 UI 打开
+  server agent；新连接不再走 client native 主区。
 - 目标机运行 `dsh --profile <p> --host 127.0.0.1 --port 0 --no-open`，stdout 打印
   `dsh web: http://127.0.0.1:<port>/?token=<token>`；client 经 SSH `forwardOut` 访问它。
 - 公开仓库不得写入真实主机、用户名、内网地址、本机绝对路径、密码、token 或私人部署信息。示例使用
@@ -71,9 +78,10 @@ tsdown targets：
 2. **client**：浏览器 CJS 工厂，经 `window.__ModuleLoader__.load` 注册；只 external 平台模块；Node
    内置模块/非 inline-safe 跨插件值导入触发纯度门禁；跨插件协作走 Cordis service。
 
-主要目录（v2）：
+主要目录（v3）：
 
     src/index.ts                 插件 host 行：HTTP/SSE 路由、portal、v1/P1 接线
+    src/local-llm/              本机模型：设置/凭据、/v1 代理 bridge、SSH 反向隧道、profile patch
     src/portal/                  同源反向代理（HTTP prefix + WS exact、Host/Origin/cookie 规则）
     src/remote/                  P1 插件客户端：tunnel HTTP、handshake、mux WS、帧适配
     src/ssh/                     ssh2 连接、host key、forwardOut
@@ -84,7 +92,8 @@ tsdown targets：
     src/rsession/                remote persist 门面
     src/preset/world.ts          local 模式执行世界 preset
     src/connection/              执行世界：ctx.ssh → RemoteMux 适配
-    src/client/                  v2 远程段 UI（树/对话框/native 对话主区/执行端）、官方组件与行 vendor
+    src/client/                 v3 远程段 UI：浮动 target rail、连接对话框、portal iframe 主区；
+                                v2 native 主区/官方 vendor 暂留但不再注册
     assets/server-plugin/        内置 server 插件 tarball + checksums.json
 
 依赖方向：`targets → ssh/provision → service → session/connection → client`。client 只能依赖平台模块和
@@ -121,18 +130,24 @@ tsdown targets：
 
 **执行端与占用**
 
-- 默认执行端 **`local`**（新连接；server 通常没配模型 key），连接设置存 client；已有会话保留 server 端
-  `executor` 记录（跨 client 共享）。只有显式切换/server 已配置凭据时才用 server 模式。
+- 新连接默认 **modelSource=local**（server 通常没配模型 key）；连接设置存 client，target 记录用可选
+  `modelSource` 持久化。server 模式必须在对话框显式选择。
+- local 模型生命周期：连接前校验（endpoint 可达、`/v1/models` 非空）→ 启动 client bridge → 
+  `ssh2.forwardIn('127.0.0.1', 0)` 取得 server 回环端口 → 重写 profile `cordis.patch.yml`（route
+  `client-local`，`apiKeyEnv=DSH_RW_LOCAL_LLM_KEY` 占位）→ 启动 profile。失败必须 coded error，禁止
+  fallback 到 server 模型；`stop()`/`reconnectLost()`/连接失败关闭 bridge+tunnel，禁止孤儿端口。
+- 本机 key 只进官方 `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`；bridge 注入/覆盖
+  Authorization，日志/错误/SSE 不得出现 key。
 - 切换按 D20：preview 必须列当前 turn + 其它 active turn；apply 必须带 `previewRevision` 与
   `cancelActiveTurns:true`；缺清单拒绝执行；任何取消失败显式报错。
-- server 模式主区是 **native 对话面板**（`session-main.tsx`）：timeline/SSE/prompt/cancel/approval 走 P1，
-  不使用 iframe 或 server UI DOM。header、composer、message/thread、reasoning、message actions、pending
-  approval 必须使用 `assets/official-ui/` 中 **同版本官方 rc.3 bundle** 的真实 React 组件；适配层只提供
-  remote 数据与 locale/hook 桥，不得再手写这些组件的视觉近似实现。官方 bundle 通过 host 路由
-  `/dsh-remote-workspace/official-ui-*.js` 原样提供，wrapper 导出的符号由
-  `tests/official-ui-assets.test.ts` 守护。打开会话前仍必须 `session/prepare-server`（managed handle），
-  官方 UI 若被直接打开则复用 live agent，不二次 resume；unmanaged 切换只允许重启 profile（D20 确认 +
-  cancel/whenIdle/flush）。
+- 主区是 **官方 UI 全屏 iframe**（`portal-main.tsx`，`SERVER_MAIN_ID`）：连接成功/rail 激活 → 
+  `openServerMain`；断开/忘记/连接离开 ready → `closePortalFor`。iframe key 必须含
+  `targetId:revision:reloadCount`，重连/切换 target 必须重挂载，不能复用上一个 profile 的缓存文档。
+  20 s 未收到 `dsh-rw/ready` 显示可重试错误；token 不得出现在 iframe URL。
+- iframe sandbox 固定 `allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`；
+  不开放 top-navigation。portal 仍是纯字节代理，剥 client cookie、注入 server cookie、剥 `Set-Cookie`。
+- `dshRwFull=1` 让 server embed 不隐藏官方 sidebar/rightbar/bottom；client 侧在 iframe 挂载期间用
+  `html[data-dsh-rw-portal]` 隐藏 shell 自己的 sidebar 并收窄 root grid。
 - 开发说明（不是模型 prompt）：local 模式只注入 remote working-directory + execution host；SSH/mux/
   sandbox/anchor 生命周期属于 DSH/插件实现，不进入模型上下文。SSH 意外关闭自动重连最多 5 次（指数
   退避）；认证/host-key 错误不重试，用户主动 stop 不触发。
@@ -168,45 +183,37 @@ tsdown targets：
 - 版本号由仓库发布版本决定（当前 `0.1.0-alpha.3`）；内置 server 插件 tarball 版本必须与它精确一致。
   本机调试可用修订后缀，但部署后 `git checkout -- package.json`，修订号永不提交/发布。
 
-**1:1 官方 UI 复刻（硬约束）**
+**官方 UI（iframe，硬约束）**
 
-- server 模式主区是官方会话界面的 **1:1 复刻**：布局、边距、宽度、字号/行高、颜色、图标、文案、展开态和
-  交互行为必须与同版本官方 UI 一致；“看起来差不多”不算完成。
-- 一律使用 `assets/official-ui/` 中 **`0.2.1-rc.3` 官方 bundle 的真实 React 组件**；
-  **禁止只 vendor CSS**，禁止照官方 DOM 手写视觉近似组件，禁止用自定义样式覆盖官方视觉。
-- 适配层只允许做 remote 数据 → 官方 props、locale、disclosure/hook、loading/error 边界；
-  不得重画官方组件内部结构或另造交互。
-- 新增/升级官方组件必须：从精确 tag 取源、用脚本生成 patched bundle、保留 provenance/NOTICE、
-  host 原样服务、wrapper 导出受测试守护、重装后让插件批量 URL 的 rev 变化。当前入口：
-  `scripts/vendor-official-ui.mjs`（conversation/composer）、`scripts/vendor-workspace-rows.mjs`；
-  `assets/official-ui/{conversation,chat,model,approval}-client.js`。
-- 官方 bundle 只导出 `apply`/`inject` 时，只 patch **最小导出集合**，不改官方行为；导出变化必须同步测试。
-- 官方 locale 是文案唯一来源；不得自行翻译权限、模型、操作等官方标签。
-- 无法独立 mount 的 frame 级组件（如 `RightbarSeat`/右侧栏）**禁止用近似 DOM 假装修复**；
-  要么补齐官方 session binding/controller，要么如实缺席并在验收中记录。
-- 每次 UI 改动必须做同 viewport 的官方/remote 截图对比，核对 x/宽度/间距/文案/展开态；
-  组件导出和关键 DOM 用测试守护。UI 验收边界以 `doc/official-workspace-reuse.md` §13 为准。
+- server 主区必须显示 **完整、未改写的官方 DSH UI**：sidebar、header、主区、rightbar、插件 UI 都由
+  server profile 提供，client 不得叠加自绘标题栏/会话树/常驻侧栏。
+- client 唯一 chrome 是浮动 target rail 与连接对话框；rail 默认折叠、hover 或 `Alt+R` 展开，只列
+  target/连接状态/切换动作，不复制官方 workspace/session 树。
+- `dshRwFull=1` 只控制 server 插件不注入隐藏 CSS；不得在 client 侧用自定义 CSS 覆盖官方视觉。
+- 官方 iframe 的滚动、下载、弹窗、剪贴板必须在 sandbox 内可用；新增权限需在本文与
+  `doc/refactor-v3-full-ui.md` 同步说明。
+- v2 的 `assets/official-ui/`、vendored 行组件与 native 主区在验收后删除；删除前不得再向其中添加
+  生产路径引用。
 
 **UI 复用**
 
 - 官方行是 vendor 组件（`ProjectRowItem`/`SessionNodeItem`）：不得重写行样式/加缩进；改动前重跑
   `scripts/vendor-workspace-rows.mjs` 并保留 NOTICE 来源；复用边界/自实现清单见
   `doc/official-workspace-reuse.md`（v2 以 §13 为准；§12 为 v1 历史）。
-- 对话框/toast 挂在 RemoteTree 的树上；同一类浮层用 `useSingleHost`。
+- 对话框/toast 挂在浮动 target rail 的树上；同一类浮层用 `useSingleHost`。
 - 隐藏 shell 官方行选择器必须带 `[data-slot="sidebar.workspaces"]` 前缀，只改 `display`。
-- 连接行 workspaceId 必须是 `conn:<targetId>`；行菜单固定 rename/delete.workspace 两个 key。
-- 远程段不写 client 共享 `workspace.json`/`sessions`；local 模式日志只写 server。
-- embed/portal 是 **v1 回退历史**，native server 主区不再挂载；仅保留代码/协议，不要新增功能。
-  embed 只通过 server 插件 `tapIndex` 注入 bootstrap/CSS；portal 保持纯字节代理，不解析 HTML。
-  storage shim 前缀只影响 iframe realm；深链/切换遵守 protocol §9/§16.2。
+- 远程段不写 client 共享 `workspace.json`/`sessions`；会话日志只写 server。
+- embed/portal 是 **v3 主路径**：server 插件 `tapIndex` 注入 bootstrap/CSS，portal 保持纯字节代理、
+  不解析 HTML；`full=1`/`dshRwFull=1` 只关掉隐藏 CSS，不改官方行为。storage shim 前缀只影响 iframe
+  realm；深链/切换遵守 protocol §9/§16.2。
 - 重新安装后必须让插件批量 URL 的 rev 变化，否则浏览器缓存旧代码。
 
 ## 数据位置与清理
 
 | 位置 | 内容 |
 |---|---|
-| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录、旧 workspace refs（待清理）、全局包策略 |
-| client `~/.dsh/.credentials.yaml` | SSH/凭据引用（官方 store，0600） |
+| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录（含 `modelSource`）、`localLlm` endpoint/模型、全局包策略、旧 workspace refs（待清理） |
+| client `~/.dsh/.credentials.yaml` | SSH/凭据引用与本地模型 API key（官方 store，0600） |
 | client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
 | client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
 | server `~/.dsh/sessions/**` | 官方会话日志（两种模式共用；权威） |

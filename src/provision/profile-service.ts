@@ -24,8 +24,17 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { execRemote, connectSsh, openSftp, uploadRemoteFile, type SshAuth } from '../ssh/connect.ts'
 import { HostKeyUnknownError, lookupKnownHost } from '../ssh/hostkey.ts'
 import { shellQuote } from './profile.ts'
+import {
+  buildLocalModelPatch,
+  EMPTY_PROFILE_PATCH,
+  LOCAL_LLM_API_KEY_ENV,
+  LOCAL_LLM_BRIDGE_API_KEY,
+} from '../local-llm/profile.ts'
+import { LocalLlmError, planLocalLlm, type LocalLlmPlan } from '../local-llm/settings.ts'
+import { LocalLlmService, type LocalLlmPrepared } from '../local-llm/service.ts'
+import { createRemoteForward, type RemoteForward, type RemoteForwardOptions } from '../local-llm/tunnel.ts'
 import { SshForwarder, sendForwardedHttp, type ForwardStream } from '../ssh/forward.ts'
-import { scrubSecrets, type PublicTarget, type RemoteTargetRecord } from '../targets/types.ts'
+import { effectiveModelSource, scrubSecrets, type PublicTarget, type RemoteTargetRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
 import { generateInstanceId } from '../targets/client-id.ts'
 import { isCompatibleDsh, DSH_VERIFIED_RUNTIMES } from './version-range.ts'
@@ -61,6 +70,7 @@ import {
   profilePaths,
   startProfileServer,
   stopProfileServer,
+  writeProfilePatch,
   waitForProfileStopped,
   type ProfilePaths,
   type ProfileRemote,
@@ -96,6 +106,12 @@ export interface ConnectProfileRequest {
   readonly dshHome?: string
   /** `isolated` refuses the host's shared global dsh and installs a per-client runtime. */
   readonly runtimePolicy?: 'auto' | 'isolated'
+  /**
+   * Where the server profile's model calls are served from: the client host's
+   * OpenAI-compatible endpoint (`local`, through bridge + reverse tunnel) or
+   * the server's own configured model (`server`). Persisted on the target.
+   */
+  readonly modelSource?: 'local' | 'server'
 }
 
 /** One visible phase of a connect attempt (the wizard's progress rows). */
@@ -121,6 +137,12 @@ export interface ProfileConnection {
   close(): Promise<void>
   /** Called when the underlying SSH connection closes unexpectedly. */
   onClose?(listener: () => void): () => void
+  /**
+   * Open a reverse tunnel: sshd binds `listenHost` on the server loopback and
+   * pipes every accepted channel to `targetPort` on the client host. The local
+   * model bridge is the only consumer.
+   */
+  remoteForward?(options: RemoteForwardOptions): Promise<RemoteForward>
 }
 
 /** Injectable SSH connector (production ssh2; tests use a fake). */
@@ -231,6 +253,12 @@ interface LiveProfile {
   readonly portal: PortalProxy
   readonly disposeUpgrade: () => void
   readonly startedAt: string
+  /** Model source this profile was started with (persisted on the target). */
+  readonly modelSource: 'local' | 'server'
+  /** Environment the profile was started with (bridge key placeholder in local mode). */
+  readonly startEnv?: Readonly<Record<string, string>>
+  /** The live bridge + tunnel pair (`local` mode only). */
+  readonly localModel?: LocalLlmPrepared
 }
 
 /** Default SSH connector: ssh2 + SFTP uploads, one connection per target. */
@@ -281,6 +309,7 @@ export function createSshProfileConnector(): ProfileConnector {
       return {
         remote,
         forwarder: new SshForwarder(client),
+        remoteForward: createRemoteForward(client),
         fingerprint: known ?? '',
         close: async () => {
           closing = true
@@ -317,8 +346,12 @@ export class ProfileService {
   private readonly instanceId = generateInstanceId()
   /** Serializes connects: one profile server may be started at a time. */
   private connectChain: Promise<unknown> = Promise.resolve()
+  /** Client-local model bridges + reverse tunnels, one pair per live target. */
+  private readonly localLlm: LocalLlmService
 
-  constructor(private readonly options: ProfileServiceOptions) {}
+  constructor(private readonly options: ProfileServiceOptions) {
+    this.localLlm = new LocalLlmService(options.store)
+  }
 
   /** The installation's stable clientId (also used by the old state route). */
   async clientId(): Promise<string> {
@@ -517,6 +550,12 @@ export class ProfileService {
     // persisted record and the portal URL all name the same connection.
     const existing = this.options.store.listTargets().find(target => target.label.toLowerCase() === request.label.toLowerCase())
     const targetId = existing?.id ?? `rt-${randomUUID().slice(0, 8)}`
+    // Explicit request, then the persisted choice (including the v2 executor
+    // fallback so a pre-v3 server-executor record reconnects to server models),
+    // then the v3 default (`local`): server models must be chosen explicitly.
+    const modelSource = request.modelSource ?? (existing === undefined ? 'local' : effectiveModelSource(existing))
+    let localModelPlan: LocalLlmPlan | undefined
+    let localModel: LocalLlmPrepared | undefined
     let activeStep: ConnectProgressStep = 'connect'
     const emit = (step: ConnectProgressStep, status: ConnectProgressEvent['status'], message: string): void => {
       try { onProgress?.({ step, status, message, at: new Date().toISOString() }) } catch {}
@@ -539,6 +578,10 @@ export class ProfileService {
       ...(request.secret !== undefined || storedSecret === undefined ? {} : { secret: storedSecret }),
     }
     try {
+      // Validate the endpoint (and probe its catalog when no models are stored)
+      // before touching the server: a misconfigured local source must be a
+      // coded, actionable error, never a silent fallback to server models.
+      if (modelSource === 'local') localModelPlan = await planLocalLlm(this.options.store)
       begin('connect', `正在建立 SSH 连接 ${effectiveRequest.username}@${effectiveRequest.host}:${effectiveRequest.port}…`)
       connection = await this.options.connector.connect(effectiveRequest)
       emit('connect', 'ok', `SSH 已连接 ${effectiveRequest.username}@${effectiveRequest.host}`)
@@ -594,11 +637,35 @@ export class ProfileService {
       } else {
         emit('upload', 'skipped', setup.plugin.detail)
       }
+      // Rewrite the profile layer patch on **every** connect: installation resets
+      // `cordis.patch.yml` to `[]`, the reverse tunnel port is random, and a
+      // profile that booted with the previous connect's port would call a dead
+      // bridge. `server` source writes `[]` so a switch back is a clean start.
+      let startEnv: Readonly<Record<string, string>> | undefined
+      if (modelSource === 'local') {
+        if (localModelPlan === undefined) {
+          throw new LocalLlmError('local-llm-unconfigured', 'the local model source is selected but no endpoint plan was loaded')
+        }
+        localModel = await this.localLlm.prepare(targetId, connection, localModelPlan)
+        if (localModel === undefined) {
+          throw new LocalLlmError('local-llm-unconfigured', 'the local model source is selected but its bridge was not started')
+        }
+        await writeProfilePatch(
+          connection.remote,
+          paths,
+          buildLocalModelPatch({ remotePort: localModel.remotePort, models: localModel.models }),
+        )
+        startEnv = { [LOCAL_LLM_API_KEY_ENV]: LOCAL_LLM_BRIDGE_API_KEY }
+        emit('start', 'running', `本地模型已就绪（${localModel.models.length} 个模型，反向隧道端口 ${localModel.remotePort}）`)
+      } else {
+        await writeProfilePatch(connection.remote, paths, EMPTY_PROFILE_PATCH)
+      }
       begin('start', `正在启动 profile ${paths.profile}…`)
       handle = await startProfileServer(connection.remote, paths, {
         launcher: runtime.launcher,
         pathPrefixes: runtime.pathPrefixes,
         timeoutMs: PROFILE_STARTUP_TIMEOUT_MS,
+        ...(startEnv === undefined ? {} : { env: startEnv }),
         probe: async startup => await this.probeRoot(connection as ProfileConnection, startup.port, startup.token),
       })
       const cookie = await this.exchangeToken(connection, handle.port, handle.token)
@@ -632,6 +699,7 @@ export class ProfileService {
         runtimeKind: runtime.kind,
         serverDshVersion: runtime.dshVersion,
         dshHome,
+        modelSource,
       })
       await this.registerTargetPreset(target)
       const live: LiveProfile = {
@@ -651,6 +719,9 @@ export class ProfileService {
         portal,
         disposeUpgrade,
         startedAt,
+        modelSource,
+        ...(startEnv === undefined ? {} : { startEnv }),
+        ...(localModel === undefined ? {} : { localModel }),
       }
       this.live.set(targetId, live)
       this.failures.delete(targetId)
@@ -666,6 +737,7 @@ export class ProfileService {
       // No phantom failure row: a connect that never succeeded has no target id
       // in the store, and `/api/state` must not surface a connection the user
       // cannot act on. The error itself goes back through the route envelope.
+      await this.localLlm.teardown(targetId).catch(() => undefined)
       await transport?.dispose()
       if (handle !== undefined && connection !== undefined) {
         await stopProfileServer(connection.remote, handle.paths).catch(() => false)
@@ -692,6 +764,9 @@ export class ProfileService {
     if (this.reconnecting.has(targetId)) return
     const record = this.options.store.target(targetId)
     if (record === undefined) return
+    // The SSH transport is gone: its reverse tunnel died with it, and the bridge
+    // must not keep an orphaned listener while five reconnect attempts run.
+    await this.localLlm.teardown(targetId).catch(() => undefined)
     this.reconnecting.add(targetId)
     try {
       for (let attempt = 1; attempt <= 5; attempt += 1) {
@@ -743,6 +818,7 @@ export class ProfileService {
     await live.plugin.cancelAll().catch(() => undefined)
     await stopProfileServer(live.connection.remote, live.paths).catch(() => false)
     await waitForProfileStopped(live.connection.remote, live.paths).catch(() => false)
+    await this.localLlm.teardown(targetId)
     await live.connection.close().catch(() => undefined)
     this.options.onPortalClosed?.(targetId)
     await this.options.store.updateTarget(targetId, current => ({ ...current, status: 'stopped' })).catch(() => undefined)
@@ -758,6 +834,7 @@ export class ProfileService {
     }
     for (const targetId of [...this.muxes.keys()]) await this.closeMux(targetId)
     for (const targetId of [...this.presetDisposers.keys()]) await this.disposeTargetPreset(targetId)
+    await this.localLlm.close().catch(() => undefined)
   }
 
   /** P1 read: workspace list. */
@@ -1391,6 +1468,7 @@ export class ProfileService {
     const handle = await startProfileServer(live.connection.remote, live.paths, {
       launcher: live.launcher,
       pathPrefixes: live.pathPrefixes,
+      ...(live.startEnv === undefined ? {} : { env: live.startEnv }),
       probe: async startup => await this.probeRoot(live.connection, startup.port, startup.token),
     })
     const cookie = await this.exchangeToken(live.connection, handle.port, handle.token)
@@ -1779,6 +1857,7 @@ export class ProfileService {
       readonly runtimeDir: string
       readonly runtimeKind: 'isolated' | 'global'
       readonly dshHome: string
+      readonly modelSource: 'local' | 'server'
     },
   ): Promise<PublicTarget> {
     const existing = this.options.store.listTargets().find(target => target.label.toLowerCase() === request.label.toLowerCase())
@@ -1795,6 +1874,7 @@ export class ProfileService {
       hostKeyFingerprint: request.hostKeyFingerprint ?? existing?.hostKeyFingerprint ?? '',
       clientId: hints.clientId,
       executor: existing?.executor ?? 'local',
+      modelSource: hints.modelSource,
       profileName: hints.profileName,
       profilePort: hints.profilePort,
       runtimeKind: hints.runtimeKind,
@@ -1826,6 +1906,7 @@ export class ProfileService {
       hostKeyFingerprint: record.hostKeyFingerprint,
       clientId: hints.clientId,
       executor: record.executor,
+      modelSource: hints.modelSource,
       profileName: record.profileName,
       profilePort: record.profilePort,
       runtimeKind: record.runtimeKind,

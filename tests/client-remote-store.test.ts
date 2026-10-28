@@ -38,8 +38,13 @@ const apiSpies = vi.hoisted(() => ({
   sessionCancel: vi.fn(),
   sessionApproval: vi.fn(),
   connectV1: vi.fn(),
+  reconnect: vi.fn(),
   deploymentPreview: vi.fn(),
   deploymentApply: vi.fn(),
+  localLlmRead: vi.fn(),
+  localLlmSave: vi.fn(),
+  localLlmProbe: vi.fn(),
+  localLlmClearKey: vi.fn(),
 }))
 const nativeSpies = vi.hoisted(() => ({
   open: vi.fn(),
@@ -52,6 +57,7 @@ const sseSpies = vi.hoisted(() => ({
 const portalSpies = vi.hoisted(() => ({
   openServerMain: vi.fn(),
   closeServerMain: vi.fn(),
+  request: undefined as { targetId: string; targetLabel: string } | undefined,
 }))
 const legacySpies = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -103,7 +109,7 @@ vi.mock('../src/client/portal-main.tsx', () => ({
   SERVER_MAIN_ID: 'dsh-remote-workspace-server',
   openServerMain: portalSpies.openServerMain,
   closeServerMain: portalSpies.closeServerMain,
-  serverMainRequest: () => undefined,
+  serverMainRequest: () => portalSpies.request,
   serverMainSessionId: () => undefined,
   subscribeServerMain: () => () => {},
 }))
@@ -212,6 +218,7 @@ function bindFakeShell(store: typeof import('../src/client/remote-store.ts')): v
 
 beforeEach(() => {
   vi.clearAllMocks()
+  portalSpies.request = undefined
   apiSpies.sessions.mockResolvedValue(SESSIONS)
   apiSpies.sessionTimeline.mockResolvedValue({ entries: [], beforeSeq: 0, nextBeforeSeq: null })
   apiSpies.sessionStatus.mockResolvedValue({ running: false, pendingApprovals: [] })
@@ -509,6 +516,7 @@ describe('minimal v1 connect entry', () => {
       username: 'tester',
       authKind: 'password',
       secret: 's3cret',
+      modelSource: 'server',
     })
     apiSpies.connectV1.mockRejectedValue(new MockRemoteApiError(
       'host-key-unknown',
@@ -538,7 +546,7 @@ describe('minimal v1 connect entry', () => {
     const store = await freshStore()
     store.openConnectDialog()
     store.patchConnectDialog({
-      label: 'box', host: 'host', port: '22', username: 'u', authKind: 'agent',
+      label: 'box', host: 'host', port: '22', username: 'u', authKind: 'agent', modelSource: 'server',
     })
     apiSpies.connectV1.mockRejectedValue(new MockRemoteApiError('host-key-changed', 'pinned key changed', 409))
     await store.submitConnectDialog()
@@ -758,5 +766,179 @@ describe('execution-end switch (D20, §16.13)', () => {
     expect(view?.modeSwitch.error?.failedCancellations).toEqual([
       { sessionId: 's2', message: 'timeout' },
     ])
+  })
+})
+
+describe('v3 full-screen official UI activation', () => {
+  it('shows a ready target in the server main panel and records the selection', async () => {
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    store.activateRemoteTarget('t1')
+    expect(portalSpies.openServerMain).toHaveBeenCalledWith(expect.objectContaining({
+      targetId: 't1',
+      targetLabel: 'box',
+      storagePrefix: 'dshrw:graydovee-remote-workspace-abc:',
+    }))
+    expect(shellSpies.selectPanel).toHaveBeenCalledWith('dsh-remote-workspace-server')
+    expect(store.remoteAppSnapshot().selection).toEqual({ targetId: 't1' })
+  })
+
+  it('does not remount an already active target', async () => {
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    store.activateRemoteTarget('t1')
+    portalSpies.openServerMain.mockClear()
+    // The mocked portal reports the active request after the first activation.
+    portalSpies.request = { targetId: 't1', targetLabel: 'box' }
+    store.activateRemoteTarget('t1')
+    expect(portalSpies.openServerMain).not.toHaveBeenCalled()
+  })
+
+  it('opens the official UI after a successful connect of a stopped target', async () => {
+    apiSpies.state
+      .mockResolvedValueOnce({
+        pluginVersion: '0.1.0',
+        targets: [TARGET],
+        connections: { t1: { ...CONNECTION, phase: 'stopped' } },
+        workspaces: { t1: WORKSPACES },
+        defaultProfile: 'p',
+      })
+      .mockResolvedValue({
+        pluginVersion: '0.1.0',
+        targets: [TARGET],
+        connections: { t1: CONNECTION },
+        workspaces: { t1: WORKSPACES },
+        defaultProfile: 'p',
+      })
+    apiSpies.reconnect.mockResolvedValue({ target: TARGET, state: CONNECTION })
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    await store.connectRemoteTarget('t1')
+    expect(portalSpies.openServerMain).toHaveBeenCalledWith(expect.objectContaining({ targetId: 't1' }))
+  })
+
+  it('tears the frame down when the target disconnects', async () => {
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    portalSpies.request = { targetId: 't1', targetLabel: 'box' }
+    apiSpies.stop.mockResolvedValue({ stopped: true })
+    await store.disconnectRemoteTarget('t1')
+    expect(portalSpies.closeServerMain).toHaveBeenCalled()
+    expect(shellSpies.selectPanel).toHaveBeenCalledWith(null)
+  })
+
+  it('tears the frame down when a ready connection leaves ready', async () => {
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    portalSpies.request = { targetId: 't1', targetLabel: 'box' }
+    apiSpies.stateRefresh.mockResolvedValue({
+      connection: { ...CONNECTION, phase: 'failed' },
+      workspaces: WORKSPACES,
+      sessions: SESSIONS,
+    })
+    await store.refreshRemoteTarget('t1')
+    expect(portalSpies.closeServerMain).toHaveBeenCalled()
+  })
+})
+
+describe('v3 local model source', () => {
+  /** Fill the minimum SSH identity so submit reaches the model-source gate. */
+  function fillIdentity(store: typeof import('../src/client/remote-store.ts')): void {
+    store.patchConnectDialog({
+      label: 'box', host: '203.0.113.10', port: '22', username: 'tester', authKind: 'agent',
+    })
+  }
+
+  it('hydrates the dialog from saved settings and defaults to local', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      baseUrl: 'http://127.0.0.1:11434/v1', models: ['qwen'], timeoutMs: 120_000, hasApiKey: true,
+    })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    const dialog = store.remoteAppSnapshot().connectDialog
+    expect(dialog?.modelSource).toBe('local')
+    expect(dialog?.localBaseUrl).toBe('http://127.0.0.1:11434/v1')
+    expect(dialog?.localModels).toEqual(['qwen'])
+    expect(dialog?.localHasApiKey).toBe(true)
+    expect(dialog?.localSettingsLoading).toBe(false)
+  })
+
+  it('saves the endpoint/key and adopts the probed model ids', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
+    apiSpies.localLlmSave.mockImplementation(async (request: { baseUrl: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => ({
+      baseUrl: request.baseUrl, models: request.models ?? [], timeoutMs: request.timeoutMs ?? 120_000, hasApiKey: request.apiKey !== undefined,
+    }))
+    apiSpies.localLlmProbe.mockResolvedValue({ models: ['a', 'b'] })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    store.patchConnectDialog({ localBaseUrl: 'http://127.0.0.1:11434/v1' })
+    const models = await store.probeLocalLlmModels('secret-key')
+    expect(models).toEqual(['a', 'b'])
+    expect(apiSpies.localLlmSave).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'secret-key',
+    }))
+    const dialog = store.remoteAppSnapshot().connectDialog
+    expect(dialog?.localModels).toEqual(['a', 'b'])
+    expect(dialog?.localHasApiKey).toBe(true)
+    expect(dialog?.localError).toBeUndefined()
+  })
+
+  it('blocks connecting with an unconfigured local endpoint (no server fallback)', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    fillIdentity(store)
+    await store.submitConnectDialog()
+    expect(apiSpies.connectV1).not.toHaveBeenCalled()
+    const dialog = store.remoteAppSnapshot().connectDialog
+    expect(dialog?.phase).toBe('failed')
+    expect(dialog?.error?.code).toBe('local-llm-unconfigured')
+  })
+
+  it('probes an empty model list before connecting and passes the source', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
+    apiSpies.localLlmSave.mockImplementation(async (request: { baseUrl: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => ({
+      baseUrl: request.baseUrl, models: request.models ?? [], timeoutMs: request.timeoutMs ?? 120_000, hasApiKey: true,
+    }))
+    apiSpies.localLlmProbe.mockResolvedValue({ models: ['m1'] })
+    apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    store.patchConnectDialog({
+      label: 'box', host: '203.0.113.10', port: '22', username: 'tester', authKind: 'agent',
+      localBaseUrl: 'http://127.0.0.1:11434/v1',
+    })
+    await store.submitConnectDialog()
+    expect(apiSpies.localLlmProbe).toHaveBeenCalled()
+    expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'local' }))
+  })
+
+  it('passes server as the explicit source without probing the local endpoint', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
+    apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    store.patchConnectDialog({
+      label: 'box', host: '203.0.113.10', port: '22', username: 'tester', authKind: 'agent',
+      modelSource: 'server',
+    })
+    await store.submitConnectDialog()
+    expect(apiSpies.localLlmProbe).not.toHaveBeenCalled()
+    expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'server' }))
   })
 })

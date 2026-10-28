@@ -44,6 +44,9 @@ import type {
 } from './session-timeline.ts'
 import type { ServerTimelineEntry } from './session-timeline.ts'
 import { t } from './locales.ts'
+import {
+  closeServerMain, openServerMain, serverMainRequest, SERVER_MAIN_ID,
+} from './portal-main.tsx'
 
 /**
  * Local-mode rollout gate.
@@ -205,6 +208,18 @@ export interface ConnectDialogState {
   readonly fingerprint?: string
   /** Stable id for polling host-side connect progress. */
   readonly attemptId?: string
+  /** Where the server agent's model requests are served (v3). */
+  readonly modelSource: 'local' | 'server'
+  /** Client-local OpenAI-compatible endpoint (v3); the key stays in credentials. */
+  readonly localBaseUrl: string
+  readonly localModels: readonly string[]
+  readonly localTimeoutMs: number
+  /** Whether the host holds a local-model API key (never the key itself). */
+  readonly localHasApiKey: boolean
+  readonly localSettingsLoading: boolean
+  readonly localModelsLoading: boolean
+  /** Scrubbed, user-readable local-model failure (probe/save). */
+  readonly localError?: string
   readonly error?: WireError
 }
 
@@ -584,6 +599,61 @@ async function reconnectWithTimeout(targetId: string): Promise<void> {
   }
 }
 
+/** Whether the host reports a live profile for a view (ready or degraded). */
+function connectionIsLive(view: RemoteConnectionView): boolean {
+  const phase = view.connection?.phase
+  return phase === 'ready' || phase === 'degraded'
+}
+
+/**
+ * Close the full-screen official UI when it currently shows one target.
+ *
+ * Called from every path that makes a target unusable (disconnect, forget,
+ * profile restart, connection lost): the frame must never keep showing a
+ * profile the host has already stopped.
+ * @param targetId - target whose frame must be torn down.
+ */
+export function closePortalFor(targetId: string): void {
+  const request = serverMainRequest()
+  if (request?.targetId !== targetId) return
+  closeServerMain()
+  selectPanel(null)
+}
+
+/**
+ * Activate one saved target.
+ *
+ * The rail's single verb: a stopped target starts its profile and opens the
+ * full-screen official UI once it is ready; a live target just (re)mounts the
+ * frame. Re-activating the already active target is a no-op so a stray click
+ * cannot reload the conversation under the user.
+ * @param targetId - saved target id.
+ */
+export function activateRemoteTarget(targetId: string): void {
+  const view = state.connections[targetId]
+  if (view === undefined || view.connecting === true) return
+  if (!connectionIsLive(view)) {
+    void connectRemoteTarget(targetId)
+    return
+  }
+  const active = serverMainRequest()
+  if (active?.targetId === targetId) return
+  closeNativeView()
+  closePortalFor(targetId)
+  openServerMain({
+    targetId,
+    targetLabel: view.target.label,
+    ...(view.connection?.embed?.storagePrefix === undefined
+      ? {}
+      : { storagePrefix: view.connection.embed.storagePrefix }),
+    ...(view.connection?.embed?.mode === undefined
+      ? {}
+      : { embedMode: view.connection.embed.mode }),
+  })
+  selectPanel(SERVER_MAIN_ID)
+  commit({ selection: { targetId } })
+}
+
 /** Connect one saved target through the v1 route, then reread it. */
 export async function connectRemoteTarget(targetId: string): Promise<void> {
   const view = state.connections[targetId]
@@ -595,6 +665,9 @@ export async function connectRemoteTarget(targetId: string): Promise<void> {
     patchConnection(targetId, { connecting: false })
     await loadRemoteState()
     await loadRemoteSessions(targetId, true)
+    // The connection is now live: replace the rail's stopped state with the
+    // server's own full UI. A failure above keeps the dialog's error path.
+    activateRemoteTarget(targetId)
   } catch (error) {
     await refreshRemoteTarget(targetId).catch(() => undefined)
     patchConnection(targetId, { connecting: false, connectFailed: true, error: describe(error) })
@@ -1187,6 +1260,7 @@ export function useNativeSessionMainProps(): NativeSessionMainProps | undefined 
 /** Close the remote main area and return to the official conversation. */
 export function clearRemoteSelection(closeLocal = false): void {
   if (closeLocal) releaseLocalSelection()
+  closeServerMain()
   closeNativeView()
   commit({ selection: undefined })
   selectPanel(null)
@@ -1713,8 +1787,146 @@ export function openConnectDialog(): void {
       privateKeyPath: '',
       dshHome: '',
       runtimePolicy: 'auto',
+      modelSource: 'local',
+      localBaseUrl: '',
+      localModels: [],
+      localTimeoutMs: 120_000,
+      localHasApiKey: false,
+      localSettingsLoading: false,
+      localModelsLoading: false,
     },
   })
+  // Saved endpoint/models are client-host facts; load them so the default
+  // "local" is actionable instead of silently unconfigured.
+  void hydrateLocalLlmSettings()
+}
+
+/**
+ * Read the saved local-model settings into the open connect dialog.
+ *
+ * An older host may not serve `local-llm/read`; the dialog then stays at its
+ * unconfigured defaults and connecting with `local` is blocked (no fallback to
+ * server models).
+ */
+export async function hydrateLocalLlmSettings(): Promise<void> {
+  const dialog = state.connectDialog
+  if (dialog === undefined) return
+  patchConnectDialog({ localSettingsLoading: true })
+  try {
+    const read = await remoteApi.localLlmRead()
+    if (state.connectDialog === undefined) return
+    patchConnectDialog({
+      localSettingsLoading: false,
+      localBaseUrl: read.baseUrl,
+      localModels: read.models,
+      localTimeoutMs: read.timeoutMs,
+      localHasApiKey: read.hasApiKey,
+    })
+  } catch {
+    if (state.connectDialog === undefined) return
+    patchConnectDialog({ localSettingsLoading: false })
+  }
+}
+
+/** Fold a local-model route failure into the dialog without leaking a URL secret. */
+function patchLocalError(message: string | undefined): void {
+  const dialog = state.connectDialog
+  if (dialog === undefined) return
+  commit({ connectDialog: { ...dialog, localSettingsLoading: false, localModelsLoading: false, ...(message === undefined ? { localError: undefined } : { localError: message }) } })
+}
+
+/**
+ * Save the endpoint/models (and optionally a new key) and refresh the dialog.
+ * @param apiKey - a new key from the password field; omitted keeps the stored one.
+ * @returns true when the host accepted the settings.
+ */
+export async function saveLocalLlmSettings(apiKey?: string): Promise<boolean> {
+  const dialog = state.connectDialog
+  if (dialog === undefined) return false
+  const baseUrl = dialog.localBaseUrl.trim()
+  if (baseUrl === '') { patchLocalError(t('connect.local.baseUrlRequired')); return false }
+  patchLocalError(undefined)
+  patchConnectDialog({ localSettingsLoading: true })
+  try {
+    const read = await remoteApi.localLlmSave({
+      baseUrl,
+      models: [...dialog.localModels],
+      timeoutMs: dialog.localTimeoutMs,
+      ...(apiKey === undefined || apiKey === '' ? {} : { apiKey }),
+    })
+    if (state.connectDialog === undefined) return true
+    patchConnectDialog({
+      localSettingsLoading: false,
+      localBaseUrl: read.baseUrl,
+      localModels: read.models,
+      localTimeoutMs: read.timeoutMs,
+      localHasApiKey: read.hasApiKey,
+    })
+    return true
+  } catch (error) {
+    patchLocalError(t('connect.local.failed', { message: describeFailure(error) }))
+    return false
+  }
+}
+
+/**
+ * Reset the stored key (the endpoint/models stay).
+ */
+export async function clearLocalLlmKey(): Promise<void> {
+  const dialog = state.connectDialog
+  if (dialog === undefined) return
+  try {
+    const read = await remoteApi.localLlmClearKey()
+    if (state.connectDialog === undefined) return
+    patchConnectDialog({ localHasApiKey: read.hasApiKey, localModels: read.models, localBaseUrl: read.baseUrl })
+  } catch (error) {
+    patchLocalError(t('connect.local.failed', { message: describeFailure(error) }))
+  }
+}
+
+/**
+ * Save the endpoint (optionally with a new key) and probe its `/v1/models`.
+ * The returned ids become the dialog's model list; a failure is shown inline.
+ * @param apiKey - a new key from the password field.
+ * @returns the probed model ids, or undefined on failure.
+ */
+export async function probeLocalLlmModels(apiKey?: string): Promise<readonly string[] | undefined> {
+  const dialog = state.connectDialog
+  if (dialog === undefined) return undefined
+  const baseUrl = dialog.localBaseUrl.trim()
+  if (baseUrl === '') { patchLocalError(t('connect.local.baseUrlRequired')); return undefined }
+  patchLocalError(undefined)
+  patchConnectDialog({ localModelsLoading: true })
+  try {
+    const saved = await remoteApi.localLlmSave({
+      baseUrl,
+      models: [...dialog.localModels],
+      timeoutMs: dialog.localTimeoutMs,
+      ...(apiKey === undefined || apiKey === '' ? {} : { apiKey }),
+    })
+    if (state.connectDialog === undefined) return undefined
+    patchConnectDialog({
+      localBaseUrl: saved.baseUrl,
+      localModels: saved.models,
+      localHasApiKey: saved.hasApiKey,
+      localTimeoutMs: saved.timeoutMs,
+    })
+    // The route does not read the stored key on a probe, so carry the key the
+    // user just typed (never echoed back into the dialog state).
+    const probed = await remoteApi.localLlmProbe({
+      baseUrl: saved.baseUrl,
+      timeoutMs: saved.timeoutMs,
+      ...(apiKey === undefined || apiKey === '' ? {} : { apiKey }),
+    })
+    if (state.connectDialog === undefined) return undefined
+    const models = probed.models.filter(model => model.trim() !== '')
+    if (models.length === 0) { patchLocalError(t('connect.local.noModels')); return undefined }
+    patchConnectDialog({ localModelsLoading: false, localModels: models })
+    return models
+  } catch (error) {
+    patchLocalError(t('connect.local.failed', { message: describeFailure(error) }))
+    return undefined
+  }
 }
 
 /** Close the v1 connect dialog and drop its secret. */
@@ -1768,12 +1980,56 @@ export async function submitConnectDialog(): Promise<void> {
     commit({ connectDialog: { ...dialog, error: invalid } })
     return
   }
+  // Local model source is the default and must be explicit: an unconfigured
+  // endpoint blocks the connect instead of silently using the server's models.
+  if (dialog.modelSource === 'local') {
+    if (dialog.localBaseUrl.trim() === '') {
+      commit({
+        connectDialog: {
+          ...dialog,
+          phase: 'failed',
+          error: { code: 'local-llm-unconfigured', message: t('connect.local.unconfigured') },
+        },
+      })
+      return
+    }
+    if (dialog.localModels.length === 0) {
+      const models = await probeLocalLlmModels()
+      if (models === undefined || models.length === 0) {
+        const message = state.connectDialog?.localError ?? t('connect.local.noModels')
+        const current = state.connectDialog
+        if (current !== undefined) {
+          commit({
+            connectDialog: {
+              ...current,
+              phase: 'failed',
+              error: { code: 'local-llm-unconfigured', message },
+            },
+          })
+        }
+        return
+      }
+    } else if (!(await saveLocalLlmSettings())) {
+      const message = state.connectDialog?.localError ?? t('connect.local.unconfigured')
+      const current = state.connectDialog
+      if (current !== undefined) {
+        commit({
+          connectDialog: {
+            ...current,
+            phase: 'failed',
+            error: { code: 'local-llm-unconfigured', message },
+          },
+        })
+      }
+      return
+    }
+  }
   const attemptId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `connect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   commit({ connectDialog: { ...dialog, phase: 'submitting', attemptId, error: undefined } })
   try {
-    await remoteApi.connectV1({
+    const connected = await remoteApi.connectV1({
       label,
       host,
       port,
@@ -1785,12 +2041,16 @@ export async function submitConnectDialog(): Promise<void> {
         : {}),
       ...(dialog.dshHome.trim() === '' ? {} : { dshHome: dialog.dshHome.trim() }),
       runtimePolicy: dialog.runtimePolicy,
+      modelSource: dialog.modelSource,
       attemptId,
       ...(dialog.fingerprint === undefined ? {} : { hostKeyFingerprint: dialog.fingerprint }),
     })
     commit({ connectDialog: undefined })
     notify('success', t('remote.connect.done', { label }))
     await loadRemoteState()
+    // A brand-new connection opens its official UI immediately; the rail stays
+    // the fallback when the frame reports an error later.
+    activateRemoteTarget(connected.target.id)
   } catch (error) {
     const wire = describe(error)
     if (error instanceof RemoteApiError && error.code === 'host-key-unknown') {
@@ -2177,6 +2437,7 @@ function releaseLocalSelection(): void {
 
 /** Called when a connection leaves ready: drop its local selection/iframe. */
 function releaseTarget(targetId: string): void {
+  closePortalFor(targetId)
   const selection = state.selection
   if (selection?.targetId === targetId) {
     releaseLocalSelection()
