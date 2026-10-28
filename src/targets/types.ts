@@ -285,15 +285,27 @@ const runtimeSchema = z.object({
 export const packageSourceSchema = z.enum(['auto', 'download', 'upload', 'reuse'])
 
 /**
- * The client-host OpenAI-compatible endpoint used as a server agent's model
- * source (the "local model" feature).
+ * The client-host local model source used as a server agent's model source
+ * (the "local model" feature).
  *
- * Only non-secret facts live here: the base URL, the model ids and the timeout.
- * The API key itself lives in `ctx.credentials` under a fixed key; `apiKeyRef`
- * is only its non-secret address (and presence hint) for diagnostics.
+ * Two modes exist:
+ * - `manual` — a user-supplied OpenAI-compatible endpoint (`baseUrl`).
+ * - `auto` — every provider/model of the client host's own DSH, exposed over
+ *   the existing SSH reverse tunnel by a loopback bridge; nothing to
+ *   configure, so `baseUrl` stays empty.
+ *
+ * Only non-secret facts live here: the mode, the base URL, the model ids and
+ * the timeout. The API key itself lives in `ctx.credentials` under a fixed
+ * key; `apiKeyRef` is only its non-secret address (and presence hint) for
+ * diagnostics.
  */
 export interface LocalLlmSettings {
-  /** Base URL of the endpoint (`http`/`https`, no embedded credentials). */
+  /**
+   * Where the local source comes from. Optional so documents written before
+   * the auto mode keep validating; see `effectiveLocalLlmMode`.
+   */
+  readonly mode?: 'auto' | 'manual'
+  /** Base URL of the endpoint (`http`/`https`, no embedded credentials); empty in auto mode. */
   readonly baseUrl: string
   /** Advertised model ids in preference order; empty means "probe on connect". */
   readonly models: readonly string[]
@@ -303,9 +315,25 @@ export interface LocalLlmSettings {
   readonly apiKeyRef?: string
 }
 
+/**
+ * The local model source's effective mode.
+ *
+ * An explicit `mode` always wins. A legacy document written before this field
+ * existed has no `mode`; a configured `baseUrl` then means the user chose the
+ * manual endpoint, while an empty base URL means "never configured" and gets
+ * the new automatic proxy default.
+ * @param settings - the stored settings, when any.
+ */
+export function effectiveLocalLlmMode(settings: LocalLlmSettings | undefined): 'auto' | 'manual' {
+  if (settings?.mode === 'auto' || settings?.mode === 'manual') return settings.mode
+  return settings !== undefined && settings.baseUrl.trim() !== '' ? 'manual' : 'auto'
+}
+
 /** Validate one local-model settings object; URL scheme + no embedded credentials. */
 export const localLlmSettingsSchema = z.object({
-  baseUrl: z.string().min(1).max(2048).refine((value) => {
+  mode: z.enum(['auto', 'manual']).optional(),
+  baseUrl: z.string().max(2048).refine((value) => {
+    if (value === '') return true
     let parsed: URL
     try {
       parsed = new URL(value)

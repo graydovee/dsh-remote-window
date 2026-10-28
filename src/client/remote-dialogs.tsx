@@ -20,7 +20,8 @@ import {
   applyModeSwitch, browseAddWorkspace, cancelModeSwitch, cancelProfileRestart, closeAddWorkspace,
   closeConnectDialog, setAddWorkspacePath,
   closeArchiveActivity, closeDeleteWorkspace, closeForgetTarget, closeModeDialog, closeRenameSession,
-  clearLocalLlmKey, closeRenameWorkspace, confirmArchiveActivity, confirmProfileRestart, modeDialogFor,
+  clearLocalLlmKey, closeRenameWorkspace, confirmArchiveActivity, confirmProfileRestart, discoverLocalProviders,
+  modeDialogFor,
   previewModeSwitch, probeLocalLlmModels, setAddWorkspaceTitle, setRenameSessionValue, setRenameWorkspaceValue,
   patchConnectDialog, submitAddWorkspace, submitConnectDialog, submitDeleteWorkspace,
   submitForgetTarget, submitRenameSession, submitRenameWorkspace, useRemoteAppState,
@@ -122,7 +123,11 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
     if (dialog.username.trim() === '') return t('remote.connect.userRequired')
     if (dialog.authKind === 'password' && dialog.secret === '') return t('remote.connect.secretRequired')
     if (dialog.authKind === 'privateKey' && dialog.privateKeyPath.trim() === '') return t('remote.connect.keyRequired')
-    if (dialog.modelSource === 'local' && dialog.localBaseUrl.trim() === '') return t('connect.local.unconfigured')
+    // Only the manual sub-mode needs an endpoint; the default auto mode proxies
+    // this DSH's own providers and the host validates that at connect time.
+    if (dialog.modelSource === 'local' && dialog.localMode === 'manual' && dialog.localBaseUrl.trim() === '') {
+      return t('connect.local.baseUrlRequired')
+    }
     return undefined
   }
   const primaryLabel = current !== 'connect'
@@ -360,7 +365,18 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
               title={t('remote.connect.advanced')}
               open={advancedOpen}
               expandable
-              onToggle={() => { setAdvancedOpen(open => !open) }}
+              onToggle={() => {
+                const next = !advancedOpen
+                setAdvancedOpen(next)
+                // Opening the disclosure in the default auto mode should show a
+                // populated provider summary, not an empty panel.
+                if (
+                  next && dialog.modelSource === 'local' && dialog.localMode === 'auto'
+                  && !dialog.localProvidersLoaded && !dialog.localProvidersLoading
+                ) {
+                  void discoverLocalProviders()
+                }
+              }}
               expandOnRowClick
             >
               <div className="dsh-rw-fields">
@@ -374,89 +390,142 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                     onChange={(event: { target: { value: string } }) => patch({ dshHome: event.target.value })}
                   />
                 </Field>
-              </div>
-            </DisclosureRow>
-            <div className="dsh-rw-section dsh-rw-local-model">
-              <h3 className="dsh-rw-section-title">{t('connect.local.title')}</h3>
-              <p className="dsh-rw-hint">{t('connect.local.hint')}</p>
-              <SegmentedControl<'local' | 'server'>
-                id="dsh-rw-connect-model-source"
-                value={dialog.modelSource}
-                disabled={submitting}
-                label={t('connect.local.title')}
-                options={[
-                  { value: 'local', label: t('connect.local.source.local') },
-                  { value: 'server', label: t('connect.local.source.server') },
-                ]}
-                onChange={(next) => patch({ modelSource: next })}
-              />
-              {dialog.modelSource === 'server' ? (
-                <p className="dsh-rw-hint">{t('connect.local.serverHint')}</p>
-              ) : (
-                <>
-                  <Field
-                    label={t('connect.local.baseUrl')}
-                    hint={dialog.localSettingsLoading ? t('connect.local.loading') : t('connect.local.baseUrlHint')}
-                  >
-                    <input
-                      className="dsh-rw-rename-input"
-                      value={dialog.localBaseUrl}
-                      disabled={submitting || dialog.localSettingsLoading}
-                      placeholder={t('connect.local.baseUrlPlaceholder')}
-                      onChange={(event: { target: { value: string } }) => patch({ localBaseUrl: event.target.value })}
+                <div className="dsh-rw-local-model dsh-rw-local-source" data-testid="dsh-rw-model-source">
+                  <Field label={t('connect.local.title')} hint={t('connect.local.hint')}>
+                    <SegmentedControl<'local' | 'server'>
+                      id="dsh-rw-connect-model-source"
+                      value={dialog.modelSource}
+                      disabled={submitting}
+                      label={t('connect.local.title')}
+                      options={[
+                        { value: 'local', label: t('connect.local.source.local') },
+                        { value: 'server', label: t('connect.local.source.server') },
+                      ]}
+                      onChange={(next) => patch({ modelSource: next, localError: undefined })}
                     />
                   </Field>
-                  <Field
-                    label={t('connect.local.apiKey')}
-                    hint={dialog.localHasApiKey ? t('connect.local.apiKeySaved') : t('connect.local.apiKeyPlaceholder')}
-                  >
-                    <div className="dsh-rw-inline">
-                      <input
-                        className="dsh-rw-rename-input"
-                        type="password"
-                        value={localApiKey}
-                        disabled={submitting}
-                        autoComplete="off"
-                        placeholder={t('connect.local.apiKeyPlaceholder')}
-                        onChange={(event: { target: { value: string } }) => { setLocalApiKey(event.target.value) }}
-                      />
-                      {dialog.localHasApiKey && (
-                        <Button variant="ghost" size="sm" disabled={submitting} onClick={() => { void clearLocalLlmKey() }}>
-                          {t('connect.local.clearKey')}
-                        </Button>
+                  {dialog.modelSource === 'server' ? (
+                    <p className="dsh-rw-hint">{t('connect.local.serverHint')}</p>
+                  ) : (
+                    <>
+                      <Field label={t('connect.local.mode')}>
+                        <SegmentedControl<'auto' | 'manual'>
+                          id="dsh-rw-connect-local-mode"
+                          value={dialog.localMode}
+                          disabled={submitting}
+                          label={t('connect.local.mode')}
+                          options={[
+                            { value: 'auto', label: t('connect.local.mode.auto') },
+                            { value: 'manual', label: t('connect.local.mode.manual') },
+                          ]}
+                          onChange={(next) => {
+                            patch({ localMode: next, localError: undefined })
+                            if (next === 'auto' && !dialog.localProvidersLoaded && !dialog.localProvidersLoading) {
+                              void discoverLocalProviders()
+                            }
+                          }}
+                        />
+                      </Field>
+                      {dialog.localMode === 'auto' ? (
+                        <div className="dsh-rw-local-auto">
+                          <p className="dsh-rw-hint">{t('connect.local.auto.hint')}</p>
+                          <div className="dsh-rw-inline dsh-rw-local-models-row">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={submitting || dialog.localProvidersLoading || dialog.localSettingsLoading}
+                              onClick={() => { void discoverLocalProviders() }}
+                            >
+                              {dialog.localProvidersLoading ? t('connect.local.auto.refreshing') : t('connect.local.auto.refresh')}
+                            </Button>
+                            <span className="dsh-rw-hint">
+                              {t('connect.local.auto.summary', {
+                                providers: dialog.localProviders.length,
+                                models: dialog.localProviders.reduce((total, provider) => total + provider.models.length, 0),
+                              })}
+                            </span>
+                          </div>
+                          {dialog.localProviders.length > 0 && (
+                            <div className="dsh-rw-local-model-chips" aria-label={t('connect.local.auto.providers')}>
+                              {dialog.localProviders.map(provider => (
+                                <span className="dsh-rw-local-model-chip" key={provider.id}>{provider.name}</span>
+                              ))}
+                            </div>
+                          )}
+                          {dialog.localProvidersLoaded && dialog.localProviders.length === 0 && !dialog.localProvidersLoading && (
+                            <p className="dsh-rw-hint">{t('connect.local.auto.empty')}</p>
+                          )}
+                          {dialog.localError !== undefined && <p className="dsh-rw-side-error">{dialog.localError}</p>}
+                        </div>
+                      ) : (
+                        <>
+                          <Field
+                            label={t('connect.local.baseUrl')}
+                            hint={dialog.localSettingsLoading ? t('connect.local.loading') : t('connect.local.baseUrlHint')}
+                          >
+                            <input
+                              className="dsh-rw-rename-input"
+                              value={dialog.localBaseUrl}
+                              disabled={submitting || dialog.localSettingsLoading}
+                              placeholder={t('connect.local.baseUrlPlaceholder')}
+                              onChange={(event: { target: { value: string } }) => patch({ localBaseUrl: event.target.value })}
+                            />
+                          </Field>
+                          <Field
+                            label={t('connect.local.apiKey')}
+                            hint={dialog.localHasApiKey ? t('connect.local.apiKeySaved') : t('connect.local.apiKeyPlaceholder')}
+                          >
+                            <div className="dsh-rw-inline">
+                              <input
+                                className="dsh-rw-rename-input"
+                                type="password"
+                                value={localApiKey}
+                                disabled={submitting}
+                                autoComplete="off"
+                                placeholder={t('connect.local.apiKeyPlaceholder')}
+                                onChange={(event: { target: { value: string } }) => { setLocalApiKey(event.target.value) }}
+                              />
+                              {dialog.localHasApiKey && (
+                                <Button variant="ghost" size="sm" disabled={submitting} onClick={() => { void clearLocalLlmKey() }}>
+                                  {t('connect.local.clearKey')}
+                                </Button>
+                              )}
+                            </div>
+                          </Field>
+                          <div className="dsh-rw-inline dsh-rw-local-models-row">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={submitting || dialog.localModelsLoading}
+                              onClick={() => {
+                                void probeLocalLlmModels(localApiKey).then(models => {
+                                  if (models !== undefined) setLocalApiKey('')
+                                })
+                              }}
+                            >
+                              {dialog.localModelsLoading ? t('connect.local.refreshing') : t('connect.local.refresh')}
+                            </Button>
+                            <span className="dsh-rw-hint">
+                              {dialog.localModels.length === 0
+                                ? t('connect.local.modelsEmpty')
+                                : t('connect.local.modelsCount', { count: dialog.localModels.length })}
+                            </span>
+                          </div>
+                          {dialog.localModels.length > 0 && (
+                            <div className="dsh-rw-local-model-chips" aria-label={t('connect.local.models')}>
+                              {dialog.localModels.map(model => (
+                                <span className="dsh-rw-local-model-chip" key={model}>{model}</span>
+                              ))}
+                            </div>
+                          )}
+                          {dialog.localError !== undefined && <p className="dsh-rw-side-error">{dialog.localError}</p>}
+                        </>
                       )}
-                    </div>
-                  </Field>
-                  <div className="dsh-rw-inline dsh-rw-local-models-row">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={submitting || dialog.localModelsLoading}
-                      onClick={() => {
-                        void probeLocalLlmModels(localApiKey).then(models => {
-                          if (models !== undefined) setLocalApiKey('')
-                        })
-                      }}
-                    >
-                      {dialog.localModelsLoading ? t('connect.local.refreshing') : t('connect.local.refresh')}
-                    </Button>
-                    <span className="dsh-rw-hint">
-                      {dialog.localModels.length === 0
-                        ? t('connect.local.modelsEmpty')
-                        : t('connect.local.modelsCount', { count: dialog.localModels.length })}
-                    </span>
-                  </div>
-                  {dialog.localModels.length > 0 && (
-                    <div className="dsh-rw-local-model-chips" aria-label={t('connect.local.models')}>
-                      {dialog.localModels.map(model => (
-                        <span className="dsh-rw-local-model-chip" key={model}>{model}</span>
-                      ))}
-                    </div>
+                    </>
                   )}
-                  {dialog.localError !== undefined && <p className="dsh-rw-side-error">{dialog.localError}</p>}
-                </>
-              )}
-            </div>
+                </div>
+              </div>
+            </DisclosureRow>
             {configError !== undefined && <p className="dsh-rw-side-error">{configError}</p>}
           </div>
         )}

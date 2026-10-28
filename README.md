@@ -17,9 +17,12 @@ conversation.
 The connection chooses where the agent's **model requests** are served:
 
 - **Local model** (default): the agent, session log and tools stay on the server, but every model request
-  is forwarded over an SSH reverse tunnel to an OpenAI-compatible endpoint on your machine. Fresh servers
-  usually have no model key, so this is the default. An unconfigured endpoint blocks the connection — the
-  client never silently falls back to server models.
+  is forwarded over an SSH reverse tunnel to your machine. By default the client **auto-proxies every
+  provider and model your local DSH already has** (`ctx.llm` catalog) — no endpoint or API key to enter;
+  each provider becomes its own route in the server profile's model picker. A **manual OpenAI-compatible
+  endpoint** stays available under advanced options. Fresh servers usually have no model key, so this is
+  the default; an unreadable catalog blocks the connection instead of silently falling back to server
+  models.
 - **Server model** (optional): the server profile uses its own model configuration. Choose this
   explicitly when the server already has model credentials.
 
@@ -115,13 +118,16 @@ profile's own cookie, never forwards `Set-Cookie`, and keeps the profile token o
 iframe uses a minimal sandbox (`allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`).
 The client shell sidebar hides while the frame is mounted; the target rail stays available.
 
-**Local model source.** The server profile's `cordis.patch.yml` declares an official `llm-pi-ai`
-OpenAI-compatible route (`client-local`) that points at `http://127.0.0.1:<random>/v1`. That port is an
-SSH `forwardIn` reverse tunnel, terminated by a loopback-only bridge on the client. The bridge forwards
-only `/v1/*`, injects/overrides `Authorization` with the key from the client's official credential store,
-and never logs it. The profile sees a placeholder key. The endpoint, model ids and timeout are client
-settings; an unreachable endpoint, HTTP 401, an empty model list or an sshd that refuses forwarding is a
-coded, actionable failure — never a silent fallback to server models.
+**Local model source.** The server profile's `cordis.patch.yml` declares official `llm-pi-ai` routes
+that point at `http://127.0.0.1:<random>/<provider>/v1`. That port is an SSH `forwardIn` reverse
+tunnel, terminated by a loopback-only bridge on the client. The default **auto proxy** enumerates the
+local DSH's own `ctx.llm` providers/models (`listProviders`/`listModels`) and answers every model call
+from `ctx.llm.stream()` with the harness' native types, so the local DSH's own credentials and protocols
+keep working and nothing is re-entered. The optional **manual endpoint** mode forwards only `/v1/*`,
+injects/overrides `Authorization` with a key from the client's official credential store and never logs
+it. The profile always sees a placeholder key. An unreadable catalog, an empty model list, an
+unreachable endpoint or an sshd that refuses forwarding is a coded, actionable failure — never a silent
+fallback to server models.
 
 **Server-authoritative data.** Workspace list/title/order/pin/archive come from the server's official
 `workspaceRegistry`; session list/title/blank/running come from `sessionController` plus a plugin-side
@@ -168,9 +174,10 @@ package manager. Then:
 
 1. Open the floating **target rail** (hover it or press `Alt+R`) and choose **New connection**.
 2. Choose `SSH`, fill in the target, and confirm the host-key fingerprint on first contact.
-3. Choose the model source: **local** (default; enter your OpenAI-compatible endpoint, model and optional
-   key — the client probes `/v1/models` before connecting) or **server** (use the server profile's own
-   model configuration).
+3. Choose the model source: **local** (default; under **advanced options** the default sub-mode
+   auto-proxies every local provider/model with no endpoint or key — switch to a manual
+   OpenAI-compatible endpoint there if you prefer) or **server** (use the server profile's own model
+   configuration).
 4. Review the probe result. The client checks the server's Node/DSH runtime and server plugin, then decides
    whether the next steps deploy, update, or skip; it starts the profile server, opens the SSH reverse
    tunnel when the local model source is selected, and authenticates the handshake. A failed attempt is
@@ -183,9 +190,10 @@ package manager. Then:
 
 - The model source is a connection setting, not a per-session switch: changing it restarts the profile
   (D20) after cancel → `whenIdle`/flush. The conversation, session id and log stay the same.
-- With the local model source the profile's `client-local` route points at the bridge through an sshd
-  reverse tunnel owned by the client host. Stopping or losing the connection closes the bridge, the
-  tunnel, the profile and its process; no orphan port is left behind.
+- With the local model source each discovered provider becomes a `remote-<provider>` route in the
+  profile, all served by one sshd reverse tunnel and one client bridge. Stopping or losing the
+  connection closes the bridge, the tunnel, the profile and its process; no orphan port is left behind.
+  Reconnecting reuses the saved `DSH_HOME`, so the profile patch and the tunnel stay in the same place.
 - **D20:** if the profile still has active turns, a restart/switch lists them and requires explicit
   confirmation before canceling them. It never silently interrupts sessions.
 - A session has only one writer. The official UI in the iframe opens/resumes the session and holds the
@@ -263,14 +271,15 @@ credential store.
   automatically.
 - **No session deletion.** The official DSH has no such action, so this plugin does not add one.
 - **Local model source is the default.** A new connection starts with the client bridge because a fresh
-  server usually has no model key; choose the server model source explicitly after configuring server
-  credentials. Changing it requires a reconnect.
+  server usually has no model key; the default sub-mode auto-proxies the local DSH's whole catalogue, so
+  there is nothing to type. Choose the server model source explicitly after configuring server
+  credentials; changing it requires a reconnect.
 - **The remote execution world (v2 executor) is no longer used by the main area.** The iframe always
   drives the server agent. Old sessions that recorded the v2 `local` executor are kept in data but are not
   reachable from the new UI; this is documented in [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md).
 - **One iframe per client.** Opening a second remote target swaps the frame (the previous target is
   disconnected or left in the rail as inactive). There is no split view of two servers.
-- **The local-model bridge is HTTP-only (`/v1/*`).** TLS to the local endpoint is not implemented yet;
+- **The manual local endpoint is HTTP-only (`/v1/*`).** TLS to the manual endpoint is not implemented yet;
   the endpoint must be reachable over plain HTTP on the client machine.
 - **sshd must allow reverse forwarding.** If `AllowTcpForwarding`/`GatewayPorts` policy refuses
   `forwardIn`, the connection fails with an actionable error; it never silently uses the server model.
@@ -294,7 +303,7 @@ credential store.
 | `registry-stale` | Another process changed the server workspace registry. Run the remote section's Refresh; if it still fails, reconnect (profile restart) after the D20 confirmation. |
 | `session/writer-held` | The session is already being driven by another instance. Wait for it to finish, or refresh/reconnect; the log is not corrupted. |
 | `runtime-global-unsupported` / `plugin-profile-not-managed` | v1 does not modify the shared global runtime or other profiles; use the dedicated profile/isolated runtime. |
-| `local-llm-*` codes (e.g. `local-llm-unreachable`, `local-llm-tunnel-failed`, `local-llm-models-empty`) | The client local endpoint, key, or the server sshd reverse-forwarding policy needs attention; fix it and retry, or choose the server model source. |
+| `local-llm-*` codes (e.g. `local-llm-providers-unavailable`, `local-llm-no-models`, `local-llm-unreachable`, `local-llm-tunnel-failed`) | In auto mode check that the local DSH has a usable model configured; in manual mode check the endpoint and key; then the server sshd reverse-forwarding policy. Fix it and retry, or choose the server model source. |
 | `mode-switch/cancel-failed` / `shutdown-flush-timeout` | Some turns could not be canceled/flushed before a restart. The UI shows which ones; retry after they settle. |
 | SSH fails before deployment | Check the account, key permissions, agent and fingerprint; `ssh -v <host>` is a good next step. |
 | A command reports no usable sandbox backend | The target has no confinement backend; the partial-enforcement path is expected and visible. |

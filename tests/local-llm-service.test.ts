@@ -112,6 +112,7 @@ function serviceFor(store: TargetStore): LocalLlmService {
 
 function planFor(baseUrl: string, models: readonly string[] = ['qwen3']): LocalLlmPlan {
   return {
+    mode: 'manual',
     settings: { baseUrl, models: [...models], timeoutMs: 5_000 },
     models: [...models],
     apiKey: 'sk-bridge-secret',
@@ -210,7 +211,7 @@ describe('LocalLlmService', () => {
 
       raw.global = packagePolicySettingsSchema.parse({ policy: 'auto', mirror: '' })
       raw.records.set('rt-empty', { id: 'rt-empty', modelSource: 'local' } as RemoteTargetRecord)
-      await expect(service.prepare('rt-empty', fakeConnection().connection)).rejects.toMatchObject({ code: 'local-llm-unconfigured' })
+      await expect(service.prepare('rt-empty', fakeConnection().connection)).rejects.toMatchObject({ code: 'local-llm-unavailable' })
     } finally {
       await fake.close()
     }

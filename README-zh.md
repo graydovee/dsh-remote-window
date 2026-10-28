@@ -15,15 +15,17 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 连接时选择 agent 的**模型请求**由谁服务：
 
 - **local（默认）**：agent、会话日志与工具仍在 server，但每次模型请求经 SSH 反向隧道转发到 client
-  本机的 OpenAI 兼容 endpoint。新 server 通常没配模型 key，所以默认走这里；endpoint 未配置时阻止
-  连接，绝不静默回退到 server 模型。
+  本机。默认接入方式是 **自动代理本机模型**：client 用本机 DSH 的 `ctx.llm` 枚举全部 provider/model，
+  无需填 endpoint 或 key，每个 provider 在 server profile 的模型选择器里各成一条 route；「手动指定
+  OpenAI 兼容 endpoint」保留在高级选项。新 server 通常没配模型 key，所以默认走这里；本机模型目录读不到
+  时阻止连接，绝不静默回退到 server 模型。
 - **server（可选）**：server profile 使用自己的模型配置；仅当 server 已配置模型凭据时显式选择。
 
 两种来源写同一份 server 会话日志；切换模型来源需要重连，而不是换会话。
 
 ## Screenshots
 
-![侧栏的「远程工作区」区域：连接 → server 工作区 → server 会话](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
+![浮动 target rail 与全屏 iframe 中的 server 官方 UI](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
 client 只保留一个远程面：浮动 **target rail**（默认收起，hover 或 `Alt+R` 展开），列已保存连接、实时
 阶段与连接/切换/忘记动作。连接后，server 自己的 sidebar 与对话就是导航；iframe 挂载期间 client shell
@@ -101,12 +103,13 @@ UI，请求带 `dshRwFull=1`。portal 剥掉 client GUI cookie、注入 profile 
 `allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`。iframe 挂载期间 client
 shell sidebar 隐藏，target rail 保留可用。
 
-**local 模型来源。** server profile 的 `cordis.patch.yml` 声明一条官方 `llm-pi-ai` OpenAI 兼容
-route（`client-local`），指向 `http://127.0.0.1:<随机>/v1`。该端口是 SSH `forwardIn` 反向隧道，终止
-在 client 的 loopback-only bridge。bridge 只转发 `/v1/*`，把请求里的 `Authorization` 注入/覆盖为
-client 官方凭据库中的 key，不落日志；profile 只看到占位 key。endpoint、模型 id 与超时是 client 设置；
-endpoint 不可达、HTTP 401、模型列表为空或 sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退
-server 模型。
+**local 模型来源。** server profile 的 `cordis.patch.yml` 声明若干官方 `llm-pi-ai` route，指向
+`http://127.0.0.1:<随机>/<provider>/v1`。该端口是 SSH `forwardIn` 反向隧道，终止在 client 的
+loopback-only bridge。默认的 **自动代理** 用本机 DSH 自己的 `ctx.llm` 枚举 provider/model
+（`listProviders`/`listModels`），每个模型请求都以官方类型转成 `ctx.llm.stream()`，因此本机 DSH 的
+凭据与协议原样生效、无需重填。可选的 **手动 endpoint** 模式只转发 `/v1/*`，把 `Authorization`
+注入/覆盖为 client 官方凭据库中的 key，不落日志；profile 始终只看到占位 key。本机目录读不到、模型列表
+为空、endpoint 不可达或 sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退 server 模型。
 
 **server 权威数据。** workspace 清单/标题/顺序/pin/archive 来自 server 官方
 `workspaceRegistry`；session 清单/标题/blank/running 来自 `sessionController` + 插件 JSONL title fold。
@@ -148,8 +151,9 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 
 1. 打开浮动 **target rail**（hover 或按 `Alt+R`），点 **新建连接**。
 2. 选择 `SSH`，填目标信息，首次连接确认 host key 指纹。
-3. 选择模型来源：**local**（默认；填 OpenAI 兼容 endpoint、模型与可选 key，连接前 client 会探测
-   `/v1/models`）或 **server**（使用 server profile 自己的模型配置）。
+3. 选择模型来源：**local**（默认；在 **高级选项** 里，默认子模式自动代理本机全部 provider/model，
+   无需 endpoint 或 key；也可以在那里改成手动 OpenAI 兼容 endpoint）或 **server**（使用 server
+   profile 自己的模型配置）。
 4. 查看探测结果。client 检查 server 的 Node/DSH 运行时与 server 插件，决定后续步骤是部署、更新还是
    跳过；随后启动 profile server，选 local 模型时打开 SSH 反向隧道，并完成握手鉴权。失败的尝试不会
    保存。
@@ -160,8 +164,9 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 
 - 模型来源是连接设置，不是会话内热切换：更改它要按 D20 cancel → `whenIdle`/flush 后重启 profile。
   对话、会话 id 与日志不变。
-- local 模型来源下，profile 的 `client-local` route 经 sshd 反向隧道指向 client host 持有的 bridge。
-  断开或异常退出会关闭 bridge、隧道、profile 及其进程，不留下孤儿端口。
+- local 模型来源下，本机每个 provider 在 profile 里各成一条 `remote-<provider>` route，全部由同一条
+  sshd 反向隧道与同一个 client bridge 服务。断开或异常退出会关闭 bridge、隧道、profile 及其进程，不
+  留下孤儿端口；重连会复用已保存的 `DSH_HOME`，profile patch 与隧道留在同一目录。
 - **D20：** 如果 profile 还有 active turn，重启/切换对话框会列出它们并要求显式确认后才一起取消，绝不
   静默打断会话。
 - 同一会话只能有一个写者。iframe 里的官方 UI 打开/resume 会话并持有官方 JSONL 锁；第二个实例打开
@@ -228,15 +233,16 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
   runtime 或其它 profile 的插件会被拒绝并给出可操作错误；只有专用 per-client profile 与独立 runtime
   会自动安装。
 - **不删除会话。** 官方 DSH 没有该能力，本插件也不新增。
-- **local 模型来源是默认。** 新连接默认走 client bridge（新 server 通常没配模型 key）；配置 server
-  凭据后再显式选 server 模型来源。更改来源需要重连。
+- **local 模型来源是默认。** 新连接默认走 client bridge（新 server 通常没配模型 key）；默认子模式自动
+  代理本机 DSH 的全部模型目录，不需要手填。配置 server 凭据后再显式选 server 模型来源；更改来源需要
+  重连。
 - **v2 executor（远端执行世界）不再被主区使用。** iframe 始终驱动 server agent。记录过 v2 `local`
   executor 的旧会话留在数据里，但新 UI 不再进入；详见
   [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)。
 - **每个 client 只挂一个 iframe。** 打开第二个远程 target 会替换 frame（前一个 target 断开或在 rail
   中保持非激活）。没有两个 server 的分屏。
-- **本机模型 bridge 只支持 HTTP（`/v1/*`）。** 本机 endpoint 的 TLS 尚未实现；endpoint 需在 client
-  本机以明文 HTTP 可达。
+- **手动本机 endpoint 只支持 HTTP（`/v1/*`）。** 手动模式的 TLS 尚未实现；endpoint 需在 client
+  本机以明文 HTTP 可达。自动代理模式没有这个问题（走本机 DSH 自己的 provider 客户端）。
 - **sshd 必须允许反向转发。** 若 `AllowTcpForwarding`/`GatewayPorts` 策略拒绝 `forwardIn`，连接会以
   可操作错误失败，绝不静默改用 server 模型。
 - **重启 profile 会取消它的所有 turn。** 普通刷新只重读数据；加载 workspace registry 变更用进程内官方
@@ -256,7 +262,7 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
 | `registry-stale` | 另一个进程改了 server workspace registry。点远程段刷新；仍失败则按 D20 确认后重连（重启 profile）。 |
 | `session/writer-held` | 该会话已被另一个实例驱动。等它结束，或刷新/重连；日志不会被写坏。 |
 | `runtime-global-unsupported` / `plugin-profile-not-managed` | v1 不修改共享全局 runtime/其它 profile；使用专用 profile/独立 runtime。 |
-| `local-llm-*`（如 `local-llm-unreachable`、`local-llm-tunnel-failed`、`local-llm-models-empty`） | 检查 client 本机 endpoint、key，或 server sshd 的反向转发策略；修好后重试，或改选 server 模型来源。 |
+| `local-llm-*`（如 `local-llm-providers-unavailable`、`local-llm-no-models`、`local-llm-unreachable`、`local-llm-tunnel-failed`） | 自动代理模式先看本机 DSH 是否配了可用模型；手动模式检查 endpoint/key；再查 server sshd 的反向转发策略。修好后重试，或改选 server 模型来源。 |
 | `mode-switch/cancel-failed` / `shutdown-flush-timeout` | 重启前有 turn 取消失败/未完成落盘；UI 会列出，等它们收尾后重试。 |
 | SSH 在部署前失败 | 检查账号、密钥权限、agent 与指纹；`ssh -v <host>` 是好用的下一步。 |
 | 命令提示没有可用的沙箱 backend | 目标机没有隔离 backend；这是文档化的 partial enforcement 路径。 |

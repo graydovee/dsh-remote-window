@@ -15,12 +15,14 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import type { SshForwarder } from '../src/ssh/forward.ts'
 import type { ProfileRemote, ProfileExecResult } from '../src/provision/profile-lifecycle.ts'
 import { ProfileService, type ProfileConnection, type ProfileConnector } from '../src/provision/profile-service.ts'
 import { buildLocalModelPatch, EMPTY_PROFILE_PATCH } from '../src/local-llm/profile.ts'
 import type { TargetStore } from '../src/targets/store.ts'
 import type { LocalLlmSettings, PackagePolicySettings, RemoteTargetRecord } from '../src/targets/types.ts'
+import type { NativeLlmRuntime, NativeStreamChunk } from '../src/local-llm/native.ts'
 import type { RemoteForward } from '../src/local-llm/tunnel.ts'
 import { packPackage, writeFakeServerPluginPackage } from './helpers/local-remote.ts'
 
@@ -229,8 +231,43 @@ function fakeConnector(options: { forwardError?: Error } = {}): {
   }
 }
 
-function serviceWith(connector: ProfileConnector): ProfileService {
-  return new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
+/** A client host whose own DSH serves two providers (the `auto` source). */
+function autoRuntime(options: { text?: string } = {}): NativeLlmRuntime & { calls: number } {
+  const state = { calls: 0 }
+  const runtime: NativeLlmRuntime & { calls: number } = {
+    calls: 0,
+    async listProviders() {
+      return [{ id: 'openai', name: 'OpenAI' }, { id: 'ollama', name: 'Ollama' }]
+    },
+    async listModels(provider: string) {
+      return provider === 'openai'
+        ? [{ provider: 'openai', id: 'gpt-5', name: 'GPT-5' }, { provider: 'openai', id: 'gpt-5-mini', name: 'GPT-5 mini' }]
+        : [{ provider: 'ollama', id: 'llama3', name: 'llama3' }]
+    },
+    async *stream(): AsyncIterable<NativeStreamChunk> {
+      state.calls += 1
+      Object.defineProperty(runtime, 'calls', { value: state.calls, configurable: true })
+      yield { type: 'text-delta', index: 0, text: options.text ?? 'hi from the client host' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  return runtime
+}
+
+/** A host context exposing only `llm` (everything else stays undefined). */
+function autoContext(runtime: NativeLlmRuntime): Context {
+  return { get: (name: string) => (name === 'llm' ? runtime : undefined) } as unknown as Context
+}
+
+function serviceWith(connector: ProfileConnector, ctx?: Context): ProfileService {
+  return new ProfileService({
+    store,
+    packageRoot: '/tmp/client-package',
+    pluginVersion: VERSION,
+    connector,
+    cacheDir: '/tmp/cache',
+    ...(ctx === undefined ? {} : { ctx }),
+  })
 }
 
 const request = {
@@ -257,7 +294,10 @@ describe('ProfileService local model source', () => {
     expect(fixture.forwardTargets[0]).toBeGreaterThan(0)
 
     const patchWrite = fixture.remote.writes.filter(write => write.path.endsWith('/cordis.patch.yml')).at(-1)
-    expect(patchWrite?.content).toBe(buildLocalModelPatch({ remotePort: 41_000, models: ['qwen3'] }))
+    expect(patchWrite?.content).toBe(buildLocalModelPatch({
+      remotePort: 41_000,
+      routes: [{ id: 'client-local', displayName: 'Local model', pathPrefix: '', models: [{ id: 'qwen3', name: 'qwen3' }] }],
+    }))
     // The real key never reaches the server/profile: only the placeholder env.
     expect(patchWrite?.content).not.toContain('sk-local-key')
     expect(fixture.remote.scripts.some(script => script.includes(`DSH_RW_LOCAL_LLM_KEY='local-bridge'`))).toBe(true)
@@ -270,6 +310,44 @@ describe('ProfileService local model source', () => {
     expect(await service.stop(result.target.id)).toBe(true)
     expect(fixture.forwardCloses()).toBe(1)
     await expect(fetch(bridgeUrl)).rejects.toThrow()
+  })
+
+  it('proxies every client-host provider through one reverse tunnel in auto mode', async () => {
+    store = fakeStore()
+    const runtime = autoRuntime()
+    const fixture = fakeConnector()
+    const service = serviceWith(fixture.connector, autoContext(runtime))
+    const result = await service.connect({ ...request, modelSource: 'local' })
+    expect(result.target.modelSource).toBe('local')
+    expect(fixture.forwardTargets).toHaveLength(1)
+    const port = fixture.forwardTargets[0] as number
+
+    const patchWrite = fixture.remote.writes.filter(write => write.path.endsWith('/cordis.patch.yml')).at(-1)
+    const patch = patchWrite?.content ?? ''
+    expect(patch).toContain('      "remote-openai":')
+    expect(patch).toContain('        baseURL: "http://127.0.0.1:41000/openai/v1"')
+    expect(patch).toContain('      "remote-ollama":')
+    expect(patch).toContain('        baseURL: "http://127.0.0.1:41000/ollama/v1"')
+    // The first route/model becomes the profile's default model.
+    expect(patch).toContain('    provider: "remote-openai"')
+    expect(patch).toContain('    model: "gpt-5"')
+
+    const models = await (await fetch(`http://127.0.0.1:${port}/openai/v1/models`)).json() as { data: { id: string }[] }
+    expect(models.data.map(entry => entry.id)).toEqual(['gpt-5', 'gpt-5-mini'])
+
+    // A profile call over the tunnel reaches the client host's own ctx.llm.
+    const reply = await fetch(`http://127.0.0.1:${port}/openai/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(reply.status).toBe(200)
+    const body = await reply.json() as { choices: { message: { content: string } }[] }
+    expect(body.choices[0]?.message.content).toBe('hi from the client host')
+    expect(runtime.calls).toBe(1)
+
+    await service.stop(result.target.id)
+    await expect(fetch(`http://127.0.0.1:${port}/openai/v1/models`)).rejects.toThrow()
   })
 
   it('writes an empty patch and opens no tunnel for the server source', async () => {
@@ -322,13 +400,13 @@ describe('ProfileService local model source', () => {
     await service.stop(result.target.id)
   })
 
-  it('fails before SSH/profile work when the local source is unconfigured', async () => {
+  it('fails before SSH/profile work when the automatic local source has no model runtime', async () => {
     store = fakeStore()
     const fixture = fakeConnector()
     const service = serviceWith(fixture.connector)
     await expect(service.connect({ ...request, modelSource: 'local' })).rejects.toMatchObject({
-      code: 'local-llm-unconfigured',
-      status: 400,
+      code: 'local-llm-unavailable',
+      status: 502,
     })
     expect(connectCalls).toBe(0)
     expect(fixture.remote.scripts.some(script => script.includes('setsid nohup'))).toBe(false)

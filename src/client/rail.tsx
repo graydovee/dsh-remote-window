@@ -69,7 +69,7 @@ function TargetChip(props: {
         className="dsh-rw-rail-main"
         aria-label={t('rail.activate', { label: view.target.label })}
         title={connected ? t('rail.activate', { label: view.target.label }) : t('rail.connect', { label: view.target.label })}
-        onClick={() => { activateRemoteTarget(view.target.id) }}
+        onClick={() => { void activateRemoteTarget(view.target.id) }}
       >
         <span className="dsh-rw-rail-glyph" aria-hidden="true">
           {view.connecting ? <span className="dsh-rw-rail-spinner" /> : initialOf(view.target.label)}

@@ -133,6 +133,13 @@ describe('deriveWorkspaceGroups', () => {
     expect(groups).toHaveLength(1)
   })
 
+  it('degrades an unreadable list (host substituted `{ error }`) to no rows', () => {
+    // A failed per-target read in `/api/state` arrives as `{ error }` instead of
+    // a list; the connection explains the failure, so the tree must stay empty.
+    const failed = { error: { code: 'p1-read-failed', message: 'socket hang up' } } as unknown as RemoteWorkspaceList
+    expect(deriveWorkspaceGroups(failed, undefined)).toEqual([])
+  })
+
   it('exposes only the selected blank session as the temporary draft', () => {
     const list = workspaceList([workspace('w1', 'one', ['blank', 'a'])])
     const sessions = sessionList([session('blank', { blank: true }), session('a')])

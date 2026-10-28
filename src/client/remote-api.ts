@@ -502,8 +502,26 @@ export interface ConnectProgressEvent {
   readonly at: string
 }
 
+/** How the local model source reaches this machine's models. */
+export type LocalLlmMode = 'auto' | 'manual'
+
+/** One model offered by a provider of the client DSH installation. */
+export interface LocalProviderModel {
+  readonly id: string
+  readonly name: string
+}
+
+/** One model provider of the client DSH installation (`local-llm/discover`). */
+export interface LocalProviderSummary {
+  readonly id: string
+  readonly name: string
+  readonly models: readonly LocalProviderModel[]
+}
+
 /** Browser-facing local-model settings; the key itself never leaves the host. */
 export interface LocalLlmReadState {
+  /** `auto` proxies the DSH's own providers; `manual` uses `baseUrl`. */
+  readonly mode?: LocalLlmMode
   readonly baseUrl: string
   readonly models: readonly string[]
   readonly timeoutMs: number
@@ -560,15 +578,24 @@ export const remoteApi = {
     return call<LocalLlmReadState>('local-llm/read', targetId === undefined ? {} : { targetId })
   },
 
-  /** Save the local-model endpoint/models and optionally a new API key. */
+  /** Save the local-model mode/endpoint/models and optionally a new API key. */
   localLlmSave(request: {
-    readonly baseUrl: string
+    readonly mode: LocalLlmMode
+    readonly baseUrl?: string
     readonly models?: readonly string[]
     readonly timeoutMs?: number
     readonly apiKey?: string
     readonly targetId?: string
   }): Promise<LocalLlmReadState> {
     return call<LocalLlmReadState>('local-llm/save', request)
+  },
+
+  /**
+   * Discover the model providers the client DSH exposes (`local-llm/discover`).
+   * The host answers `local-llm-providers-unavailable` when none is usable.
+   */
+  localLlmDiscover(): Promise<{ providers: readonly LocalProviderSummary[] }> {
+    return call<{ providers: readonly LocalProviderSummary[] }>('local-llm/discover', {})
   },
 
   /** Probe the local OpenAI-compatible endpoint and return its model ids. */

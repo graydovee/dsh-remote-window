@@ -126,14 +126,18 @@ describe('modelsFromCatalog', () => {
 })
 
 describe('settings read/save', () => {
-  it('defaults to no endpoint and no key, without leaking a secret', async () => {
+  it('defaults to the automatic source, no endpoint and no key, without leaking a secret', async () => {
     const { store } = fakeStore()
-    expect(await readLocalLlmState(store)).toEqual({
+    expect(await readLocalLlmState(store)).toMatchObject({
+      mode: 'auto',
       baseUrl: '',
       models: [],
       timeoutMs: LOCAL_LLM_DEFAULT_TIMEOUT_MS,
       hasApiKey: false,
     })
+    // No runtime is injected here, so the read reports the failed discovery
+    // beside the mode instead of failing the whole read.
+    expect((await readLocalLlmState(store)).catalogError).toContain('does not expose its model runtime')
   })
 
   it('normalizes, persists and reads back settings plus hasApiKey only', async () => {
@@ -144,10 +148,10 @@ describe('settings read/save', () => {
       timeoutMs: 30_000,
       apiKey: 'sk-client-secret',
     })
-    expect(saved).toEqual({ baseUrl: 'http://127.0.0.1:11434', models: ['qwen3', 'llama3'], timeoutMs: 30_000, hasApiKey: true })
+    expect(saved).toEqual({ mode: 'manual', baseUrl: 'http://127.0.0.1:11434', models: ['qwen3', 'llama3'], timeoutMs: 30_000, hasApiKey: true })
     expect(raw.key).toBe('sk-client-secret')
     const read = await readLocalLlmState(store)
-    expect(read).toEqual({ baseUrl: 'http://127.0.0.1:11434', models: ['qwen3', 'llama3'], timeoutMs: 30_000, hasApiKey: true })
+    expect(read).toEqual({ mode: 'manual', baseUrl: 'http://127.0.0.1:11434', models: ['qwen3', 'llama3'], timeoutMs: 30_000, hasApiKey: true })
     expect(JSON.stringify(read)).not.toContain('sk-client-secret')
     // The domain copy may carry only the credential *reference*, never the key.
     expect(JSON.stringify(raw.global)).not.toContain('sk-client-secret')
@@ -234,8 +238,14 @@ describe('probeLocalModels', () => {
 })
 
 describe('planLocalLlm', () => {
-  it('is a coded unconfigured failure without an endpoint', async () => {
+  it('needs the model runtime when nothing is configured (automatic source)', async () => {
     const { store } = fakeStore()
+    await expect(planLocalLlm(store)).rejects.toMatchObject({ code: 'local-llm-unavailable', status: 502 })
+  })
+
+  it('is a coded unconfigured failure when the manual source has no endpoint', async () => {
+    const { store, raw } = fakeStore()
+    raw.global = packagePolicySettingsSchema.parse({ policy: 'auto', mirror: '', localLlm: { mode: 'manual', baseUrl: '', models: [], timeoutMs: LOCAL_LLM_DEFAULT_TIMEOUT_MS } })
     await expect(planLocalLlm(store)).rejects.toMatchObject({ code: 'local-llm-unconfigured', status: 400 })
   })
 
@@ -245,7 +255,7 @@ describe('planLocalLlm', () => {
     const plan = await planLocalLlm(store)
     expect(plan.models).toEqual(['qwen3'])
     expect(plan.apiKey).toBe('sk-plan')
-    expect(plan.settings.baseUrl).toBe('http://127.0.0.1:9999')
+    expect(plan.settings?.baseUrl).toBe('http://127.0.0.1:9999')
   })
 
   it('probes when no models are stored and persists what it discovered', async () => {

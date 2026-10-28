@@ -11,8 +11,11 @@ DSH UI 的全屏同源 iframe；模型来源新增 **local（本机模型，默�
 |---|---|
 | client iframe 外壳 / target rail / 连接生命周期 | 已完成 |
 | server 插件 embed `full` 模式 | 已完成（server 仓库，随 tarball 内置） |
-| 本地模型 bridge + SSH 反向隧道 + profile patch | 已完成（`src/local-llm/`） |
-| 连接对话框模型来源设置 | 已完成 |
+| 本地模型自动代理（`ctx.llm` 枚举 + 原生 bridge）+ SSH 反向隧道 + per-provider profile patch | 已完成（`src/local-llm/`，`native.ts`） |
+| 手动 OpenAI 兼容 endpoint（高级选项） | 已完成（`bridge.ts`） |
+| 连接对话框模型来源设置（默认 local、auto 子模式） | 已完成 |
+| portal 必须带 `dshRwSession` 深链 | 已完成（`portalSessionFor`） |
+| 重连复用已保存绝对 `DSH_HOME` | 已完成（`reconnectDshHome`） |
 | native v2 主区与 vendored 组件删除 | 验收后清理，代码暂留但不注册/不挂载 |
 
 ## 1. 目标架构
@@ -43,6 +46,9 @@ client DSH
   每次激活递增 revision，浏览器不会复用上一个 profile 的文档。
 - 断连/忘记/连接离开 ready/删除：`releaseTarget` → `closePortalFor` → `clearRemoteSelection`。
 - 20 s 内未收到 `dsh-rw/ready`（且 `onLoad` 也未完成）显示可重试错误；重试递增 `reloadCount`。
+- 打开 portal 必须带 `dshRwSession`：`activateRemoteTarget` 先 `portalSessionFor`（host state 中最近
+  的非 blank/非归档/非 subagent 会话，否则 `session/create` 建 blank），再 `openServerMain`。裸开
+  portal 会落在官方首启 composer（“选择一个工作区开始”），且在 iframe 内无法恢复。
 - 401/登录过期：client host 重新拿 profile token 后可重连；token 不进入 iframe URL。
 
 ## 2. 本地模型来源
@@ -51,33 +57,46 @@ client DSH
 
 ```text
 server profile agent
-  └─ 官方 llm-pi-ai route "client-local"（openai-completions）
-       baseURL = http://127.0.0.1:<random server-loopback port>/v1
+  └─ 官方 llm-pi-ai routes（openai-completions，每个本机 provider 一条）
+       route id = remote-<slug>，baseURL = http://127.0.0.1:<random>/<provider>/v1
        apiKeyEnv = DSH_RW_LOCAL_LLM_KEY（占位值 local-bridge）
-            └─ SSH reverse tunnel（ssh2 client.forwardIn('127.0.0.1', 0)）
+            └─ SSH reverse tunnel（ssh2 client.forwardIn('127.0.0.1', 0)，单条隧道）
                  └─ client host bridge（127.0.0.1:<ephemeral>）
-                      └─ 用户配置的本地 OpenAI-compatible endpoint
+                      ├─ auto：按 provider 前缀调用本机 ctx.llm.stream()（原生类型，无 key 重填）
+                      └─ manual：转发 /v1/* 到用户配置的 OpenAI-compatible endpoint（注入 key）
 ```
 
 - 只替换模型来源；agent、会话日志、workspace、文件、工具执行仍在 server。
-- 本地 endpoint/模型/超时存 client 存储域 `dsh_remote_workspace` 的 global `localLlm`（可选字段，
-  域版本仍为 1）；API key 只存官方 `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`。
+- auto 模式：`discoverLocalCatalog(ctx.llm)` 枚举本机 `listProviders()`/`listModels()`，每个 provider
+  在 profile 里生成一条 route（路径前缀 `<provider>`），`agent-default-model` 取第一个 route 的首个
+  模型；本机 DSH 自己的 provider 凭据/协议原样使用，client 不另存 key。`ctx.llm` 不存在时
+  `local-llm-providers-unavailable`，目录为空时 `local-llm-no-models`。
+- manual 模式（高级选项）：endpoint/模型/超时存 client 存储域 `dsh_remote_workspace` 的 global
+  `localLlm`（可选字段，域版本仍为 1）；API key 只存官方 `ctx.credentials`（固定 key），浏览器只看
+  到 `hasApiKey`。
+- bridge 必须把 adapter 的 error/aborted 终止 chunk 转成显式错误：首个 chunk 前 → HTTP 502 JSON
+  `{error:{type:'model-call-failed'}}`；已开始流式 → OpenAI `error` chunk。不得把 failure 映射成
+  `finish_reason:"stop"`，否则 server pi-ai 会得到空回复（EMPTY_RESPONSE）。
 - profile 的 `cordis.patch.yml` 每次连接重写：反向隧道端口随机，旧端口必然失效。server 模式写 `[]`。
-- patch 覆盖官方 row `llm-pi-ai`（声明 `client-local` route 与模型清单）和 `agent-default-model`
-  （默认 provider/model）。模型清单来自 connected 前的 `/v1/models` 探测或已存清单。
 - 未配置/不可达/401/无模型：在启动 profile 前以 coded error 失败，**不静默回退**到 server 模型；
   `forwardIn` 被 sshd 拒绝时返回 `local-llm-forwarding-unavailable`（424）。
 - 连接失败、`stop()`、`reconnectLost()` 都关闭 bridge + tunnel；多 target 各自独立，切换不串流。
+- 重连必须复用上次 connect 解析出的绝对 `remote.dshHome`（`reconnectDshHome`）：profile patch、
+  profile server、反向隧道和 server 调用都绑定这个 home；否则重连会把 patch 写到默认 home，server 仍
+  指向旧 bridge 端口（表现为重连后模型请求超时）。
 
 ### 2.2 连接设置
 
-连接对话框 config 步骤的「模型来源」区块（不新增步骤）：
+连接对话框 config 步骤的「模型来源」区块收进 **高级选项**（不新增步骤）：
 
 - 单选 **本地模型（默认）** / **server 模型**；
-- 本地 endpoint、API key（只写本机凭据，输入后不回显）、「保存并刷新模型」；
-- 模型 chips 显示探测结果，第一个作为默认；
-- 未配置 endpoint 时 config → connect 被阻止，connect 若被绕过由 host 以
-  `local-llm-unconfigured` 拒绝；用户显式选 server 才走 server provider。
+- 本地子模式：**自动代理本机模型**（默认）与 **手动指定 endpoint**；
+- auto 显示发现结果（`刷新 N 个 provider · M 个模型 …`），不需要 endpoint/key；「刷新」调用
+  host `local-llm/discover`；
+- manual 显示 endpoint、API key（只写本机凭据，输入后不回显）、「保存并刷新模型」，模型 chips 显示
+  探测结果，第一个作为默认；
+- auto 目录为空/读不到由 host 以 `local-llm-no-models` / `local-llm-providers-unavailable` 拒绝；
+  manual 未配置时由 host 以 `local-llm-unconfigured` 拒绝；用户显式选 server 才走 server provider。
 
 `v1/connect` body 增加可选 `modelSource`；target 记录增加可选 `modelSource`，`executor` 轴保持原义
 （v3 的 iframe 主区始终由 server 官方 UI 打开 server 侧 agent，因此 executor=local 的旧记录不会触发
@@ -89,9 +108,11 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 
 | 场景 | 行为 |
 |---|---|
-| 本地未配置 | 连接被阻止 / host `local-llm-unconfigured`；不 fallback |
-| endpoint 拒绝/超时 | `local-llm-unauthorized` / `local-llm-unreachable`；profile 不启动 |
-| 无模型 | `local-llm-no-models`；profile 不启动 |
+| 本机 ctx.llm 不可用（auto） | `local-llm-providers-unavailable`（502）；不 fallback |
+| 本机目录为空（auto） | `local-llm-no-models`；profile 不启动 |
+| manual 未配置 | 连接被阻止 / host `local-llm-unconfigured`；不 fallback |
+| manual endpoint 拒绝/超时 | `local-llm-unauthorized` / `local-llm-unreachable`；profile 不启动 |
+| bridge 内模型调用失败 | 流式前 502 JSON、流式中 OpenAI error chunk；不再映射成空 stop |
 | sshd 禁止 forwardIn | `local-llm-forwarding-unavailable`；不降级 |
 | iframe 20 s 未 ready | 主区错误 + 重试；连接保持，可断开重连 |
 | target 断开/忘记 | iframe、bridge、tunnel 一起清理 |
@@ -118,17 +139,22 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 | 连接对话框模型来源区块 | `src/client/remote-dialogs.tsx` |
 | host 路由 `local-llm/*`、`v1/connect` 的 `modelSource` | `src/index.ts`、`src/local-llm/routes.ts` |
 | 设置/凭据/探测 | `src/local-llm/settings.ts` |
-| bridge / 反向隧道 / service 生命周期 | `src/local-llm/bridge.ts`、`src/local-llm/tunnel.ts`、`src/local-llm/service.ts` |
+| auto 目录发现 / 原生 bridge（ctx.llm.stream）| `src/local-llm/native.ts`、`src/local-llm/settings.ts`（`discoverLocalCatalog`） |
+| manual bridge / 反向隧道 / service 生命周期 | `src/local-llm/bridge.ts`、`src/local-llm/tunnel.ts`、`src/local-llm/service.ts` |
+| 深链 session 选择（portalSessionFor）| `src/client/remote-store.ts` |
+| 重连复用 DSH_HOME（reconnectDshHome）| `src/targets/methods.ts`、`src/index.ts` |
 | 反向隧道 SSH 接缝 | `src/provision/profile-service.ts`（`ProfileConnection.remoteForward`） |
 | profile patch 与 env | `src/local-llm/profile.ts`、`src/provision/profile-lifecycle.ts` |
 | server 插件 full 模式 | server 仓库 `src/server-plugin/embed.ts` |
 
-本分支实测证据（2026-08 本地运行）：
+本分支实测证据（本地运行，2026-10）：
 
-- client：`pnpm typecheck` 通过；`pnpm test` **579 passed / 1 skipped**（64 通过 + 1 跳过，65 文件）；
-  `pnpm build` 通过。
+- client：`pnpm typecheck` 通过；`pnpm test` **608 passed / 1 skipped**（67 通过 + 1 跳过，68 文件）；
+  `pnpm build` 通过（`lib/client.js` 461.61 kB）。
 - server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
+- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,035,644 B，sha256
+  `49fd8c21453564e56e7600c5a6f821bcedf0e4012ebe90cff90a50ab02bdbbac`。
 - 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
   `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
   一致。
@@ -140,15 +166,26 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 环境：桌面版 rc.3 CLI 起干净 profile；fake sshd（回环、密码认证）与 fake OpenAI 兼容服务模拟远端与
 本机模型，全程不接触真实主机与真实凭据。
 
-- 连接对话框（v3 文案、模型来源默认 local）：SSH → host key SHA-256 展示并确认 → 全局 runtime 复用 →
-  专用 profile 离线安装 server plugin → 启动 profile server → portal 打开；首次连接暴露的 ssh2
-  host-key 崩溃已修复并加回归测试 `tests/ssh-connect.test.ts`。
-- 全屏官方 UI：iframe 内是 server profile 自带的官方 sidebar/header/会话/composer/账号菜单（同源
-  portal，`dshRwFull=1`）；client 自己的 sidebar 在挂载期间隐藏，只保留右下角浮动 rail。
-- 远程功能：输入消息 → 官方 rollout 流式回复（经 local-llm bridge → SSH 反向隧道 → fake 模型），
-  标题自动生成；刷新页面、断开重连、停止再启动后会话都会恢复；`停止` 后 profile server 进程退出。
+- 连接对话框（v3 文案、模型来源默认 local、高级选项里的自动代理）：SSH → host key SHA-256 展示并确认 →
+  全局 runtime 复用 → 专用 profile 离线安装 server plugin → 启动 profile server → portal 打开；首次
+  连接暴露的 ssh2 host-key 崩溃已修复并加回归测试 `tests/ssh-connect.test.ts`。
+- 自动代理（普通连接即验证）：对话框显示 `刷新 2 个 provider · 3 个模型 DeepSeek E2E provider`；
+  profile patch 写出 `remote-deepseek-official` 与 `remote-e2e-provider` 两条 route（各自 baseURL
+  `http://127.0.0.1:<tunnel>/<provider>/v1`），`agent-default-model` 取第一条 route 的首个模型；
+  直接 curl `<tunnel>/e2e-provider/v1/models` 与 `/chat/completions` 均返回模型目录/正常回复。
+- 深链恢复：命中 rail 的 target 时 iframe URL 带 `dshRwSession=<sessionId>`，打开后恢复该会话（而不是
+  官方首启 composer）；无会话时先 `session/create` 建 blank 再带深链。
+- 远程功能（headless Chrome + CDP 截图证据）：iframe 内切换模型到 `e2e-test-model` → 发送
+  `自动代理验收：请回复收到` → 官方 rollout 流式回复 `本地模型 E2E 已收到：…`（用时 1 秒，2 轮 2 步），
+  标题自动生成；链路 = server `remote-e2e-provider` → SSH 反向隧道 → client `ctx.llm.stream()`
+  → 本机 pi-ai provider → fake OpenAI。刷新页面、断开重连、停止再启动后会话都会恢复；`停止` 后
+  profile server 进程退出。
+- 重连回归：`v1/connect {targetId}` 重连后 patch 仍写在保存的 `DSH_HOME`
+  （`/tmp/dsh-e2e/server-dsh-home/...`，mtime 刷新、隧道端口更新），不再落到远端默认 home；
+  回归测试 `tests/targets-reconnect.test.ts`。
 - 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
-  `停止`/`断开` 会关闭）；rail 覆盖在官方 UI 右下角，属设计内的唯一 client chrome。
+  `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
+  `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。
 
 ## 5. 清理阶段（验收后）
 

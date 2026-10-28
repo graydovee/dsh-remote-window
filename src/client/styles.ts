@@ -2393,11 +2393,19 @@ ${officialInputAliasStyles}
   gap: 8px;
 }
 
-/* v3 model source: the connect dialog's local endpoint/key/probe block. */
+/* v3 model source: inside the advanced disclosure, below DSH_HOME. */
 .dsh-rw-local-model {
   margin-top: 4px;
   padding-top: 12px;
   border-top: 1px solid var(--dsw-alias-border-secondary, rgb(127 127 127 / 18%));
+}
+
+/* Source → sub-mode → auto/manual panel. */
+.dsh-rw-local-source,
+.dsh-rw-local-auto {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .dsh-rw-local-models-row {

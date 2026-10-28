@@ -1,23 +1,37 @@
 /**
- * Client-local model endpoint settings, credential handling and the readiness
- * probe.
+ * Client-local model source settings, credential handling and readiness
+ * planning.
  *
- * The user's OpenAI-compatible endpoint runs on the **client host**; a server
- * profile reaches it through an SSH reverse tunnel and the loopback bridge in
- * `bridge.ts`. Nothing here ever copies the API key out of
- * `ctx.credentials` into the storage domain, a log line, an error message or a
- * route payload — the browser only learns `hasApiKey`.
+ * Two sources exist:
+ *
+ * - `manual` — the user's own OpenAI-compatible endpoint on the client host.
+ *   A server profile reaches it through an SSH reverse tunnel and the
+ *   pass-through bridge in `bridge.ts`.
+ * - `auto` (the default for a fresh installation) — every provider/model of
+ *   the client host's own DSH, exposed over the same reverse tunnel by the
+ *   native bridge in `native.ts`. Nothing needs to be configured.
+ *
+ * Nothing here ever copies an API key out of `ctx.credentials` into the
+ * storage domain, a log line, an error message or a route payload — the
+ * browser only learns `hasApiKey`.
  *
  * Errors are coded ({@link LocalLlmError}) so the host routes can map them onto
  * 400/502/424 without leaking a URL credential or a key.
  */
 import {
+  effectiveLocalLlmMode,
   effectiveModelSource,
   localLlmSettingsSchema,
   scrubSecrets,
   type LocalLlmSettings,
 } from '../targets/types.ts'
 import { localLlmCredentialKey, type TargetStore } from '../targets/store.ts'
+import {
+  discoverLocalCatalog,
+  LocalCatalogError,
+  type LocalCatalog,
+  type NativeLlmRuntime,
+} from './native.ts'
 
 /** Default upstream request/probe timeout (two minutes). */
 export const LOCAL_LLM_DEFAULT_TIMEOUT_MS = 120_000
@@ -33,6 +47,8 @@ export type LocalLlmErrorCode =
   | 'local-llm-no-models'
   | 'local-llm-unauthorized'
   | 'local-llm-unreachable'
+  | 'local-llm-unavailable'
+  | 'local-llm-providers-unavailable'
   | 'local-llm-forwarding-unavailable'
 
 /** HTTP status per coded failure (the P3 route envelope uses it verbatim). */
@@ -42,6 +58,10 @@ const STATUS_BY_LOCAL_LLM_CODE: Record<LocalLlmErrorCode, number> = {
   'local-llm-no-models': 400,
   'local-llm-unauthorized': 502,
   'local-llm-unreachable': 502,
+  // The client host has no model runtime (or it failed to answer): a failed
+  // dependency of the automatic proxy, not the request's fault.
+  'local-llm-unavailable': 502,
+  'local-llm-providers-unavailable': 502,
   // The server could not provide its side of the reverse tunnel (sshd refused
   // `forwardIn`, e.g. `AllowTcpForwarding no`): a failed dependency, not the
   // client request's fault.
@@ -61,25 +81,42 @@ export class LocalLlmError extends Error {
 
 /** The browser-facing read shape: settings plus `hasApiKey`, never the key. */
 export interface LocalLlmReadState {
+  /** Effective source: `auto` (the client host's own providers) or `manual`. */
+  readonly mode: 'auto' | 'manual'
   readonly baseUrl: string
   readonly models: readonly string[]
   readonly timeoutMs: number
   readonly hasApiKey: boolean
+  /**
+   * Discovered providers/models in `auto` mode (the dialog shows them).
+   * Omitted in `manual` mode.
+   */
+  readonly catalog?: LocalCatalog
+  /** Why discovery failed, when it did (the dialog still offers Retry). */
+  readonly catalogError?: string
   /** Effective model source of the requested target, when one was named. */
   readonly modelSource?: 'local' | 'server'
 }
 
 /** One validated, ready-to-use local model route plan. */
 export interface LocalLlmPlan {
-  readonly settings: LocalLlmSettings
+  readonly mode: 'auto' | 'manual'
+  /** Required for `manual`; absent in `auto` (nothing to configure). */
+  readonly settings?: LocalLlmSettings
+  /** Display model ids (auto: `provider/model` pairs) for progress messages. */
   readonly models: readonly string[]
   /** The API key, kept only in memory for the bridge; never serialized. */
   readonly apiKey?: string
+  /** The discovered catalog in `auto` mode. */
+  readonly catalog?: LocalCatalog
 }
 
 /** The settings the route layer reads before a save. */
 export interface LocalLlmSaveInput {
-  readonly baseUrl: string
+  /** Next source; defaults to the current effective mode. */
+  readonly mode?: 'auto' | 'manual'
+  /** Endpoint base; required for `manual`, ignored for `auto`. */
+  readonly baseUrl?: string
   readonly models?: readonly string[]
   readonly timeoutMs?: number
   /**
@@ -174,35 +211,111 @@ function normalizeModels(models: readonly unknown[]): string[] {
   return out
 }
 
+/** The stored settings document, when one exists. */
+function currentSettings(store: TargetStore): LocalLlmSettings | undefined {
+  return store.localLlmSettings()
+}
+
+/**
+ * Discover the client host's provider catalog for the `auto` source.
+ * @param llm - the client host's `ctx.llm` runtime, when available.
+ * @param timeoutMs - accepted for symmetry with the manual probe; the catalog
+ *   itself is local and synchronous-ish.
+ * @returns the discovered catalog (never empty; throws a coded error instead).
+ */
+async function discoverCatalog(llm: NativeLlmRuntime | undefined, timeoutMs: number): Promise<LocalCatalog> {
+  void timeoutMs
+  if (llm === undefined) {
+    throw new LocalLlmError(
+      'local-llm-unavailable',
+      'the client host does not expose its model runtime; the automatic local model source is unavailable in this installation',
+    )
+  }
+  let catalog: LocalCatalog
+  try {
+    catalog = await discoverLocalCatalog(llm)
+  } catch (error) {
+    if (error instanceof LocalCatalogError) {
+      throw new LocalLlmError('local-llm-unreachable', error.message)
+    }
+    throw new LocalLlmError('local-llm-unreachable', `the client host could not list its models: ${errorMessage(error)}`)
+  }
+  if (catalog.providers.length === 0) {
+    throw new LocalLlmError(
+      'local-llm-no-models',
+      'the client host has no model providers with models; configure a model provider in DSH before connecting with the automatic local model source',
+    )
+  }
+  return catalog
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** Flatten a catalog into `provider/model` display ids. */
+export function catalogDisplayModels(catalog: LocalCatalog): string[] {
+  const out: string[] = []
+  for (const provider of catalog.providers) {
+    for (const model of provider.models) out.push(`${provider.id}/${model.id}`)
+  }
+  return out
+}
+
 /** The current settings as the browser sees them (no secret). */
-export async function readLocalLlmState(store: TargetStore, targetId?: string): Promise<LocalLlmReadState> {
-  const settings = store.localLlmSettings()
+export async function readLocalLlmState(
+  store: TargetStore,
+  targetId?: string,
+  llm?: NativeLlmRuntime,
+): Promise<LocalLlmReadState> {
+  const settings = currentSettings(store)
+  const mode = effectiveLocalLlmMode(settings)
   const key = await store.localLlmKey()
   let modelSource: 'local' | 'server' | undefined
   if (targetId !== undefined) {
     const record = store.target(targetId)
     if (record !== undefined) modelSource = effectiveModelSource(record)
   }
-  return {
+  const base: LocalLlmReadState = {
+    mode,
     baseUrl: settings?.baseUrl ?? '',
     models: [...(settings?.models ?? [])],
     timeoutMs: settings?.timeoutMs ?? LOCAL_LLM_DEFAULT_TIMEOUT_MS,
     hasApiKey: key !== undefined,
     ...(modelSource === undefined ? {} : { modelSource }),
   }
+  if (mode === 'manual') return base
+  // Auto mode: discover so the dialog can show what would be proxied. A
+  // discovery failure is reported beside the mode instead of failing the read.
+  try {
+    const catalog = await discoverCatalog(llm, base.timeoutMs)
+    return { ...base, catalog }
+  } catch (error) {
+    const message = error instanceof LocalLlmError ? error.message : scrubSecrets(errorMessage(error))
+    return { ...base, catalogError: message }
+  }
 }
 
 /**
  * Validate, persist and (when a key or model list is supplied) update the
- * endpoint settings. The key goes to `ctx.credentials`, never to the domain.
+ * local model settings. A key goes to `ctx.credentials`, never to the domain.
  * @param store - opened target store (domain global + credential seam).
  * @param input - the route body.
  * @returns the same read shape `local-llm/read` answers.
  */
-export async function saveLocalLlmState(store: TargetStore, input: LocalLlmSaveInput): Promise<LocalLlmReadState> {
-  const current = store.localLlmSettings()
-  const baseUrl = normalizeLocalBaseUrl(input.baseUrl)
-  const models = normalizeModels(input.models ?? current?.models ?? [])
+export async function saveLocalLlmState(
+  store: TargetStore,
+  input: LocalLlmSaveInput,
+  llm?: NativeLlmRuntime,
+): Promise<LocalLlmReadState> {
+  const current = currentSettings(store)
+  // A save that names an endpoint means the manual source; only a save that
+  // carries neither mode nor endpoint falls back to the stored (legacy) mode.
+  const mode = input.mode
+    ?? (input.baseUrl !== undefined && input.baseUrl.trim() !== '' ? 'manual' : effectiveLocalLlmMode(current))
+  if (mode !== 'auto' && mode !== 'manual') {
+    throw new LocalLlmError('local-llm-bad-settings', '"mode" must be auto|manual')
+  }
   const timeoutMs = input.timeoutMs ?? current?.timeoutMs ?? LOCAL_LLM_DEFAULT_TIMEOUT_MS
   if (!Number.isInteger(timeoutMs) || timeoutMs < LOCAL_LLM_MIN_TIMEOUT_MS || timeoutMs > LOCAL_LLM_MAX_TIMEOUT_MS) {
     throw new LocalLlmError(
@@ -212,19 +325,41 @@ export async function saveLocalLlmState(store: TargetStore, input: LocalLlmSaveI
   }
   if (input.apiKey !== undefined) await store.storeLocalLlmKey(input.apiKey)
   const hasKey = (await store.localLlmKey()) !== undefined
-  const settings: LocalLlmSettings = {
-    baseUrl,
-    models,
-    timeoutMs,
-    ...(hasKey ? { apiKeyRef: String(localLlmCredentialKey()) } : {}),
+  let settings: LocalLlmSettings
+  if (mode === 'auto') {
+    // Nothing to configure: the catalog is discovered live on demand. Keep the
+    // timeout and drop any previously saved manual endpoint so switching back
+    // later starts from a clean slate.
+    settings = {
+      mode: 'auto',
+      baseUrl: '',
+      models: [],
+      timeoutMs,
+    }
+  } else {
+    const baseUrl = normalizeLocalBaseUrl(requireManualBaseUrl(input.baseUrl, current))
+    const models = normalizeModels(input.models ?? [])
+    settings = {
+      mode: 'manual',
+      baseUrl,
+      models,
+      timeoutMs,
+      ...(hasKey ? { apiKeyRef: String(localLlmCredentialKey()) } : {}),
+    }
   }
   await store.setLocalLlmSettings(localLlmSettingsSchema.parse(settings))
-  return {
-    baseUrl: settings.baseUrl,
-    models: [...settings.models],
-    timeoutMs: settings.timeoutMs,
-    hasApiKey: hasKey,
+  return await readLocalLlmState(store, undefined, llm)
+}
+
+function requireManualBaseUrl(input: string | undefined, current: LocalLlmSettings | undefined): string {
+  const value = input ?? (effectiveLocalLlmMode(current) === 'manual' ? current?.baseUrl : undefined)
+  if (value === undefined || value.trim() === '') {
+    throw new LocalLlmError(
+      'local-llm-unconfigured',
+      'no local model endpoint is configured; save the client-local OpenAI-compatible base URL or switch to the automatic source',
+    )
   }
+  return value
 }
 
 /**
@@ -233,7 +368,7 @@ export async function saveLocalLlmState(store: TargetStore, input: LocalLlmSaveI
  */
 export async function clearLocalLlmKey(store: TargetStore): Promise<LocalLlmReadState> {
   await store.forgetLocalLlmKey()
-  const current = store.localLlmSettings()
+  const current = currentSettings(store)
   if (current !== undefined) {
     const { apiKeyRef: _cleared, ...rest } = current
     await store.setLocalLlmSettings(rest)
@@ -242,7 +377,7 @@ export async function clearLocalLlmKey(store: TargetStore): Promise<LocalLlmRead
 }
 
 /**
- * Probe one local endpoint's `/v1/models` and return its model ids.
+ * Probe one manual local endpoint's `/v1/models` and return its model ids.
  *
  * Runs from the client host (no SSH involved) so a misconfigured endpoint fails
  * before any remote work starts. Coded failures:
@@ -313,20 +448,30 @@ export async function probeLocalModels(options: {
 }
 
 /**
- * Load the configured endpoint and produce a connect-ready plan.
+ * Produce a connect-ready plan for the current local model mode.
  *
- * Validates the base URL, reads the key from the credential store and probes
- * `/v1/models` when no models are stored (persisting what it discovered so the
- * next connect is offline). Throws {@link LocalLlmError} — never falls back to
- * the server's models.
+ * `auto` discovers the client host's provider catalog (coded failure when the
+ * host exposes nothing); `manual` validates the saved endpoint, reads the key
+ * from the credential store and probes `/v1/models` when no models are stored
+ * (persisting what it discovered so the next connect is offline).
+ * Throws {@link LocalLlmError} — never falls back to the server's models.
  * @param store - opened target store.
+ * @param options - host-side model runtime (required for `auto`).
  */
-export async function planLocalLlm(store: TargetStore): Promise<LocalLlmPlan> {
-  const settings = store.localLlmSettings()
+export async function planLocalLlm(
+  store: TargetStore,
+  options?: { readonly llm?: NativeLlmRuntime },
+): Promise<LocalLlmPlan> {
+  const settings = currentSettings(store)
+  const mode = effectiveLocalLlmMode(settings)
+  if (mode === 'auto') {
+    const catalog = await discoverCatalog(options?.llm, settings?.timeoutMs ?? LOCAL_LLM_DEFAULT_TIMEOUT_MS)
+    return { mode, catalog, models: catalogDisplayModels(catalog) }
+  }
   if (settings === undefined || settings.baseUrl.trim() === '') {
     throw new LocalLlmError(
       'local-llm-unconfigured',
-      'no local model endpoint is configured; save the client-local OpenAI-compatible base URL before connecting with the local model source',
+      'no local model endpoint is configured; save the client-local OpenAI-compatible base URL or switch to the automatic source',
     )
   }
   const baseUrl = normalizeLocalBaseUrl(settings.baseUrl)
@@ -338,14 +483,15 @@ export async function planLocalLlm(store: TargetStore): Promise<LocalLlmPlan> {
       ...(apiKey === undefined ? {} : { apiKey }),
       timeoutMs: settings.timeoutMs,
     })
-    const discovered: LocalLlmSettings = { ...settings, baseUrl, models }
+    const discovered: LocalLlmSettings = { ...settings, mode, baseUrl, models }
     await store.setLocalLlmSettings(localLlmSettingsSchema.parse(discovered))
   }
   if (models.length === 0) {
     throw new LocalLlmError('local-llm-no-models', 'the local model endpoint has no models; configure at least one model id')
   }
   return {
-    settings: { ...settings, baseUrl, models },
+    mode,
+    settings: { ...settings, mode, baseUrl, models },
     models,
     ...(apiKey === undefined ? {} : { apiKey }),
   }

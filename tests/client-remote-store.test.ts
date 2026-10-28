@@ -45,6 +45,7 @@ const apiSpies = vi.hoisted(() => ({
   localLlmSave: vi.fn(),
   localLlmProbe: vi.fn(),
   localLlmClearKey: vi.fn(),
+  localLlmDiscover: vi.fn(),
 }))
 const nativeSpies = vi.hoisted(() => ({
   open: vi.fn(),
@@ -228,6 +229,8 @@ beforeEach(() => {
   apiSpies.sessionPrompt.mockResolvedValue({ accepted: true })
   apiSpies.sessionCancel.mockResolvedValue({ accepted: true })
   apiSpies.sessionApproval.mockResolvedValue({ accepted: true })
+  // Auto mode (the default) kicks a provider discovery while the dialog opens.
+  apiSpies.localLlmDiscover.mockResolvedValue({ providers: [] })
   apiSpies.state.mockResolvedValue({
     pluginVersion: '0.1.0',
     targets: [TARGET],
@@ -297,6 +300,30 @@ describe('first paint (M1)', () => {
     await store.refreshTargetComplete('t1')
     expect(apiSpies.registryRefresh).toHaveBeenCalledWith('t1')
     expect(store.remoteAppSnapshot().connections.t1?.stale).toBe(false)
+  })
+
+  it('survives a failed per-target workspace read in /api/state', async () => {
+    // The host substitutes `{ error }` for a target whose workspace read failed
+    // (and marks the connection degraded). That must not sink the whole rail.
+    apiSpies.state.mockResolvedValue({
+      pluginVersion: '0.1.0',
+      targets: [TARGET],
+      connections: {
+        t1: {
+          ...CONNECTION,
+          phase: 'degraded',
+          error: { code: 'p1-read-failed', message: 'P1 POST /api/rpc failed: socket hang up' },
+        },
+      },
+      workspaces: { t1: { error: { code: 'p1-read-failed', message: 'socket hang up' } } },
+    })
+    const store = await freshStore()
+    await expect(store.loadRemoteState()).resolves.toBeUndefined()
+    const snapshot = store.remoteAppSnapshot()
+    expect(snapshot.error).toBeUndefined()
+    expect(snapshot.order).toEqual(['t1'])
+    expect(snapshot.connections.t1?.groups).toEqual([])
+    expect(snapshot.connections.t1?.error?.code).toBe('p1-read-failed')
   })
 
   it('keeps a failed refresh as an error instead of an empty list', async () => {
@@ -770,19 +797,67 @@ describe('execution-end switch (D20, §16.13)', () => {
 })
 
 describe('v3 full-screen official UI activation', () => {
-  it('shows a ready target in the server main panel and records the selection', async () => {
+  it('shows a ready target in the server main panel, deep-linked to its newest conversation', async () => {
     const store = await freshStore()
     bindFakeShell(store)
     await store.loadRemoteState()
     await settle()
-    store.activateRemoteTarget('t1')
+    await store.activateRemoteTarget('t1')
     expect(portalSpies.openServerMain).toHaveBeenCalledWith(expect.objectContaining({
       targetId: 't1',
       targetLabel: 'box',
+      sessionId: 's1',
       storagePrefix: 'dshrw:graydovee-remote-workspace-abc:',
     }))
     expect(shellSpies.selectPanel).toHaveBeenCalledWith('dsh-remote-workspace-server')
     expect(store.remoteAppSnapshot().selection).toEqual({ targetId: 't1' })
+  })
+
+  it('creates the workspace blank session when the profile has no conversation yet', async () => {
+    apiSpies.state.mockResolvedValue({
+      pluginVersion: '0.1.0',
+      targets: [TARGET],
+      connections: { t1: CONNECTION },
+      workspaces: { t1: WORKSPACES },
+      sessions: { t1: { ...SESSIONS, sessions: [] } },
+      defaultProfile: 'graydovee-remote-workspace-abc',
+    })
+    apiSpies.sessionCreate.mockResolvedValue({ sessionId: 'blank-1', workspaceId: 'w1' })
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    await store.activateRemoteTarget('t1')
+    expect(apiSpies.sessionCreate).toHaveBeenCalledWith({
+      targetId: 't1',
+      workspaceId: 'w1',
+      executor: 'server',
+    })
+    expect(portalSpies.openServerMain).toHaveBeenCalledWith(expect.objectContaining({
+      targetId: 't1',
+      sessionId: 'blank-1',
+    }))
+  })
+
+  it('keeps the frame without a deep link when no session can be resolved', async () => {
+    apiSpies.state.mockResolvedValue({
+      pluginVersion: '0.1.0',
+      targets: [TARGET],
+      connections: { t1: CONNECTION },
+      workspaces: { t1: { ...WORKSPACES, workspaces: [] } },
+      sessions: { t1: { ...SESSIONS, sessions: [] } },
+      defaultProfile: 'graydovee-remote-workspace-abc',
+    })
+    const store = await freshStore()
+    bindFakeShell(store)
+    await store.loadRemoteState()
+    await settle()
+    await store.activateRemoteTarget('t1')
+    expect(apiSpies.sessionCreate).not.toHaveBeenCalled()
+    expect(portalSpies.openServerMain).toHaveBeenCalledWith(expect.objectContaining({
+      targetId: 't1',
+    }))
+    expect(portalSpies.openServerMain.mock.calls.at(-1)?.[0]?.sessionId).toBeUndefined()
   })
 
   it('does not remount an already active target', async () => {
@@ -790,11 +865,11 @@ describe('v3 full-screen official UI activation', () => {
     bindFakeShell(store)
     await store.loadRemoteState()
     await settle()
-    store.activateRemoteTarget('t1')
+    await store.activateRemoteTarget('t1')
     portalSpies.openServerMain.mockClear()
     // The mocked portal reports the active request after the first activation.
     portalSpies.request = { targetId: 't1', targetLabel: 'box' }
-    store.activateRemoteTarget('t1')
+    await store.activateRemoteTarget('t1')
     expect(portalSpies.openServerMain).not.toHaveBeenCalled()
   })
 
@@ -859,35 +934,115 @@ describe('v3 local model source', () => {
     })
   }
 
-  it('hydrates the dialog from saved settings and defaults to local', async () => {
+  /** The read shape `local-llm/save` echoes back for one request. */
+  function savedState(request: {
+    mode?: 'auto' | 'manual'
+    baseUrl?: string
+    models?: readonly string[]
+    timeoutMs?: number
+    apiKey?: string
+  }): Record<string, unknown> {
+    return {
+      mode: request.mode ?? 'auto',
+      baseUrl: request.baseUrl ?? '',
+      models: request.models ?? [],
+      timeoutMs: request.timeoutMs ?? 120_000,
+      hasApiKey: request.apiKey !== undefined,
+    }
+  }
+
+  it('hydrates the auto default and discovers this DSH’s providers', async () => {
     apiSpies.localLlmRead.mockResolvedValue({
-      baseUrl: 'http://127.0.0.1:11434/v1', models: ['qwen'], timeoutMs: 120_000, hasApiKey: true,
+      mode: 'auto', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
+    apiSpies.localLlmDiscover.mockResolvedValue({
+      providers: [{ id: 'p1', name: 'Local provider', models: [{ id: 'qwen', name: 'Qwen' }] }],
+    })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    await settle()
+    const dialog = store.remoteAppSnapshot().connectDialog
+    expect(dialog?.modelSource).toBe('local')
+    expect(dialog?.localMode).toBe('auto')
+    expect(dialog?.localProviders).toEqual([
+      { id: 'p1', name: 'Local provider', models: [{ id: 'qwen', name: 'Qwen' }] },
+    ])
+    expect(dialog?.localProvidersLoaded).toBe(true)
+    expect(dialog?.localProvidersLoading).toBe(false)
+    expect(apiSpies.localLlmDiscover).toHaveBeenCalledTimes(1)
+  })
+
+  it('hydrates a saved manual endpoint without discovering providers', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'manual', baseUrl: 'http://127.0.0.1:11434/v1', models: ['qwen'], timeoutMs: 120_000, hasApiKey: true,
     })
     const store = await freshStore()
     store.openConnectDialog()
     await settle()
     const dialog = store.remoteAppSnapshot().connectDialog
     expect(dialog?.modelSource).toBe('local')
+    expect(dialog?.localMode).toBe('manual')
     expect(dialog?.localBaseUrl).toBe('http://127.0.0.1:11434/v1')
     expect(dialog?.localModels).toEqual(['qwen'])
     expect(dialog?.localHasApiKey).toBe(true)
     expect(dialog?.localSettingsLoading).toBe(false)
+    expect(apiSpies.localLlmDiscover).not.toHaveBeenCalled()
   })
 
-  it('saves the endpoint/key and adopts the probed model ids', async () => {
-    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
-    apiSpies.localLlmSave.mockImplementation(async (request: { baseUrl: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => ({
-      baseUrl: request.baseUrl, models: request.models ?? [], timeoutMs: request.timeoutMs ?? 120_000, hasApiKey: request.apiKey !== undefined,
-    }))
+  it('discovers providers on demand', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'manual', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
+    apiSpies.localLlmDiscover.mockResolvedValue({
+      providers: [
+        { id: 'p1', name: 'Provider one', models: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] },
+        { id: 'p2', name: 'Provider two', models: [{ id: 'c', name: 'C' }] },
+      ],
+    })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    await store.discoverLocalProviders()
+    const dialog = store.remoteAppSnapshot().connectDialog
+    expect(apiSpies.localLlmDiscover).toHaveBeenCalledTimes(1)
+    expect(dialog?.localProviders.map(provider => provider.id)).toEqual(['p1', 'p2'])
+    expect(dialog?.localProvidersLoaded).toBe(true)
+    expect(dialog?.localError).toBeUndefined()
+  })
+
+  it('surfaces a discovery failure inline and keeps the auto panel usable', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'manual', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
+    apiSpies.localLlmDiscover.mockRejectedValue(new MockRemoteApiError(
+      'local-llm-providers-unavailable', 'configure a provider in this DSH installation', 502,
+    ))
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    await store.discoverLocalProviders()
+    const dialog = store.remoteAppSnapshot().connectDialog
+    expect(dialog?.localProviders).toEqual([])
+    expect(dialog?.localProvidersLoaded).toBe(true)
+    expect(dialog?.localProvidersLoading).toBe(false)
+    expect(dialog?.localError).toContain('读取本机模型失败')
+  })
+
+  it('saves the manual endpoint/key and adopts the probed model ids', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'manual', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
+    apiSpies.localLlmSave.mockImplementation(async (request: { mode?: 'auto' | 'manual'; baseUrl?: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => savedState(request))
     apiSpies.localLlmProbe.mockResolvedValue({ models: ['a', 'b'] })
     const store = await freshStore()
     store.openConnectDialog()
     await settle()
-    store.patchConnectDialog({ localBaseUrl: 'http://127.0.0.1:11434/v1' })
+    store.patchConnectDialog({ localMode: 'manual', localBaseUrl: 'http://127.0.0.1:11434/v1' })
     const models = await store.probeLocalLlmModels('secret-key')
     expect(models).toEqual(['a', 'b'])
     expect(apiSpies.localLlmSave).toHaveBeenCalledWith(expect.objectContaining({
-      baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'secret-key',
+      mode: 'manual', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'secret-key',
     }))
     const dialog = store.remoteAppSnapshot().connectDialog
     expect(dialog?.localModels).toEqual(['a', 'b'])
@@ -895,8 +1050,10 @@ describe('v3 local model source', () => {
     expect(dialog?.localError).toBeUndefined()
   })
 
-  it('blocks connecting with an unconfigured local endpoint (no server fallback)', async () => {
-    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
+  it('blocks connecting in manual mode with an unconfigured endpoint (no server fallback)', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'manual', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
     const store = await freshStore()
     store.openConnectDialog()
     await settle()
@@ -908,11 +1065,11 @@ describe('v3 local model source', () => {
     expect(dialog?.error?.code).toBe('local-llm-unconfigured')
   })
 
-  it('probes an empty model list before connecting and passes the source', async () => {
-    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
-    apiSpies.localLlmSave.mockImplementation(async (request: { baseUrl: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => ({
-      baseUrl: request.baseUrl, models: request.models ?? [], timeoutMs: request.timeoutMs ?? 120_000, hasApiKey: true,
-    }))
+  it('probes an empty manual model list before connecting and passes the source', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'manual', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
+    apiSpies.localLlmSave.mockImplementation(async (request: { mode?: 'auto' | 'manual'; baseUrl?: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => savedState(request))
     apiSpies.localLlmProbe.mockResolvedValue({ models: ['m1'] })
     apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
     const store = await freshStore()
@@ -920,15 +1077,37 @@ describe('v3 local model source', () => {
     await settle()
     store.patchConnectDialog({
       label: 'box', host: '203.0.113.10', port: '22', username: 'tester', authKind: 'agent',
-      localBaseUrl: 'http://127.0.0.1:11434/v1',
+      localMode: 'manual', localBaseUrl: 'http://127.0.0.1:11434/v1',
     })
     await store.submitConnectDialog()
+    expect(apiSpies.localLlmSave).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'manual', baseUrl: 'http://127.0.0.1:11434/v1',
+    }))
     expect(apiSpies.localLlmProbe).toHaveBeenCalled()
     expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'local' }))
   })
 
+  it('submits auto mode by saving mode=auto, without probing the endpoint', async () => {
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'auto', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
+    apiSpies.localLlmSave.mockImplementation(async (request: { mode?: 'auto' | 'manual'; baseUrl?: string; models?: readonly string[]; timeoutMs?: number; apiKey?: string }) => savedState(request))
+    apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    await settle()
+    fillIdentity(store)
+    await store.submitConnectDialog()
+    expect(apiSpies.localLlmProbe).not.toHaveBeenCalled()
+    expect(apiSpies.localLlmSave).toHaveBeenCalledWith({ mode: 'auto' })
+    expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'local' }))
+  })
+
   it('passes server as the explicit source without probing the local endpoint', async () => {
-    apiSpies.localLlmRead.mockResolvedValue({ baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false })
+    apiSpies.localLlmRead.mockResolvedValue({
+      mode: 'auto', baseUrl: '', models: [], timeoutMs: 120_000, hasApiKey: false,
+    })
     apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
     const store = await freshStore()
     store.openConnectDialog()
@@ -939,6 +1118,7 @@ describe('v3 local model source', () => {
     })
     await store.submitConnectDialog()
     expect(apiSpies.localLlmProbe).not.toHaveBeenCalled()
+    expect(apiSpies.localLlmSave).not.toHaveBeenCalled()
     expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'server' }))
   })
 })

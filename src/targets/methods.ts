@@ -25,3 +25,23 @@ export function methodAvailable(method: ConnectionMethod, platform: string): boo
   // (`C:\WINDOWS\system32\wsl.exe`), so it only exists on a Windows host.
   return platform === 'win32'
 }
+
+/**
+ * Which `DSH_HOME` a reconnect of a saved target should ask for.
+ *
+ * The wizard's DSH_HOME is optional, so the value worth reusing is the one the
+ * previous connect resolved (remote `dshHome`, always absolute). Reusing it keeps
+ * the profile patch, the profile server and the reverse tunnel in the same
+ * directory; falling back to the remote default instead would leave the previous
+ * bridge port in a profile that no longer belongs to this connection.
+ *
+ * `~`-relative defaults are not reused: the host never expands them, so the
+ * remote scan decides what the home really is.
+ * @param savedRemoteDshHome - `dshHome` recorded by the last successful connect.
+ * @param requested - explicit DSH_HOME from the request body, when present.
+ * @returns the DSH_HOME to pass to the connect request, or undefined for the scan default.
+ */
+export function reconnectDshHome(savedRemoteDshHome: string, requested: string | undefined): string | undefined {
+  if (requested !== undefined) return requested
+  return savedRemoteDshHome.startsWith('/') ? savedRemoteDshHome : undefined
+}

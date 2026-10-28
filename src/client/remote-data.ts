@@ -278,7 +278,12 @@ export function deriveWorkspaceGroups(
 ): RemoteWorkspaceGroup[] {
   const byId = sessionList === undefined ? undefined : sessionsById(sessionList)
   const groups: RemoteWorkspaceGroup[] = []
-  for (const workspace of list.workspaces) {
+  // A host read that failed replaces the list with `{ error }`; the connection
+  // surfaces that failure, so an unreadable list degrades to "no rows" instead
+  // of sinking every later commit through the rail.
+  const workspaces = (list as { workspaces?: unknown } | null)?.workspaces
+  if (!Array.isArray(workspaces)) return groups
+  for (const workspace of workspaces) {
     const sessions = byId === undefined ? [] : deriveSessionNodes(workspace, byId, options)
     // A session may be listed under no workspace when a write by another
     // process is mid-flight; the tree only renders workspace-owned rows.

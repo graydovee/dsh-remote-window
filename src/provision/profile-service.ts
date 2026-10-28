@@ -31,6 +31,7 @@ import {
   LOCAL_LLM_BRIDGE_API_KEY,
 } from '../local-llm/profile.ts'
 import { LocalLlmError, planLocalLlm, type LocalLlmPlan } from '../local-llm/settings.ts'
+import type { NativeLlmRuntime } from '../local-llm/native.ts'
 import { LocalLlmService, type LocalLlmPrepared } from '../local-llm/service.ts'
 import { createRemoteForward, type RemoteForward, type RemoteForwardOptions } from '../local-llm/tunnel.ts'
 import { SshForwarder, sendForwardedHttp, type ForwardStream } from '../ssh/forward.ts'
@@ -350,7 +351,16 @@ export class ProfileService {
   private readonly localLlm: LocalLlmService
 
   constructor(private readonly options: ProfileServiceOptions) {
-    this.localLlm = new LocalLlmService(options.store)
+    // The model runtime may be registered after this row applies, so resolve it
+    // lazily on every use instead of capturing it here.
+    this.localLlm = new LocalLlmService(options.store, {
+      llm: () => this.options.ctx?.get('llm') as NativeLlmRuntime | undefined,
+    })
+  }
+
+  /** The client host's model runtime (`ctx.llm`), when the installation has one. */
+  private resolveLlm(): NativeLlmRuntime | undefined {
+    return this.options.ctx?.get('llm') as NativeLlmRuntime | undefined
   }
 
   /** The installation's stable clientId (also used by the old state route). */
@@ -581,7 +591,10 @@ export class ProfileService {
       // Validate the endpoint (and probe its catalog when no models are stored)
       // before touching the server: a misconfigured local source must be a
       // coded, actionable error, never a silent fallback to server models.
-      if (modelSource === 'local') localModelPlan = await planLocalLlm(this.options.store)
+      if (modelSource === 'local') {
+        const llm = this.resolveLlm()
+        localModelPlan = await planLocalLlm(this.options.store, llm === undefined ? {} : { llm })
+      }
       begin('connect', `正在建立 SSH 连接 ${effectiveRequest.username}@${effectiveRequest.host}:${effectiveRequest.port}…`)
       connection = await this.options.connector.connect(effectiveRequest)
       emit('connect', 'ok', `SSH 已连接 ${effectiveRequest.username}@${effectiveRequest.host}`)
@@ -653,10 +666,16 @@ export class ProfileService {
         await writeProfilePatch(
           connection.remote,
           paths,
-          buildLocalModelPatch({ remotePort: localModel.remotePort, models: localModel.models }),
+          buildLocalModelPatch({ remotePort: localModel.remotePort, routes: localModel.routes }),
         )
         startEnv = { [LOCAL_LLM_API_KEY_ENV]: LOCAL_LLM_BRIDGE_API_KEY }
-        emit('start', 'running', `本地模型已就绪（${localModel.models.length} 个模型，反向隧道端口 ${localModel.remotePort}）`)
+        emit(
+          'start',
+          'running',
+          localModel.mode === 'auto'
+            ? `本地模型已就绪（自动代理 ${localModel.routes.length} 个 provider、${localModel.models.length} 个模型，反向隧道端口 ${localModel.remotePort}）`
+            : `本地模型已就绪（${localModel.models.length} 个模型，反向隧道端口 ${localModel.remotePort}）`,
+        )
       } else {
         await writeProfilePatch(connection.remote, paths, EMPTY_PROFILE_PATCH)
       }

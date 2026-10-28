@@ -46,8 +46,15 @@ class FakeProfileRemote implements ProfileRemote {
 }
 
 describe('buildLocalModelPatch', () => {
-  it('overrides llm-pi-ai and agent-default-model with JSON-quoted YAML scalars', () => {
-    expect(buildLocalModelPatch({ remotePort: 40_123, models: ['qwen3', 'llama3'] })).toBe(
+  it('renders one pi-ai provider per route plus the default agent model', () => {
+    expect(
+      buildLocalModelPatch({
+        remotePort: 40_123,
+        routes: [
+          { id: 'client-local', displayName: 'Local model', pathPrefix: '', models: [{ id: 'qwen3', name: 'qwen3' }, { id: 'llama3', name: 'llama3' }] },
+        ],
+      }),
+    ).toBe(
       [
         '- id: "llm-pi-ai"',
         '  config:',
@@ -71,31 +78,48 @@ describe('buildLocalModelPatch', () => {
     )
   })
 
-  it('keeps the route id, display name and key env configurable/stable and escapes strings', () => {
+  it('renders one provider per auto route and keeps strings escaped', () => {
     const patch = buildLocalModelPatch({
       remotePort: 8_080,
-      models: ['  qwen3  ', '', '   '],
-      displayName: 'Local "fast" \\ model',
+      routes: [
+        { id: 'remote-openai', displayName: 'OpenAI "fast" \\ route', pathPrefix: '/openai', models: [{ id: 'gpt-5', name: 'GPT-5' }] },
+        { id: 'remote-local', displayName: 'Ollama', pathPrefix: '/ollama', models: [{ id: 'llama3', name: 'llama3' }, { id: 'qwen3', name: 'qwen3' }] },
+      ],
     })
     expect(LOCAL_LLM_PROVIDER_ID).toBe('client-local')
     expect(LOCAL_LLM_BRIDGE_API_KEY).toBe('local-bridge')
     expect(LOCAL_LLM_API_KEY_ENV).toBe('DSH_RW_LOCAL_LLM_KEY')
-    expect(patch).toContain('displayName: "Local \\"fast\\" \\\\ model"')
-    // Only the usable model survives trimming/filtering.
-    expect(patch.match(/ {8}- id:/gu)).toHaveLength(1)
-    expect(patch).toContain('model: "qwen3"')
+    expect(patch).toContain('displayName: "OpenAI \\"fast\\" \\\\ route"')
+    expect(patch).toContain('"remote-openai":')
+    expect(patch).toContain('baseURL: "http://127.0.0.1:8080/openai/v1"')
+    expect(patch).toContain('"remote-local":')
+    expect(patch).toContain('baseURL: "http://127.0.0.1:8080/ollama/v1"')
+    expect(patch).toContain('model: "gpt-5"')
     expect(patch.endsWith('\n')).toBe(true)
     // No user secret can appear: the patch only names the env variable.
     expect(patch).not.toContain('Bearer')
     expect(patch).not.toContain('sk-')
   })
 
-  it('rejects an invalid port or an empty model list before the profile starts', () => {
-    for (const remotePort of [0, 65_536, 1.5, Number.NaN]) {
-      expect(() => buildLocalModelPatch({ remotePort, models: ['qwen3'] })).toThrow(/invalid reverse-tunnel port/u)
+  it('rejects an invalid port, empty routes and route collisions before the profile starts', () => {
+    const route = {
+      id: 'client-local',
+      displayName: 'Local model',
+      pathPrefix: '',
+      models: [{ id: 'qwen3', name: 'qwen3' }],
     }
-    expect(() => buildLocalModelPatch({ remotePort: 8_080, models: [] })).toThrow(/at least one model/u)
-    expect(() => buildLocalModelPatch({ remotePort: 8_080, models: [' ', ''] })).toThrow(/at least one model/u)
+    for (const remotePort of [0, 65_536, 1.5, Number.NaN]) {
+      expect(() => buildLocalModelPatch({ remotePort, routes: [route] })).toThrow(/invalid reverse-tunnel port/u)
+    }
+    expect(() => buildLocalModelPatch({ remotePort: 8_080, routes: [] })).toThrow(/at least one provider route/u)
+    expect(() => buildLocalModelPatch({
+      remotePort: 8_080,
+      routes: [{ ...route, models: [{ id: ' ', name: '' }] }],
+    })).toThrow(/advertises no models/u)
+    expect(() => buildLocalModelPatch({
+      remotePort: 8_080,
+      routes: [route, { ...route }],
+    })).toThrow(/duplicate provider route/u)
   })
 
   it('exposes the empty patch used for the server model source', () => {
@@ -145,7 +169,10 @@ describe('profile start environment', () => {
   it('writes the patch next to the profile, creating the directory first', async () => {
     const paths = profilePaths('/home/user/.dsh', CLIENT_ID)
     const remote = new FakeProfileRemote()
-    const patch = buildLocalModelPatch({ remotePort: 40_123, models: ['qwen3'] })
+    const patch = buildLocalModelPatch({
+      remotePort: 40_123,
+      routes: [{ id: 'client-local', displayName: 'Local model', pathPrefix: '', models: [{ id: 'qwen3', name: 'qwen3' }] }],
+    })
     await writeProfilePatch(remote, paths, patch)
     expect(remote.scripts[0]).toContain(`mkdir -p '${paths.profileDir}'`)
     expect(remote.writes).toEqual([{ path: `${paths.profileDir}/${PROFILE_PATCH_FILE}`, content: patch }])

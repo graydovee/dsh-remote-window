@@ -20,8 +20,12 @@ v3 的 server 主区是 **server profile 官方 DSH UI 的全屏同源 iframe**�
   显示 server profile 的完整官方 DSH UI；client shell sidebar 在 iframe 挂载期间隐藏，浮动 target rail
   是唯一的 client chrome。官方 UI 的 sidebar/header/主区/rightbar/插件 UI 全部由 server 提供。
 - 模型来源（连接设置，非会话内热切换）：`local`（默认，agent/日志/工具仍在 server，模型请求经
-  SSH 反向隧道转发到 client 本机 endpoint）与 `server`（server profile 自己的模型）。切换需重连
-  （D20：cancel → whenIdle/flush → 重启 profile）；local 未配置时阻止连接，不静默回退。
+  SSH 反向隧道转发到 client 本机）与 `server`（server profile 自己的模型）。local 的默认接入方式是
+  **自动代理本机模型**：client host 用 `ctx.llm` 枚举本机全部 provider/model，经一条反向隧道暴露成
+  server profile 的多个 `llm-pi-ai` route（每个 provider 一条 `remote-*` route，路径前缀区分），
+  不需要 endpoint/API key；「手动指定 endpoint」保留在高级选项。切换需重连（D20：cancel →
+  whenIdle/flush → 重启 profile）；本机发现不到模型或 provider 不可用时用专用 `local-llm-*` 错误码
+  拒绝，不静默回退到 server 模型。
 - v2 的 executor（local agent 执行世界）保留在数据/旧会话中，但 iframe 主区始终由 server 官方 UI 打开
   server agent；新连接不再走 client native 主区。
 - 目标机运行 `dsh --profile <p> --host 127.0.0.1 --port 0 --no-open`，stdout 打印
@@ -132,12 +136,18 @@ tsdown targets：
 
 - 新连接默认 **modelSource=local**（server 通常没配模型 key）；连接设置存 client，target 记录用可选
   `modelSource` 持久化。server 模式必须在对话框显式选择。
-- local 模型生命周期：连接前校验（endpoint 可达、`/v1/models` 非空）→ 启动 client bridge → 
-  `ssh2.forwardIn('127.0.0.1', 0)` 取得 server 回环端口 → 重写 profile `cordis.patch.yml`（route
-  `client-local`，`apiKeyEnv=DSH_RW_LOCAL_LLM_KEY` 占位）→ 启动 profile。失败必须 coded error，禁止
-  fallback 到 server 模型；`stop()`/`reconnectLost()`/连接失败关闭 bridge+tunnel，禁止孤儿端口。
-- 本机 key 只进官方 `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`；bridge 注入/覆盖
-  Authorization，日志/错误/SSE 不得出现 key。
+- local 模型生命周期：解析计划（默认 `auto`：`ctx.llm.listProviders()/listModels()` 枚举本机
+  provider/model；`manual` 高级选项才探测 endpoint 的 `/v1/models`）→ 启动 client bridge（auto 是
+  `ctx.llm.stream()` 的 OpenAI 兼容原生代理，manual 是 `/v1/*` 注入 key 的转发桥）→
+  `ssh2.forwardIn('127.0.0.1', 0)` 取得 server 回环端口 → 重写 profile `cordis.patch.yml`（auto 每个
+  provider 一条 `remote-<slug>` route、manual 一条 `client-local` route；`apiKeyEnv=DSH_RW_LOCAL_LLM_KEY`
+  占位）→ 启动 profile。失败必须 coded error，禁止 fallback 到 server 模型；
+  `stop()`/`reconnectLost()`/连接失败关闭 bridge+tunnel，禁止孤儿端口。bridge 必须把 adapter 的
+  error/aborted 终止 chunk 转成显式错误（started 前 502 JSON、started 后 error chunk），不得映射成
+  stop，否则 server 侧只会看到 EMPTY_RESPONSE。
+- auto 模式不需要 key（本机 provider 自己的凭据在本机解析）；manual 的本机 key 只进官方
+  `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`；bridge 注入/覆盖 Authorization，
+  日志/错误/SSE 不得出现 key。
 - 切换按 D20：preview 必须列当前 turn + 其它 active turn；apply 必须带 `previewRevision` 与
   `cancelActiveTurns:true`；缺清单拒绝执行；任何取消失败显式报错。
 - 主区是 **官方 UI 全屏 iframe**（`portal-main.tsx`，`SERVER_MAIN_ID`）：连接成功/rail 激活 → 
@@ -148,6 +158,9 @@ tsdown targets：
   不开放 top-navigation。portal 仍是纯字节代理，剥 client cookie、注入 server cookie、剥 `Set-Cookie`。
 - `dshRwFull=1` 让 server embed 不隐藏官方 sidebar/rightbar/bottom；client 侧在 iframe 挂载期间用
   `html[data-dsh-rw-portal]` 隐藏 shell 自己的 sidebar 并收窄 root grid。
+- 打开 portal **必须带 `dshRwSession` 深链**（`portalSessionFor`：优先 host state 里最近的非 blank
+  会话，否则 `session/create` 建 blank）；裸开 portal 会落到官方首启 composer（“选择一个工作区开始”）
+  且 iframe 内无法恢复。深链只写 `dsh.sessions.current`，不 reload、不换写者。
 - 开发说明（不是模型 prompt）：local 模式只注入 remote working-directory + execution host；SSH/mux/
   sandbox/anchor 生命周期属于 DSH/插件实现，不进入模型上下文。SSH 意外关闭自动重连最多 5 次（指数
   退避）；认证/host-key 错误不重试，用户主动 stop 不触发。
@@ -175,6 +188,10 @@ tsdown targets：
   artifact 时，client 复用 host pnpm 在 `~/.dsh/remote-assets/` 构建 `node/`+`dsh/` 包再上传；构建结果
   与 server 仓库发布的 runtime 布局一致，失败才报 `runtime-missing`。
 - 一个 profile 一个 client；client 断开 → cancel/flush → 停 profile server、关隧道。
+- 已保存 target 的重连必须复用上次 connect 解析出的 **绝对 `remote.dshHome`**
+  （`targets/methods.ts` `reconnectDshHome()`，请求显式值优先，`~`/空/相对路径才回退远端扫描）；
+  否则 profile patch/隧道会写到默认 home，server 继续调用旧 bridge 端口。回归测试
+  `tests/targets-reconnect.test.ts`。
 - 不新增版本区间：运行时契约唯一来源 `DSH_VERIFIED_RUNTIMES`，只接受实测 `0.2.1-rc.3`。
 - `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 精确 `0.2.1-rc.3`；zod 固定 `4.4.3`；
   `engines.node` 保持 `^22.19.0 || >=24.0.0`。
@@ -212,8 +229,8 @@ tsdown targets：
 
 | 位置 | 内容 |
 |---|---|
-| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录（含 `modelSource`）、`localLlm` endpoint/模型、全局包策略、旧 workspace refs（待清理） |
-| client `~/.dsh/.credentials.yaml` | SSH/凭据引用与本地模型 API key（官方 store，0600） |
+| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录（含 `modelSource`）、`localLlm` 模式（auto/manual）/endpoint/模型/超时、全局包策略、旧 workspace refs（待清理） |
+| client `~/.dsh/.credentials.yaml` | SSH/凭据引用与 manual 模式的本地模型 API key（官方 store，0600）；auto 模式不存 key |
 | client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
 | client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
 | server `~/.dsh/sessions/**` | 官方会话日志（两种模式共用；权威） |

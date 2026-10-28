@@ -10,6 +10,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo, Server } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { dispatchLocalLlmApi, parseModelSource } from '../src/local-llm/routes.ts'
+import type { NativeLlmRuntime } from '../src/local-llm/native.ts'
 import { LocalLlmError } from '../src/local-llm/settings.ts'
 import {
   packagePolicySettingsSchema,
@@ -97,22 +98,24 @@ describe('parseModelSource', () => {
 describe('dispatchLocalLlmApi', () => {
   it('reads defaults, saves and clears without ever exposing the key', async () => {
     const { store } = fakeStore()
-    expect(await dispatchLocalLlmApi(store, 'local-llm/read', {})).toEqual({
+    expect(await dispatchLocalLlmApi(store, 'local-llm/read', {})).toMatchObject({
+      mode: 'auto',
       baseUrl: '',
       models: [],
       timeoutMs: 120_000,
       hasApiKey: false,
     })
     const saved = await dispatchLocalLlmApi(store, 'local-llm/save', {
+      mode: 'manual',
       baseUrl: 'http://127.0.0.1:11434/v1/',
       models: ['qwen3'],
       timeoutMs: 30_000,
       apiKey: 'sk-route-secret',
     })
-    expect(saved).toEqual({ baseUrl: 'http://127.0.0.1:11434', models: ['qwen3'], timeoutMs: 30_000, hasApiKey: true })
+    expect(saved).toMatchObject({ mode: 'manual', baseUrl: 'http://127.0.0.1:11434', models: ['qwen3'], timeoutMs: 30_000, hasApiKey: true })
     expect(JSON.stringify(saved)).not.toContain('sk-route-secret')
     const read = await dispatchLocalLlmApi(store, 'local-llm/read', {})
-    expect(read).toEqual(saved)
+    expect(read).toMatchObject(saved as Record<string, unknown>)
     const cleared = await dispatchLocalLlmApi(store, 'local-llm/clear-key', {})
     expect(cleared).toMatchObject({ hasApiKey: false })
     expect((await dispatchLocalLlmApi(store, 'local-llm/read', {}))).toMatchObject({ hasApiKey: false })
@@ -159,6 +162,39 @@ describe('dispatchLocalLlmApi', () => {
     } finally {
       await fake.close()
     }
+  })
+
+  it('discovers the client host providers for the automatic source', async () => {
+    const { store } = fakeStore()
+    const runtime = {
+      async listProviders() {
+        return [{ id: 'openai', name: 'OpenAI' }, { id: 'ollama', name: 'Ollama' }]
+      },
+      async listModels(provider: string) {
+        return provider === 'openai'
+          ? [{ provider: 'openai', id: 'gpt-5', name: 'GPT-5' }]
+          : [{ provider: 'ollama', id: 'llama3', name: 'llama3' }]
+      },
+      async *stream() {
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      },
+    } satisfies NativeLlmRuntime
+    expect(await dispatchLocalLlmApi(store, 'local-llm/discover', {}, () => runtime)).toEqual({
+      providers: [
+        { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-5', name: 'GPT-5' }] },
+        { id: 'ollama', name: 'Ollama', models: [{ id: 'llama3', name: 'llama3' }] },
+      ],
+    })
+    // A host without the model runtime is a coded 502, not a crash.
+    await expect(dispatchLocalLlmApi(store, 'local-llm/discover', {}, () => undefined)).rejects.toMatchObject({
+      code: 'local-llm-unavailable',
+      status: 502,
+    })
+    const broken = { ...runtime, listProviders: async () => { throw new Error('no runtime') } }
+    await expect(dispatchLocalLlmApi(store, 'local-llm/discover', {}, () => broken)).rejects.toMatchObject({
+      code: 'local-llm-providers-unavailable',
+      status: 502,
+    })
   })
 
   it('keeps probe failures coded and scrubbed', async () => {

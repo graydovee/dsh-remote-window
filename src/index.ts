@@ -21,6 +21,7 @@ import { createRoutingPersistence, localSessionRoot, type RoutingRemoteService, 
 import { assertRemoteSessionPreset } from './session/remote-guard.ts'
 import { listSshAliases } from './ssh-config.ts'
 import { TargetStore } from './targets/store.ts'
+import { reconnectDshHome } from './targets/methods.ts'
 import { scrubSecrets, toPublicTarget } from './targets/types.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from './ssh/hostkey.ts'
 import { DSH_VERIFIED_RUNTIMES } from './provision/version-range.ts'
@@ -29,6 +30,7 @@ import { PORTAL_BASE, portalMuxPath } from './portal/proxy.ts'
 import { ProfileService, createSshProfileConnector, readPrivateKeyFile, type ConnectProgressEvent } from './provision/profile-service.ts'
 import { RemoteMuxRouter } from './remote/mux-client.ts'
 import { dispatchLocalLlmApi, parseModelSource } from './local-llm/routes.ts'
+import type { NativeLlmRuntime } from './local-llm/native.ts'
 
 /** Route prefix for the plugin's own API and SSE channel. */
 export const ROUTE_PREFIX = '/dsh-remote-workspace'
@@ -503,6 +505,10 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
         const savedKey = saved.authKind === 'privateKey' && saved.privateKeyPath !== undefined
           ? await readPrivateKeyFile(saved.privateKeyPath)
           : undefined
+        // A reconnect carries no wizard body: reuse the DSH_HOME resolved by the
+        // original connect, otherwise the profile patch lands in a different
+        // directory and the server keeps calling the previous bridge port.
+        const reconnectHome = reconnectDshHome(saved.remote.dshHome, optionalString(body, 'dshHome'))
         try {
           return await profiles.connect({
             label: optionalString(body, 'label') ?? saved.label,
@@ -514,7 +520,7 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
             ...(savedKey === undefined ? {} : { privateKey: savedKey }),
             ...(saved.privateKeyPath === undefined ? {} : { privateKeyPath: saved.privateKeyPath }),
             ...(saved.hostKeyFingerprint === '' ? {} : { hostKeyFingerprint: saved.hostKeyFingerprint }),
-            ...(optionalString(body, 'dshHome') === undefined ? {} : { dshHome: optionalString(body, 'dshHome') as string }),
+            ...(reconnectHome === undefined ? {} : { dshHome: reconnectHome }),
             runtimePolicy: 'auto',
             ...(requestedModelSource === undefined ? {} : { modelSource: requestedModelSource }),
           }, reportProgress)
@@ -567,8 +573,9 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
     case 'local-llm/read':
     case 'local-llm/save':
     case 'local-llm/probe':
+    case 'local-llm/discover':
     case 'local-llm/clear-key': {
-      const value = await dispatchLocalLlmApi(store, method, body)
+      const value = await dispatchLocalLlmApi(store, method, body, () => ctx.get('llm') as NativeLlmRuntime | undefined)
       if (value === undefined) throw new RouteError('not-found', `unknown method ${JSON.stringify(method)}`, 404)
       return value
     }
