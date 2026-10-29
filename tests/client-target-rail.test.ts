@@ -276,19 +276,18 @@ describe('target rail', () => {
     expect(module.railShowsToggle(false, false, 1)).toBe(false)
   })
 
-  it('places the fold button in the gutter outside the rail hover area', async () => {
+  it('renders the fold button inside the rail card but outside its hover group', async () => {
+    const second = view({ target: { id: 't2', label: 'box2', kind: 'ssh', host: '203.0.113.11', port: 22, username: 'tester', status: 'ready' } })
+    store.state = { loaded: true, loading: false, order: ['t1', 't2'], connections: { t1: view(), t2: second } }
     const module = await import('../src/client/rail.tsx')
-    const viewport = { width: 1440, height: 900 }
-    // Left/right edges: below the last glyph, at the rail gutter x.
-    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, false, false, 9, viewport)).toEqual({ left: 16, top: 410 })
-    expect(module.railToggleStyle({ dock: 'right', offset: 96 }, false, false, 9, viewport)).toEqual({ left: 1392, top: 410 })
-    // Top/bottom bars: after the last chip, inside the bar gutter.
-    expect(module.railToggleStyle({ dock: 'top', offset: 678 }, false, false, 9, viewport)).toEqual({ left: 992, top: 16 })
-    expect(module.railToggleStyle({ dock: 'bottom', offset: 0 }, false, false, 3, viewport)).toEqual({ left: 120, top: 852 })
-    // Hidden while hover-expanded, minimized, or with a lone target.
-    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, true, false, 9, viewport)).toBeUndefined()
-    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, false, true, 9, viewport)).toBeUndefined()
-    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, false, false, 1, viewport)).toBeUndefined()
+    const rail = module.TargetRail() as unknown as Element
+    expect(rail.props?.className).toBe('dsh-rw-rail')
+    const toggle = collect(rail).find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+    const hoverGroup = collect(rail).find(element => element.props?.className === 'dsh-rw-rail-hover')
+    expect(toggle).toBeDefined()
+    expect(hoverGroup).toBeDefined()
+    // Pointing at the button must not fire the hover group's expand handlers.
+    expect(collect(hoverGroup).some(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')).toBe(false)
   })
 
   it('collapses to a single +N glyph from the toggle and hides it for a lone target', async () => {
@@ -300,24 +299,15 @@ describe('target rail', () => {
       connections: { t1: view(), t2: second },
     }
     const module = await import('../src/client/rail.tsx')
-    const tree = module.TargetRail() as unknown as { props?: { children?: unknown[] } }
-    const parts = Array.isArray(tree.props?.children) ? tree.props.children : []
-    const railElement = parts.find(part => (part as Element | undefined)?.props?.className === 'dsh-rw-rail') as Element | undefined
-    const toggle = parts
-      .map(part => part as Element)
-      .find(part => part?.props?.['data-testid'] === 'dsh-rw-rail-toggle')
-    expect(railElement).toBeDefined()
+    const rail = module.TargetRail() as unknown as Element
+    const toggle = collect(rail).find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
     expect(toggle).toBeDefined()
-    // Rendered next to the rail, not inside its hover area.
-    expect(collect(railElement).some(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')).toBe(false)
     ;(toggle?.props.onClick as (() => void) | undefined)?.()
     expect(setterCalls).toContain(true)
 
     store.state = { loaded: true, loading: false, order: ['t1'], connections: { t1: view() } }
-    const loneParts = (module.TargetRail() as unknown as { props?: { children?: unknown[] } }).props?.children
-    const loneToggle = Array.isArray(loneParts)
-      ? loneParts.map(part => part as Element).find(part => part?.props?.['data-testid'] === 'dsh-rw-rail-toggle')
-      : undefined
+    const loneToggle = collect(module.TargetRail() as unknown as Element)
+      .find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
     expect(loneToggle).toBeUndefined()
   })
 

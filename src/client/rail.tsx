@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
-  IconChevronDownOutlineRegular, IconChevronRightOutlineRegular,
+  IconChevronDownOutlineRegular, IconChevronLeftOutlineRegular,
   IconPlusOutlineRegular, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NoticeToastHost } from './common.tsx'
@@ -85,41 +85,12 @@ export function railBarWidth(targetCount: number): number {
  */
 /**
  * The collapse toggle is offered whenever there is more than one connection to
- * fold away. It stays mounted while the rail is hover-expanded too: the pointer
- * has to cross the strip to reach it, and hiding it on hover would make the
- * control impossible to click.
+ * fold away. It is rendered inside the rail card but *outside* the hover group
+ * that expands the rail, so reaching it never fires the hover-expand (which
+ * used to reflow the strip under the pointer and flicker the button away).
  */
 export function railShowsToggle(expanded: boolean, minimized: boolean, targetCount: number): boolean {
   return !expanded && !minimized && targetCount > 1
-}
-
-/**
- * Position the fold button *outside* the rail box so reaching it never triggers
- * the hover-expand of the rail. It sits in the gutter the strip reserves for it:
- * below the last glyph on the left/right edges, after the last chip on the
- * top/bottom bars.
- * @returns absolute style inside the fixed rail host, or undefined when hidden.
- */
-export function railToggleStyle(
-  placement: RailPlacement,
-  expanded: boolean,
-  minimized: boolean,
-  targetCount: number,
-  viewport: { readonly width: number; readonly height: number },
-): CSSProperties | undefined {
-  if (!railShowsToggle(expanded, minimized, targetCount)) return undefined
-  // padding 6 + one 34px slot per chip (32px chip + 2px gap) + 2px before the button
-  const edge = 6 + targetCount * RAIL_BAR_CHIP_WIDTH + 2
-  if (placement.dock === 'left') return { left: RAIL_MARGIN + 6, top: placement.offset + edge }
-  if (placement.dock === 'right') {
-    return { left: Math.max(RAIL_MARGIN, viewport.width - RAIL_MARGIN - RAIL_COMPACT_SIZE + 6), top: placement.offset + edge }
-  }
-  const barWidth = railBarWidth(targetCount + 1)
-  const barLeft = clamp(placement.offset, RAIL_MARGIN, viewport.width - RAIL_MARGIN - barWidth)
-  const left = Math.max(RAIL_MARGIN, Math.min(barLeft + edge, viewport.width - RAIL_MARGIN - RAIL_COMPACT_SIZE + 2))
-  return placement.dock === 'top'
-    ? { left, top: RAIL_MARGIN + 6 }
-    : { left, top: Math.max(RAIL_MARGIN, viewport.height - RAIL_MARGIN - RAIL_COMPACT_SIZE + 6) }
 }
 
 /** Position/size overrides the rail needs for its current dock and state. */
@@ -517,28 +488,10 @@ export function TargetRail(): ReactElement {
     ? { left: drag.x, top: drag.y }
     : railBoxStyle(placement, expanded, views.length, viewport, minimized)
 
-  const toggleStyle = drag === null
-    ? railToggleStyle(placement, expanded, minimized, views.length, viewport)
-    : undefined
+  const showToggle = drag === null && railShowsToggle(expanded, minimized, views.length)
 
   return (
-    <>
-      {toggleStyle !== undefined && (
-        <button
-          type="button"
-          className="dsh-rw-rail-toggle"
-          style={toggleStyle}
-          data-testid="dsh-rw-rail-toggle"
-          title={t('rail.collapseList')}
-          aria-label={t('rail.collapseList')}
-          onClick={() => { setMinimized(true) }}
-        >
-          {placement.dock === 'top' || placement.dock === 'bottom'
-            ? <IconChevronRightOutlineRegular size={12} />
-            : <IconChevronDownOutlineRegular size={12} />}
-        </button>
-      )}
-      <div
+    <div
       className="dsh-rw-rail"
       style={railStyle}
       data-expanded={expanded ? 'true' : undefined}
@@ -553,15 +506,20 @@ export function TargetRail(): ReactElement {
       title={t('rail.dragHint')}
       onPointerDown={startDrag}
       onClickCapture={suppressDraggedClick}
-      onMouseEnter={() => { if (!minimized) setHovered(true) }}
-      onMouseLeave={() => { setHovered(false) }}
-      onFocus={() => { if (!minimized) setHovered(true) }}
-      onBlur={(event: FocusEvent) => {
-        const current = event.currentTarget as Node | null
-        const next = event.relatedTarget as Node | null
-        if (current === null || !current.contains(next)) setHovered(false)
-      }}
     >
+      {/* Only this group expands the rail on hover; the fold button below it
+          must stay outside so pointing at it cannot trigger a reflow. */}
+      <div
+        className="dsh-rw-rail-hover"
+        onMouseEnter={() => { if (!minimized) setHovered(true) }}
+        onMouseLeave={() => { setHovered(false) }}
+        onFocus={() => { if (!minimized) setHovered(true) }}
+        onBlur={(event: FocusEvent) => {
+          const current = event.currentTarget as Node | null
+          const next = event.relatedTarget as Node | null
+          if (current === null || !current.contains(next)) setHovered(false)
+        }}
+      >
       <div className="dsh-rw-rail-head">
         <span className="dsh-rw-rail-title">{t('rail.title')}</span>
         <span className="dsh-rw-rail-head-actions">
@@ -620,6 +578,21 @@ export function TargetRail(): ReactElement {
           </>
         )}
       </div>
+      </div>
+      {showToggle && (
+        <button
+          type="button"
+          className="dsh-rw-rail-toggle"
+          data-testid="dsh-rw-rail-toggle"
+          title={t('rail.collapseList')}
+          aria-label={t('rail.collapseList')}
+          onClick={() => { setMinimized(true) }}
+        >
+          {placement.dock === 'top' || placement.dock === 'bottom'
+            ? <IconChevronLeftOutlineRegular size={12} />
+            : <IconChevronDownOutlineRegular size={12} />}
+        </button>
+      )}
       {state.loading && !state.loaded && <p className="dsh-rw-rail-status">{t('common.loading')}</p>}
       {state.error !== undefined && (
         <button type="button" className="dsh-rw-rail-status" onClick={() => { void loadRemoteState() }}>
@@ -628,8 +601,7 @@ export function TargetRail(): ReactElement {
       )}
       <RemoteDialogs />
       {state.notice !== undefined && <NoticeToastHost notice={state.notice} onDismiss={dismissRemoteNotice} />}
-      </div>
-    </>
+    </div>
   )
 }
 
