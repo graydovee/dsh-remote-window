@@ -19,7 +19,9 @@ let server: SshServer
 let port = 0
 
 beforeAll(async () => {
-  const hostKey = utils.generateKeyPairSync('ed25519')
+  // RSA keeps the fixture portable: Node's ed25519 PKCS#8 encoding differs
+  // between OpenSSL builds, and older ssh2 cannot parse every encoding.
+  const hostKey = utils.generateKeyPairSync('rsa', { bits: 2048 })
   server = new SshServer({ hostKeys: [hostKey.private] }, (client) => {
     // A client that rejects the host key disconnects with KEY_EXCHANGE_FAILED;
     // the fixture's server connection must absorb that instead of crashing the
