@@ -205,7 +205,7 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   `.dsh-rw-rail-hover` 组（`toggleInsideRail=true`、`toggleInsideHover=false`）；指针移到按钮上 rail
   仍保持 44px 不展开。点击后 44×44、只渲染 `+9`，hover 不再展开；点 `+9` 恢复 44×350 并把 hover 展开
   行为恢复（280×427，展开期间按钮隐藏）。拖到上缘：352×44，按钮在卡片内、最后 chip 之后
-  （x=990，rail 右缘 1030），图标为指向左侧的折回箭头；点击最小化 44×44、hover 不展开，再点恢复
+  （x=990，rail 右缘 1030），图标为指向左侧的折回箭头；点击最小化 44×44、hover 不展开，再点直接展开
   352×44。截图 `/tmp/dsh-e2e/rail-min-toggle.jpg`、`rail-min-vertical.jpg`、`rail-min-horizontal.jpg`、
   `rail-top-collapsed.jpg`。回归测试 `tests/client-target-rail.test.ts`（`railShowsToggle`、
   `railBoxStyle` minimized 宽度、toggle 在卡片内且不在 hover 组内、1 个连接时不存在）。

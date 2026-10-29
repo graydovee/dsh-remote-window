@@ -215,8 +215,8 @@ tsdown targets：
   夹在视口内（`railBoxStyle`）。位置存 `localStorage['dsh-remote-workspace.rail-dock']`，未手动拖动
   前 portal 打开时自动靠右；展开/收起使用 200ms 过渡，`prefers-reduced-motion` 下关闭动画。
 - rail 收起态在连接数 > 1 时末尾多一个折叠按钮（左右吸附在最后一个图标下方，上下吸附在图标条右端），
-  点击最小化为单个 `+N` 图标（N = 连接数），最小化期间 hover 不展开；再点 `+N` 恢复收起条与 hover
-  展开。最小化是会话内状态（不持久化），连接数降到 1 自动恢复。按钮**在 rail 卡片内部**（竖排在最后
+  点击最小化为单个 `+N` 图标（N = 连接数），最小化期间 hover 不展开；再点 `+N` 直接一步进入展开态
+  （等价 hover 展开），指针移开后回到收起条。最小化是会话内状态（不持久化），连接数降到 1 自动恢复。按钮**在 rail 卡片内部**（竖排在最后
   一个 chip 下方、横排在 chip 条右端），但不属于负责 hover 展开的 `.dsh-rw-rail-hover` 组：指针指到
   按钮不会触发展开。图标指向收起方向（竖排向下、横排向左折回），hover 展开/最小化/单连接/拖拽期间
   隐藏（`railShowsToggle` 只看 expanded/minimized/count）。不把按钮移出 hover 组会回到「hover 按钮 →

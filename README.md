@@ -41,7 +41,7 @@ the left/right, a strip of glyph chips on the top/bottom), and expanding it alwa
 vertical 280px list, limited by the viewport height and scrolling inside. The dock is remembered
 across reloads. With more than one connection a small fold button at the end of the strip (below the
 column, or at the right end of the bar, chevron pointing the way it folds) collapses the rail into a
-single `+N` badge (N = number of connections). The button lives in the card but outside the group that
+single `+N` badge (N = number of connections); clicking the badge expands the rail again in one step.
 expands on hover, so pointing at it never reflows the strip. Clicking the badge restores the strip and
 its hover-to-expand behaviour, and hover does not expand the badge itself. Once connected, the server's own
 sidebar and conversation are the navigation; the client shell sidebar hides while the iframe is mounted.

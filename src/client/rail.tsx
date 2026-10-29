@@ -514,9 +514,9 @@ export function TargetRail(): ReactElement {
           must stay outside so pointing at it cannot trigger a reflow. */}
       <div
         className="dsh-rw-rail-hover"
-        onMouseEnter={() => { if (!minimized) setHovered(true) }}
+        onMouseEnter={() => { setHovered(true) }}
         onMouseLeave={() => { setHovered(false) }}
-        onFocus={() => { if (!minimized) setHovered(true) }}
+        onFocus={() => { setHovered(true) }}
         onBlur={(event: FocusEvent) => {
           const current = event.currentTarget as Node | null
           const next = event.relatedTarget as Node | null
@@ -555,7 +555,12 @@ export function TargetRail(): ReactElement {
             data-testid="dsh-rw-rail-minimized"
             title={t('rail.expandList', { count: views.length })}
             aria-label={t('rail.expandList', { count: views.length })}
-            onClick={() => { setMinimized(false) }}
+            onClick={() => {
+              // One click both restores the strip and reveals it: the pointer is
+              // already over the rail, so no fresh enter event would fire.
+              setMinimized(false)
+              setHovered(true)
+            }}
           >
             +{views.length}
           </button>
