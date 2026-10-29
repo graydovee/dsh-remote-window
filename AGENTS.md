@@ -295,8 +295,10 @@ tsdown targets：
 - npm 发布由 tag 触发的 Actions 完成：client 的 `.github/workflows/release.yml` 在 GitHub Release
   之后把同一个 `pnpm pack` tarball 发到 npm（`dsh-remote-window`）；server 的
   `.github/workflows/npm-release.yml` 在 `v*` tag 发 `dsh-remote-window-server`。两仓都需要
-  `NPM_TOKEN` secret（automation token）和 workflow 的 `id-token: write`（provenance）；
-  版本必须等于 tag（去掉 `v`），已存在的版本不会被覆盖。
+  workflow 的 `id-token: write`（provenance），版本必须等于 tag（去掉 `v`），已存在的版本不会被覆盖。
+  `NPM_TOKEN` secret 现在是**可选**的：不配置时 `npm publish` 走 npm Trusted Publishing（OIDC），
+  需在 npmjs.com 两个包各自的 “Trusted publishers” 里登记本仓库 + workflow 文件；配置了 token
+  则仍可发布（granular bypass-2FA token 正被 npm 逐步废弃，2027-01 起不得再用于 direct publish）。
 - runtime 包（node+dsh）仍只在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、
   darwin-arm64）；client 下载后必须校验同源 sha256。v1 全局 runtime 修改不开放，只检测复用。
 - README 只写用户可操作内容；开发约束只更新本文件。

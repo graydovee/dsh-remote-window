@@ -118,14 +118,15 @@ jobs:
       # `pnpm pack` already produced it from the tagged tree.
       - name: publish to npm
         env:
+          # Optional: a granular npm token (bypass-2FA tokens are being
+          # retired for direct publishing). Without it npm falls back to
+          # Trusted Publishing through this job's OIDC identity, which needs
+          # the package's "Trusted publishers" entry on npmjs.com to name
+          # this repository and workflow file.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN secret is not configured" >&2
-            exit 1
-          fi
           # Prefix with ./ so npm treats the argument as a local tarball
           # instead of a GitHub shorthand (dist/x.tgz -> github:dist/x.tgz).
           args=(--access public --tag "$DIST_TAG")
