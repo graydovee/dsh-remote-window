@@ -128,4 +128,11 @@ jobs:
           fi
           # Prefix with ./ so npm treats the argument as a local tarball
           # instead of a GitHub shorthand (dist/x.tgz -> github:dist/x.tgz).
-          npm publish "./$TARBALL" --access public --provenance --tag "$DIST_TAG"
+          args=(--access public --tag "$DIST_TAG")
+          # The npm provenance transparency log rejects an equivalent entry a
+          # second time (TLOG_CREATE_ENTRY_ERROR 409), so a restore run that
+          # re-publishes an already-signed tarball skips provenance.
+          if [ "${{ inputs.npm_only }}" != "true" ]; then
+            args+=(--provenance)
+          fi
+          npm publish "./$TARBALL" "${args[@]}"
