@@ -157,8 +157,8 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   `pnpm build` 通过（`lib/client.js` 473.18 kB）。
 - server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
-- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,047,076 B，sha256
-  `dc1c892b1f5be61e1792768c8ecca867d8494312ccbf28b4b001c152f596fe06`。
+- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,047,869 B，sha256
+  `859915aa2d2b9dddece7c025797eac8d5c00df7add94dff4bfdd093294ffdaf2`。
 - 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
   `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
   一致。
@@ -194,7 +194,8 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 - 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`）：初始左侧
   竖排 44×316 @ (10,96)；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
   `localStorage['dsh-remote-workspace.rail-dock']`；hover 展开宽 280；拖到上缘 → `data-dock="top"`、
-  top=10、x=618、宽 720、高 44，chips 同一行（y=16）；刷新后保持 top（折叠宽 318 = 9 targets × 34 + 12）；
+  top=10、高 44，chips 同一行（y=16）；展开时按 target 数铺开（9 targets → 宽 1420 = 视口-20，
+  单 chip 247–260 px、标签与操作内联一行）；刷新后保持 top（折叠宽 318 = 9 targets × 34 + 12）；
   拖回左缘 → y=278。上缘靠近右缘时展开仍收在视口内（x=710、right=1430 = viewport-10）。截图
   `/tmp/dsh-e2e/rail-top-dock.jpg`、`/tmp/dsh-e2e/rail-left-dock.jpg`。回归测试
   `tests/client-target-rail.test.ts`（吸附/夹取/默认 dock）。

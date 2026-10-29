@@ -2677,6 +2677,20 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   white-space: nowrap;
 }
 
+/* Expanded horizontal docks keep each chip's label on a single line, so the
+   bar reads left-to-right instead of stacking name over endpoint. */
+.dsh-rw-rail[data-dock="top"][data-expanded="true"] .dsh-rw-rail-label,
+.dsh-rw-rail[data-dock="bottom"][data-expanded="true"] .dsh-rw-rail-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.dsh-rw-rail[data-dock="top"][data-expanded="true"] .dsh-rw-rail-target,
+.dsh-rw-rail[data-dock="bottom"][data-expanded="true"] .dsh-rw-rail-target {
+  max-width: 260px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dsh-rw-rail {
     transition: none;

@@ -210,7 +210,8 @@ tsdown targets：
 - client 唯一 chrome 是浮动 target rail 与连接对话框；rail 默认折叠、hover 或 `Alt+R` 展开，只列
   target/连接状态/切换动作，不复制官方 workspace/session 树。
 - rail 可拖拽并吸附到屏幕四边（`src/client/rail.tsx` 的 `snapRailPlacement`/`clampRailPlacement`）：
-  左右为竖排收起条、展开 280px；上下为横排条（展开 ≤720px 且保持视口内）。位置存
+  左右为竖排收起条、展开 280px；上下为横排条（收起时每 target 一个图标，展开时按 target 数把
+  单行内联标签/操作铺开，宽度限制在视口内、溢出横向滚动）。位置存
   `localStorage['dsh-remote-workspace.rail-dock']`，未手动拖动前 portal 打开时自动靠右；展开/收起
   使用 200ms 过渡，`prefers-reduced-motion` 下关闭动画。
 - `dshRwFull=1` 只控制 server 插件不注入隐藏 CSS；不得在 client 侧用自定义 CSS 覆盖官方视觉。

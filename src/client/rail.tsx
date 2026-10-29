@@ -49,9 +49,6 @@ export const RAIL_COMPACT_SIZE = 44
 /** Expanded vertical rail width. */
 export const RAIL_SIDE_WIDTH = 280
 
-/** Hard cap for the expanded horizontal rail. */
-export const RAIL_BAR_MAX_WIDTH = 720
-
 /** `localStorage` key that remembers the user's chosen dock across remounts. */
 export const RAIL_DOCK_STORAGE_KEY = 'dsh-remote-workspace.rail-dock'
 
@@ -69,11 +66,40 @@ interface RailPointerDown {
 /** Collapsed width of one bar chip, used to size the horizontal rail. */
 const RAIL_BAR_CHIP_WIDTH = 34
 
+/** Width reserved for the bar's head (title + icon buttons). */
+const RAIL_BAR_HEAD_WIDTH = 120
+
+/** Width of one expanded bar chip (inline label + actions). */
+const RAIL_BAR_EXPANDED_CHIP_WIDTH = 210
+
 const RAIL_DOCKS: readonly RailDock[] = ['left', 'right', 'top', 'bottom']
 
 /** Clamp a value into `[min, max]` (max may fall below min on tiny viewports). */
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, Math.max(min, max)))
+}
+
+/** Width of a collapsed horizontal rail: one 34px chip per target plus padding. */
+function collapsedBarWidthOf(targetCount: number): number {
+  return Math.max(RAIL_COMPACT_SIZE, targetCount * RAIL_BAR_CHIP_WIDTH + 12)
+}
+
+/**
+ * Width of a horizontal (top/bottom docked) rail.
+ *
+ * Collapsed shows one compact glyph per target; expanded lines the chips up on
+ * a single row with inline labels, so it grows with the target count and is
+ * bounded by the viewport (the list scrolls when it overflows).
+ */
+export function railBarWidth(
+  expanded: boolean,
+  targetCount: number,
+  viewport: { readonly width: number; readonly height: number },
+): number {
+  const collapsed = collapsedBarWidthOf(targetCount)
+  if (!expanded) return collapsed
+  const wanted = Math.max(RAIL_COMPACT_SIZE, RAIL_BAR_HEAD_WIDTH + targetCount * RAIL_BAR_EXPANDED_CHIP_WIDTH)
+  return Math.max(collapsed, Math.min(viewport.width - RAIL_MARGIN * 2, wanted))
 }
 
 /** Pick the screen edge closest to the pointer. */
@@ -406,15 +432,10 @@ export function TargetRail(): ReactElement {
     .map(targetId => state.connections[targetId])
     .filter((view): view is RemoteConnectionView => view !== undefined)
 
-  const isBar = placement.dock === 'top' || placement.dock === 'bottom'
   // Horizontal bars cannot use an auto width with a CSS transition, so the
-  // component sizes them: one 34px chip per target collapsed, a wider bar when
-  // labels/actions expand.
-  const collapsedBarWidth = Math.max(RAIL_COMPACT_SIZE, views.length * RAIL_BAR_CHIP_WIDTH + 12)
-  const expandedBarWidth = Math.min(
-    RAIL_BAR_MAX_WIDTH,
-    Math.max(RAIL_COMPACT_SIZE, viewport.width - RAIL_MARGIN * 2),
-  )
+  // component sizes them (collapsed: one chip per target; expanded: one inline
+  // row bounded by the viewport).
+  const barWidth = railBarWidth(expanded, views.length, viewport)
   const railStyle: CSSProperties = {}
   if (drag !== null) {
     railStyle.left = drag.x
@@ -428,7 +449,6 @@ export function TargetRail(): ReactElement {
   } else {
     // Top/bottom bars grow to the right, so their left edge also honors the
     // expanded width to stay inside the viewport.
-    const barWidth = expanded ? expandedBarWidth : collapsedBarWidth
     const barLeft = Math.min(
       placement.offset,
       Math.max(RAIL_MARGIN, viewport.width - RAIL_MARGIN - barWidth),

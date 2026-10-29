@@ -197,6 +197,20 @@ describe('target rail', () => {
     expect(module.clampRailPlacement({ dock: 'right', offset: 40 }, { width: 0, height: 0 })).toEqual({ dock: 'right', offset: 40 })
   })
 
+  it('sizes horizontal bars from the target count and viewport', async () => {
+    const module = await import('../src/client/rail.tsx')
+    // Collapsed bars show one compact glyph chip per target.
+    expect(module.railBarWidth(false, 0, { width: 1440, height: 900 })).toBe(44)
+    expect(module.railBarWidth(false, 9, { width: 1440, height: 900 })).toBe(318)
+    // Expanded bars line chips up on one row, grow with the target count and
+    // stay inside the viewport.
+    expect(module.railBarWidth(true, 1, { width: 1440, height: 900 })).toBe(330)
+    expect(module.railBarWidth(true, 9, { width: 1440, height: 900 })).toBe(1420)
+    expect(module.railBarWidth(true, 9, { width: 400, height: 900 })).toBe(380)
+    // A zero-sized viewport (SSR / before layout) keeps the collapsed width.
+    expect(module.railBarWidth(true, 3, { width: 0, height: 0 })).toBe(114)
+  })
+
   it('renders the rail at its default left dock with a position style', async () => {
     store.state = {
       loaded: true,
