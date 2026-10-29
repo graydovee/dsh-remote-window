@@ -2622,15 +2622,9 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   cursor: grabbing;
 }
 
-.dsh-rw-rail[data-dock="left"]:focus-within,
-.dsh-rw-rail[data-dock="right"]:focus-within {
-  width: 280px;
-}
-
-/* A minimized rail stays a single glyph even when focused. */
-.dsh-rw-rail[data-minimized="true"]:focus-within {
-  width: 44px;
-}
+/* Hover/focus expansion is driven by the JS hover group, not by :focus-within:
+   focusing the in-card fold button must not widen the rail before its click
+   runs, otherwise the first click looks like an expand. */
 
 /* Every expanded dock renders the same vertical list; only the collapsed
    strip follows its edge orientation. */

@@ -432,6 +432,9 @@ export function TargetRail(): ReactElement {
     dragSession.startY = event.clientY
     dragSession.pointerId = event.pointerId
     dragSession.moved = false
+    // A previous gesture that ended away from the rail may never have
+    // delivered its trailing click; do not let that stale flag eat this press.
+    dragSession.suppressClick = false
     const onMove = (moveEvent: PointerEvent): void => {
       if (moveEvent.pointerId !== dragSession.pointerId) return
       const dx = moveEvent.clientX - dragSession.startX
@@ -590,7 +593,11 @@ export function TargetRail(): ReactElement {
         >
           {placement.dock === 'top' || placement.dock === 'bottom'
             ? <IconChevronLeftOutlineRegular size={12} />
-            : <IconChevronDownOutlineRegular size={12} />}
+            : (
+              <span style={{ display: 'inline-flex', transform: 'rotate(180deg)' }}>
+                <IconChevronDownOutlineRegular size={12} />
+              </span>
+            )}
         </button>
       )}
       {state.loading && !state.loaded && <p className="dsh-rw-rail-status">{t('common.loading')}</p>}
