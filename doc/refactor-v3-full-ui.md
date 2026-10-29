@@ -192,14 +192,21 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   （`/tmp/dsh-e2e/server-dsh-home/...`，mtime 刷新、隧道端口更新），不再落到远端默认 home；
   回归测试 `tests/targets-reconnect.test.ts`。
 - 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`、
-  `cdp-rail-vertical.mjs`）：收起时跟随吸附边——左侧竖排 44×316 @ (10,96)；上下为 44px 横排图标条
-  （9 targets → 318×44，chip 32×32）；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
-  `localStorage['dsh-remote-workspace.rail-dock']`；刷新后保持 top（折叠宽 318 = 9 targets × 34 + 12）；
+  `cdp-rail-vertical.mjs`）：收起时跟随吸附边——左侧竖排 44×352 @ (10,96)；上下为 44px 横排图标条
+  （9 targets + 折叠按钮槽 → 352×44，chip 32×32；`railBarWidth(9)=318` 只算 chip 条）；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
+  `localStorage['dsh-remote-workspace.rail-dock']`；刷新后保持 top（折叠宽 352 = `railBarWidth(10)`，含折叠按钮槽）；
   拖回左缘 → y=278。**展开后不管哪条边都是同一个 280px 竖向列表**（`railBoxStyle` 负责贴边/限高/
   水平夹取）：上缘展开 y=10、高 427、chips 268×41 纵向排列；下缘展开贴底（y+h=803=813-10）；
   水平偏移夹在 [10, 视口-10-280]。截图 `/tmp/dsh-e2e/rail-top-vertical.jpg`、
   `/tmp/dsh-e2e/rail-bottom-vertical.jpg`。回归测试 `tests/client-target-rail.test.ts`
   （吸附/夹取/默认 dock/railBarWidth/railBoxStyle）。
+- rail 收起态最小化（headless Chrome CDP，`/tmp/dsh-e2e/cdp-rail-minimize.mjs`，9 个连接）：竖排
+  收起 44×352，折叠按钮在最后一个 chip 下方（y=410 vs chip 底 406）；hover 展开 280×463 时按钮仍挂载
+  （x=134,y=521）且可点击；点击后 44×44、只渲染 `+9`，hover 不再展开；点 `+9` 恢复 44×352 并把 hover
+  展开行为恢复（280）。拖到上缘：352×44，按钮在最后 chip 之后（x=992 vs chip 右 988）；点击最小化
+  44×44、hover 不展开，再点恢复 352×44。截图 `/tmp/dsh-e2e/rail-min-toggle.jpg`、
+  `rail-min-vertical.jpg`、`rail-min-horizontal.jpg`。回归测试 `tests/client-target-rail.test.ts`
+  （`railShowsToggle`、`railBoxStyle` minimized 宽度、toggle 挂载与 setter 调用）。
 - 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
   `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
   `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。

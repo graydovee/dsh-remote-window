@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
+  IconChevronDownOutlineRegular, IconChevronRightOutlineRegular,
   IconPlusOutlineRegular, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NoticeToastHost } from './common.tsx'
@@ -78,6 +79,20 @@ export function railBarWidth(targetCount: number): number {
   return Math.max(RAIL_COMPACT_SIZE, targetCount * RAIL_BAR_CHIP_WIDTH + 12)
 }
 
+/**
+ * The collapse toggle only exists on a collapsed rail that actually has
+ * something to fold: two or more connections and no active expansion.
+ */
+/**
+ * The collapse toggle is offered whenever there is more than one connection to
+ * fold away. It stays mounted while the rail is hover-expanded too: the pointer
+ * has to cross the strip to reach it, and hiding it on hover would make the
+ * control impossible to click.
+ */
+export function railShowsToggle(minimized: boolean, targetCount: number): boolean {
+  return !minimized && targetCount > 1
+}
+
 /** Position/size overrides the rail needs for its current dock and state. */
 export interface RailBoxStyle {
   [property: string]: number | undefined
@@ -102,6 +117,7 @@ export function railBoxStyle(
   expanded: boolean,
   targetCount: number,
   viewport: { readonly width: number; readonly height: number },
+  minimized = false,
 ): RailBoxStyle {
   if (placement.dock === 'left') return { left: RAIL_MARGIN, top: placement.offset }
   if (placement.dock === 'right') return { right: RAIL_MARGIN, top: placement.offset }
@@ -114,7 +130,11 @@ export function railBoxStyle(
       : { bottom: RAIL_MARGIN, left, maxHeight }
   }
 
-  const width = railBarWidth(targetCount)
+  // Minimized bars shrink to a single +N glyph; otherwise the collapsed strip
+  // reserves one glyph slot for the collapse toggle when it is visible.
+  const width = minimized
+    ? RAIL_COMPACT_SIZE
+    : railBarWidth(targetCount + (targetCount > 1 ? 1 : 0))
   const left = clamp(placement.offset, RAIL_MARGIN, viewport.width - RAIL_MARGIN - width)
   return placement.dock === 'top'
     ? { top: RAIL_MARGIN, left, width }
@@ -332,7 +352,10 @@ export function TargetRail(): ReactElement {
   const active = useServerMainRequest()
   const [hovered, setHovered] = useState(false)
   const [pinned, setPinned] = useState(false)
-  const expanded = pinned || hovered
+  // Minimized collapses the whole strip to a single +N button; hover no longer
+  // expands it until the user clicks that button again.
+  const [minimized, setMinimized] = useState(false)
+  const expanded = !minimized && (pinned || hovered)
   const portalActive = active !== undefined
   // Placement and drag live in the rail itself: the host div only provides the
   // fixed viewport layer (pointer-events: none) so every screen pixel can be a
@@ -385,6 +408,8 @@ export function TargetRail(): ReactElement {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === RAIL_SHORTCUT) {
         event.preventDefault()
+        // The shortcut is the keyboard escape hatch from a minimized rail.
+        setMinimized(false)
         setPinned(value => !value)
       } else if (event.key === 'Escape') {
         setPinned(false)
@@ -451,12 +476,17 @@ export function TargetRail(): ReactElement {
     .map(targetId => state.connections[targetId])
     .filter((view): view is RemoteConnectionView => view !== undefined)
 
+  // Nothing left to fold once the last extra connection goes away.
+  useEffect(() => {
+    if (views.length <= 1) setMinimized(false)
+  }, [views.length])
+
   // Collapsed horizontal bars cannot use an auto width with a CSS transition,
   // so the component sizes them; expanded docks always render the same
   // vertical list and keep their box inside the viewport via railBoxStyle.
   const railStyle: CSSProperties = drag !== null
     ? { left: drag.x, top: drag.y }
-    : railBoxStyle(placement, expanded, views.length, viewport)
+    : railBoxStyle(placement, expanded, views.length, viewport, minimized)
 
   return (
     <div
@@ -468,14 +498,15 @@ export function TargetRail(): ReactElement {
       data-dock={placement.dock}
       data-dragging={drag !== null ? 'true' : undefined}
       data-user-docked={userDocked ? 'true' : undefined}
+      data-minimized={minimized ? 'true' : undefined}
       role="navigation"
       aria-label={t('rail.aria')}
       title={t('rail.dragHint')}
       onPointerDown={startDrag}
       onClickCapture={suppressDraggedClick}
-      onMouseEnter={() => { setHovered(true) }}
+      onMouseEnter={() => { if (!minimized) setHovered(true) }}
       onMouseLeave={() => { setHovered(false) }}
-      onFocus={() => { setHovered(true) }}
+      onFocus={() => { if (!minimized) setHovered(true) }}
       onBlur={(event: FocusEvent) => {
         const current = event.currentTarget as Node | null
         const next = event.relatedTarget as Node | null
@@ -507,22 +538,51 @@ export function TargetRail(): ReactElement {
         </span>
       </div>
       <div className="dsh-rw-rail-list">
-        {views.map(view => (
-          <TargetChip
-            key={view.target.id}
-            view={view}
-            active={active?.targetId === view.target.id}
-            pinned={pinned}
-          />
-        ))}
-        {views.length === 0 && (
-          <button type="button" className="dsh-rw-rail-empty" onClick={openConnectDialog}>
-            <span className="dsh-rw-rail-glyph" aria-hidden="true">+</span>
-            <span className="dsh-rw-rail-label">
-              <span className="dsh-rw-rail-name">{t('rail.empty')}</span>
-              <span className="dsh-rw-rail-meta">{t('rail.empty.hint')}</span>
-            </span>
+        {minimized ? (
+          <button
+            type="button"
+            className="dsh-rw-rail-minimized"
+            data-testid="dsh-rw-rail-minimized"
+            title={t('rail.expandList', { count: views.length })}
+            aria-label={t('rail.expandList', { count: views.length })}
+            onClick={() => { setMinimized(false) }}
+          >
+            +{views.length}
           </button>
+        ) : (
+          <>
+            {views.map(view => (
+              <TargetChip
+                key={view.target.id}
+                view={view}
+                active={active?.targetId === view.target.id}
+                pinned={pinned}
+              />
+            ))}
+            {views.length === 0 && (
+              <button type="button" className="dsh-rw-rail-empty" onClick={openConnectDialog}>
+                <span className="dsh-rw-rail-glyph" aria-hidden="true">+</span>
+                <span className="dsh-rw-rail-label">
+                  <span className="dsh-rw-rail-name">{t('rail.empty')}</span>
+                  <span className="dsh-rw-rail-meta">{t('rail.empty.hint')}</span>
+                </span>
+              </button>
+            )}
+            {railShowsToggle(minimized, views.length) && (
+              <button
+                type="button"
+                className="dsh-rw-rail-toggle"
+                data-testid="dsh-rw-rail-toggle"
+                title={t('rail.collapseList')}
+                aria-label={t('rail.collapseList')}
+                onClick={() => { setMinimized(true) }}
+              >
+                {placement.dock === 'top' || placement.dock === 'bottom'
+                  ? <IconChevronRightOutlineRegular size={12} />
+                  : <IconChevronDownOutlineRegular size={12} />}
+              </button>
+            )}
+          </>
         )}
       </div>
       {state.loading && !state.loaded && <p className="dsh-rw-rail-status">{t('common.loading')}</p>}

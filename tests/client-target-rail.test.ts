@@ -8,6 +8,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const setterCalls = vi.hoisted(() => [] as unknown[])
+
 const store = vi.hoisted(() => ({
   activate: vi.fn(),
   connect: vi.fn(),
@@ -44,7 +46,10 @@ vi.mock('../src/client/portal-main.tsx', () => ({
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {}, unmount: () => {} }) }))
 vi.mock('react', () => ({
   useEffect: () => {},
-  useState: (initial: unknown) => [typeof initial === 'function' ? (initial as () => unknown)() : initial, () => {}],
+  useState: (initial: unknown) => {
+    const value = typeof initial === 'function' ? (initial as () => unknown)() : initial
+    return [value, (next: unknown) => { setterCalls.push(next) }]
+  },
 }))
 vi.mock('react/jsx-runtime', () => ({
   Fragment: Symbol.for('react.fragment'),
@@ -59,6 +64,8 @@ vi.mock('react/jsx-dev-runtime', () => ({
   jsxDEV: (type: unknown, props: unknown) => ({ type, props: props ?? {} }),
 }))
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  IconChevronDownOutlineRegular: () => null,
+  IconChevronRightOutlineRegular: () => null,
   IconPlusOutlineRegular: () => null,
   IconRefreshOutlineRegular: () => null,
   IconWarningTriangleOutlineRegular: () => null,
@@ -105,6 +112,7 @@ function view(overrides: Record<string, unknown> = {}): Record<string, unknown> 
 
 beforeEach(() => {
   vi.clearAllMocks()
+  setterCalls.length = 0
   store.state = {
     loaded: true,
     loading: false,
@@ -226,11 +234,11 @@ describe('target rail', () => {
       left: 1150,
       maxHeight: 880,
     })
-    // Collapsed bars reserve the full strip width and stay on screen too.
+    // Collapsed bars reserve the strip plus the collapse-toggle slot and stay on screen.
     expect(module.railBoxStyle({ dock: 'top', offset: 1400 }, false, 9, viewport)).toEqual({
       top: 10,
-      left: 1112,
-      width: 318,
+      left: 1078,
+      width: 352,
     })
     // A zero-sized viewport (SSR / before layout) still yields finite values.
     expect(module.railBoxStyle({ dock: 'bottom', offset: 40 }, true, 3, { width: 0, height: 0 })).toEqual({
@@ -241,6 +249,48 @@ describe('target rail', () => {
     // Side docks only carry their vertical offset.
     expect(module.railBoxStyle({ dock: 'left', offset: 96 }, true, 9, viewport)).toEqual({ left: 10, top: 96 })
     expect(module.railBoxStyle({ dock: 'right', offset: 398 }, false, 9, viewport)).toEqual({ right: 10, top: 398 })
+  })
+
+  it('reserves one glyph slot for the collapse toggle and shrinks when minimized', async () => {
+    const module = await import('../src/client/rail.tsx')
+    const viewport = { width: 1440, height: 900 }
+    // Two targets + the toggle slot: railBarWidth(3) = 114.
+    expect(module.railBoxStyle({ dock: 'top', offset: 0 }, false, 2, viewport)).toEqual({
+      top: 10,
+      left: 10,
+      width: 114,
+    })
+    // A minimized horizontal strip is a single 44px glyph box.
+    expect(module.railBoxStyle({ dock: 'bottom', offset: 0 }, false, 7, viewport, true)).toEqual({
+      bottom: 10,
+      left: 10,
+      width: 44,
+    })
+    // Vertical docks never take a computed width.
+    expect(module.railBoxStyle({ dock: 'left', offset: 96 }, false, 7, viewport, true)).toEqual({ left: 10, top: 96 })
+    // The toggle exists until the rail is minimized, and only for >1 target.
+    expect(module.railShowsToggle(false, 2)).toBe(true)
+    expect(module.railShowsToggle(true, 2)).toBe(false)
+    expect(module.railShowsToggle(false, 1)).toBe(false)
+  })
+
+  it('collapses to a single +N glyph from the toggle and hides it for a lone target', async () => {
+    const second = view({ target: { id: 't2', label: 'box2', kind: 'ssh', host: '203.0.113.11', port: 22, username: 'tester', status: 'ready' } })
+    store.state = {
+      loaded: true,
+      loading: false,
+      order: ['t1', 't2'],
+      connections: { t1: view(), t2: second },
+    }
+    const module = await import('../src/client/rail.tsx')
+    const toggle = collect(module.TargetRail()).find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+    expect(toggle).toBeDefined()
+    ;(toggle?.props.onClick as (() => void) | undefined)?.()
+    expect(setterCalls).toContain(true)
+
+    store.state = { loaded: true, loading: false, order: ['t1'], connections: { t1: view() } }
+    const loneToggle = collect(module.TargetRail()).find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+    expect(loneToggle).toBeUndefined()
   })
 
   it('renders the rail at its default left dock with a position style', async () => {

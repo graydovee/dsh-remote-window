@@ -2627,6 +2627,11 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   width: 280px;
 }
 
+/* A minimized rail stays a single glyph even when focused. */
+.dsh-rw-rail[data-minimized="true"]:focus-within {
+  width: 44px;
+}
+
 /* Every expanded dock renders the same vertical list; only the collapsed
    strip follows its edge orientation. */
 .dsh-rw-rail[data-expanded="true"] {
@@ -2741,6 +2746,60 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
 .dsh-rw-rail-icon:hover {
   background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 8%));
   color: var(--dsw-alias-label-primary);
+}
+
+/* Collapsed-state glyph buttons: the collapse toggle and the minimized +N. */
+.dsh-rw-rail-toggle,
+.dsh-rw-rail-minimized {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dsh-rw-rail-toggle {
+  margin: 2px auto 0;
+}
+
+.dsh-rw-rail-minimized {
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.dsh-rw-rail-toggle:hover,
+.dsh-rw-rail-minimized:hover {
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Horizontal strips append the toggle after the last chip. */
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-toggle,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-toggle {
+  margin: 0 0 0 2px;
+}
+
+/* A minimized horizontal strip is a single centered glyph. */
+.dsh-rw-rail[data-minimized="true"][data-dock="top"],
+.dsh-rw-rail[data-minimized="true"][data-dock="bottom"] {
+  width: 44px;
+}
+
+.dsh-rw-rail[data-minimized="true"][data-dock="top"] .dsh-rw-rail-list,
+.dsh-rw-rail[data-minimized="true"][data-dock="bottom"] .dsh-rw-rail-list {
+  overflow: hidden;
 }
 
 .dsh-rw-rail-list {

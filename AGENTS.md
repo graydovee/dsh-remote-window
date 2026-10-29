@@ -214,6 +214,10 @@ tsdown targets：
   同一个 280px 竖向列表**（按视口限高、列表纵向滚动），上下吸附展开时列表贴在上/下边缘、水平位置
   夹在视口内（`railBoxStyle`）。位置存 `localStorage['dsh-remote-workspace.rail-dock']`，未手动拖动
   前 portal 打开时自动靠右；展开/收起使用 200ms 过渡，`prefers-reduced-motion` 下关闭动画。
+- rail 收起态在连接数 > 1 时末尾多一个折叠按钮（左右吸附在最后一个图标下方，上下吸附在图标条右端），
+  点击最小化为单个 `+N` 图标（N = 连接数），最小化期间 hover 不展开；再点 `+N` 恢复收起条与 hover
+  展开。最小化是会话内状态（不持久化），连接数降到 1 自动恢复；hover 展开时按钮仍保持挂载，否则
+  指针跨过 rail 会先触发展开、按钮消失而无法点击（`railShowsToggle` 只看 minimized/count）。
 - `dshRwFull=1` 只控制 server 插件不注入隐藏 CSS；不得在 client 侧用自定义 CSS 覆盖官方视觉。
 - 官方 iframe 的滚动、下载、弹窗、剪贴板必须在 sandbox 内可用；新增权限需在本文与
   `doc/refactor-v3-full-ui.md` 同步说明。
