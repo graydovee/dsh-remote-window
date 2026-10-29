@@ -89,8 +89,37 @@ export function railBarWidth(targetCount: number): number {
  * has to cross the strip to reach it, and hiding it on hover would make the
  * control impossible to click.
  */
-export function railShowsToggle(minimized: boolean, targetCount: number): boolean {
-  return !minimized && targetCount > 1
+export function railShowsToggle(expanded: boolean, minimized: boolean, targetCount: number): boolean {
+  return !expanded && !minimized && targetCount > 1
+}
+
+/**
+ * Position the fold button *outside* the rail box so reaching it never triggers
+ * the hover-expand of the rail. It sits in the gutter the strip reserves for it:
+ * below the last glyph on the left/right edges, after the last chip on the
+ * top/bottom bars.
+ * @returns absolute style inside the fixed rail host, or undefined when hidden.
+ */
+export function railToggleStyle(
+  placement: RailPlacement,
+  expanded: boolean,
+  minimized: boolean,
+  targetCount: number,
+  viewport: { readonly width: number; readonly height: number },
+): CSSProperties | undefined {
+  if (!railShowsToggle(expanded, minimized, targetCount)) return undefined
+  // padding 6 + one 34px slot per chip (32px chip + 2px gap) + 2px before the button
+  const edge = 6 + targetCount * RAIL_BAR_CHIP_WIDTH + 2
+  if (placement.dock === 'left') return { left: RAIL_MARGIN + 6, top: placement.offset + edge }
+  if (placement.dock === 'right') {
+    return { left: Math.max(RAIL_MARGIN, viewport.width - RAIL_MARGIN - RAIL_COMPACT_SIZE + 6), top: placement.offset + edge }
+  }
+  const barWidth = railBarWidth(targetCount + 1)
+  const barLeft = clamp(placement.offset, RAIL_MARGIN, viewport.width - RAIL_MARGIN - barWidth)
+  const left = Math.max(RAIL_MARGIN, Math.min(barLeft + edge, viewport.width - RAIL_MARGIN - RAIL_COMPACT_SIZE + 2))
+  return placement.dock === 'top'
+    ? { left, top: RAIL_MARGIN + 6 }
+    : { left, top: Math.max(RAIL_MARGIN, viewport.height - RAIL_MARGIN - RAIL_COMPACT_SIZE + 6) }
 }
 
 /** Position/size overrides the rail needs for its current dock and state. */
@@ -488,8 +517,28 @@ export function TargetRail(): ReactElement {
     ? { left: drag.x, top: drag.y }
     : railBoxStyle(placement, expanded, views.length, viewport, minimized)
 
+  const toggleStyle = drag === null
+    ? railToggleStyle(placement, expanded, minimized, views.length, viewport)
+    : undefined
+
   return (
-    <div
+    <>
+      {toggleStyle !== undefined && (
+        <button
+          type="button"
+          className="dsh-rw-rail-toggle"
+          style={toggleStyle}
+          data-testid="dsh-rw-rail-toggle"
+          title={t('rail.collapseList')}
+          aria-label={t('rail.collapseList')}
+          onClick={() => { setMinimized(true) }}
+        >
+          {placement.dock === 'top' || placement.dock === 'bottom'
+            ? <IconChevronRightOutlineRegular size={12} />
+            : <IconChevronDownOutlineRegular size={12} />}
+        </button>
+      )}
+      <div
       className="dsh-rw-rail"
       style={railStyle}
       data-expanded={expanded ? 'true' : undefined}
@@ -568,20 +617,6 @@ export function TargetRail(): ReactElement {
                 </span>
               </button>
             )}
-            {railShowsToggle(minimized, views.length) && (
-              <button
-                type="button"
-                className="dsh-rw-rail-toggle"
-                data-testid="dsh-rw-rail-toggle"
-                title={t('rail.collapseList')}
-                aria-label={t('rail.collapseList')}
-                onClick={() => { setMinimized(true) }}
-              >
-                {placement.dock === 'top' || placement.dock === 'bottom'
-                  ? <IconChevronRightOutlineRegular size={12} />
-                  : <IconChevronDownOutlineRegular size={12} />}
-              </button>
-            )}
           </>
         )}
       </div>
@@ -593,7 +628,8 @@ export function TargetRail(): ReactElement {
       )}
       <RemoteDialogs />
       {state.notice !== undefined && <NoticeToastHost notice={state.notice} onDismiss={dismissRemoteNotice} />}
-    </div>
+      </div>
+    </>
   )
 }
 

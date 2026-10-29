@@ -268,10 +268,27 @@ describe('target rail', () => {
     })
     // Vertical docks never take a computed width.
     expect(module.railBoxStyle({ dock: 'left', offset: 96 }, false, 7, viewport, true)).toEqual({ left: 10, top: 96 })
-    // The toggle exists until the rail is minimized, and only for >1 target.
-    expect(module.railShowsToggle(false, 2)).toBe(true)
-    expect(module.railShowsToggle(true, 2)).toBe(false)
-    expect(module.railShowsToggle(false, 1)).toBe(false)
+    // The fold button exists while collapsed with >1 target; it hides on hover
+    // expansion and while minimized.
+    expect(module.railShowsToggle(false, false, 2)).toBe(true)
+    expect(module.railShowsToggle(true, false, 2)).toBe(false)
+    expect(module.railShowsToggle(false, true, 2)).toBe(false)
+    expect(module.railShowsToggle(false, false, 1)).toBe(false)
+  })
+
+  it('places the fold button in the gutter outside the rail hover area', async () => {
+    const module = await import('../src/client/rail.tsx')
+    const viewport = { width: 1440, height: 900 }
+    // Left/right edges: below the last glyph, at the rail gutter x.
+    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, false, false, 9, viewport)).toEqual({ left: 16, top: 410 })
+    expect(module.railToggleStyle({ dock: 'right', offset: 96 }, false, false, 9, viewport)).toEqual({ left: 1392, top: 410 })
+    // Top/bottom bars: after the last chip, inside the bar gutter.
+    expect(module.railToggleStyle({ dock: 'top', offset: 678 }, false, false, 9, viewport)).toEqual({ left: 992, top: 16 })
+    expect(module.railToggleStyle({ dock: 'bottom', offset: 0 }, false, false, 3, viewport)).toEqual({ left: 120, top: 852 })
+    // Hidden while hover-expanded, minimized, or with a lone target.
+    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, true, false, 9, viewport)).toBeUndefined()
+    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, false, true, 9, viewport)).toBeUndefined()
+    expect(module.railToggleStyle({ dock: 'left', offset: 96 }, false, false, 1, viewport)).toBeUndefined()
   })
 
   it('collapses to a single +N glyph from the toggle and hides it for a lone target', async () => {
@@ -283,13 +300,24 @@ describe('target rail', () => {
       connections: { t1: view(), t2: second },
     }
     const module = await import('../src/client/rail.tsx')
-    const toggle = collect(module.TargetRail()).find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+    const tree = module.TargetRail() as unknown as { props?: { children?: unknown[] } }
+    const parts = Array.isArray(tree.props?.children) ? tree.props.children : []
+    const railElement = parts.find(part => (part as Element | undefined)?.props?.className === 'dsh-rw-rail') as Element | undefined
+    const toggle = parts
+      .map(part => part as Element)
+      .find(part => part?.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+    expect(railElement).toBeDefined()
     expect(toggle).toBeDefined()
+    // Rendered next to the rail, not inside its hover area.
+    expect(collect(railElement).some(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')).toBe(false)
     ;(toggle?.props.onClick as (() => void) | undefined)?.()
     expect(setterCalls).toContain(true)
 
     store.state = { loaded: true, loading: false, order: ['t1'], connections: { t1: view() } }
-    const loneToggle = collect(module.TargetRail()).find(element => element.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+    const loneParts = (module.TargetRail() as unknown as { props?: { children?: unknown[] } }).props?.children
+    const loneToggle = Array.isArray(loneParts)
+      ? loneParts.map(part => part as Element).find(part => part?.props?.['data-testid'] === 'dsh-rw-rail-toggle')
+      : undefined
     expect(loneToggle).toBeUndefined()
   })
 

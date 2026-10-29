@@ -39,9 +39,10 @@ The client keeps exactly one remote surface: a floating **target rail** (collaps
 the rail to any screen edge and it snaps there: collapsed it follows the edge (a compact column on
 the left/right, a strip of glyph chips on the top/bottom), and expanding it always opens the same
 vertical 280px list, limited by the viewport height and scrolling inside. The dock is remembered
-across reloads. With more than one connection a small fold button at the end of the strip collapses the
-rail into a single `+N` badge (N = number of connections); clicking the badge restores the strip and its
-hover-to-expand behaviour, and hover does not expand the badge itself. Once connected, the server's own
+across reloads. With more than one connection a small fold button just outside the strip collapses the
+rail into a single `+N` badge (N = number of connections); it sits in the gutter rather than inside the
+strip, so reaching it never triggers the rail's hover-expand. Clicking the badge restores the strip and
+its hover-to-expand behaviour, and hover does not expand the badge itself. Once connected, the server's own
 sidebar and conversation are the navigation; the client shell sidebar hides while the iframe is mounted.
 
 ## Why this exists

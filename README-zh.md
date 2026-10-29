@@ -31,8 +31,9 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 client 只保留一个远程面：浮动 **target rail**（默认收起，hover 或 `Alt+R` 展开），列已保存连接、实时
 阶段与连接/切换/忘记动作。target rail 可拖到任意屏幕边缘并自动吸附：收起时跟随吸附边（左右为 44px 竖排图标条、
 上下为 44px 横排图标条），**展开后无论哪条边都是同一个 280px 竖向列表**（按视口限高、列表纵向滚动），
-位置跨刷新记忆。连接数大于 1 时，收起条末端多一个折叠按钮：点击把 rail 最小化为单个 `+N` 图标
-（N 为连接数），此时 hover 不展开；再点图标恢复收起条和 hover 展开。连接后，server 自己的 sidebar
+位置跨刷新记忆。连接数大于 1 时，收起条末端外侧多一个折叠按钮（位于 rail 盒外的 gutter，指针不需要
+跨过 rail 才能点到）：点击把 rail 最小化为单个 `+N` 图标（N 为连接数），此时 hover 不展开；再点图标恢复
+收起条和 hover 展开。连接后，server 自己的 sidebar
 与对话就是导航；iframe 挂载期间 client shell sidebar 隐藏。
 
 ## Why this exists

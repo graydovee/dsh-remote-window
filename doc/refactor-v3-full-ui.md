@@ -201,12 +201,14 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   `/tmp/dsh-e2e/rail-bottom-vertical.jpg`。回归测试 `tests/client-target-rail.test.ts`
   （吸附/夹取/默认 dock/railBarWidth/railBoxStyle）。
 - rail 收起态最小化（headless Chrome CDP，`/tmp/dsh-e2e/cdp-rail-minimize.mjs`，9 个连接）：竖排
-  收起 44×352，折叠按钮在最后一个 chip 下方（y=410 vs chip 底 406）；hover 展开 280×463 时按钮仍挂载
-  （x=134,y=521）且可点击；点击后 44×44、只渲染 `+9`，hover 不再展开；点 `+9` 恢复 44×352 并把 hover
-  展开行为恢复（280）。拖到上缘：352×44，按钮在最后 chip 之后（x=992 vs chip 右 988）；点击最小化
-  44×44、hover 不展开，再点恢复 352×44。截图 `/tmp/dsh-e2e/rail-min-toggle.jpg`、
-  `rail-min-vertical.jpg`、`rail-min-horizontal.jpg`。回归测试 `tests/client-target-rail.test.ts`
-  （`railShowsToggle`、`railBoxStyle` minimized 宽度、toggle 挂载与 setter 调用）。
+  收起 44×316，折叠按钮在 rail 盒外的 gutter、最后 chip 下方（toolbar y=410 vs chip 底 406，
+  `insideRail=false`）；指针移到按钮上 rail 仍保持 44px 不展开（修复前按钮在 rail 内，hover 会先触发
+  展开→按钮消失→闪烁，按钮不可点）。点击后 44×44、只渲染 `+9`，hover 不再展开；点 `+9` 恢复 44×316
+  并把 hover 展开行为恢复（280×427，展开期间按钮隐藏）。拖到上缘：352×44，按钮在 rail 盒外、最后
+  chip 之后（x=992 vs chip 右 988）；点击最小化 44×44、hover 不展开，再点恢复 352×44。截图
+  `/tmp/dsh-e2e/rail-min-toggle.jpg`、`rail-min-vertical.jpg`、`rail-min-horizontal.jpg`。回归测试
+  `tests/client-target-rail.test.ts`（`railShowsToggle`、`railToggleStyle`、`railBoxStyle` minimized
+  宽度、toggle 与 rail 是兄弟节点、1 个连接时不存在）。
 - 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
   `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
   `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。

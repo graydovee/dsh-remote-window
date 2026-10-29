@@ -2767,8 +2767,14 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   cursor: pointer;
 }
 
+/* The fold button lives in the rail host gutter, outside the rail box, so the
+   pointer never has to cross the strip (which would expand it) to reach it. */
 .dsh-rw-rail-toggle {
-  margin: 2px auto 0;
+  position: absolute;
+  z-index: 71;
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--dsw-alias-bg-elevated, var(--dsw-alias-bg-base)) 94%, transparent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
 }
 
 .dsh-rw-rail-minimized {
@@ -2783,12 +2789,6 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
 .dsh-rw-rail-minimized:hover {
   background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
   color: var(--dsw-alias-label-primary);
-}
-
-/* Horizontal strips append the toggle after the last chip. */
-.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-toggle,
-.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-toggle {
-  margin: 0 0 0 2px;
 }
 
 /* A minimized horizontal strip is a single centered glyph. */

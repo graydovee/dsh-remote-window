@@ -216,8 +216,10 @@ tsdown targets：
   前 portal 打开时自动靠右；展开/收起使用 200ms 过渡，`prefers-reduced-motion` 下关闭动画。
 - rail 收起态在连接数 > 1 时末尾多一个折叠按钮（左右吸附在最后一个图标下方，上下吸附在图标条右端），
   点击最小化为单个 `+N` 图标（N = 连接数），最小化期间 hover 不展开；再点 `+N` 恢复收起条与 hover
-  展开。最小化是会话内状态（不持久化），连接数降到 1 自动恢复；hover 展开时按钮仍保持挂载，否则
-  指针跨过 rail 会先触发展开、按钮消失而无法点击（`railShowsToggle` 只看 minimized/count）。
+  展开。最小化是会话内状态（不持久化），连接数降到 1 自动恢复。按钮**渲染在 rail 盒之外的 host 内**
+  （`railToggleStyle` 放在收起条预留的 gutter，`position:absolute; pointer-events:auto`），指针永远
+  不需要跨过 rail 才能点到它；hover 展开/最小化/单连接/拖拽期间隐藏（`railShowsToggle` 只看
+  expanded/minimized/count）。不遵守这一点会回到「hover 按钮 → rail 展开 → 按钮消失 → 闪烁」的老 bug。
 - `dshRwFull=1` 只控制 server 插件不注入隐藏 CSS；不得在 client 侧用自定义 CSS 覆盖官方视觉。
 - 官方 iframe 的滚动、下载、弹窗、剪贴板必须在 sandbox 内可用；新增权限需在本文与
   `doc/refactor-v3-full-ui.md` 同步说明。
