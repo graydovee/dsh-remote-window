@@ -153,12 +153,12 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 
 本分支实测证据（本地运行，2026-10）：
 
-- client：`pnpm typecheck` 通过；`pnpm test` **608 passed / 1 skipped**（67 通过 + 1 跳过，68 文件）；
-  `pnpm build` 通过（`lib/client.js` 461.61 kB）。
+- client：`pnpm typecheck` 通过；`pnpm test` **624 passed / 1 skipped**（67 通过 + 1 跳过，68 文件）；
+  `pnpm build` 通过（`lib/client.js` 473.18 kB）。
 - server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
-- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,035,644 B，sha256
-  `49fd8c21453564e56e7600c5a6f821bcedf0e4012ebe90cff90a50ab02bdbbac`。
+- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,047,076 B，sha256
+  `dc1c892b1f5be61e1792768c8ecca867d8494312ccbf28b4b001c152f596fe06`。
 - 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
   `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
   一致。
@@ -191,6 +191,13 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 - 重连回归：`v1/connect {targetId}` 重连后 patch 仍写在保存的 `DSH_HOME`
   （`/tmp/dsh-e2e/server-dsh-home/...`，mtime 刷新、隧道端口更新），不再落到远端默认 home；
   回归测试 `tests/targets-reconnect.test.ts`。
+- 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`）：初始左侧
+  竖排 44×316 @ (10,96)；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
+  `localStorage['dsh-remote-workspace.rail-dock']`；hover 展开宽 280；拖到上缘 → `data-dock="top"`、
+  top=10、x=618、宽 720、高 44，chips 同一行（y=16）；刷新后保持 top（折叠宽 318 = 9 targets × 34 + 12）；
+  拖回左缘 → y=278。上缘靠近右缘时展开仍收在视口内（x=710、right=1430 = viewport-10）。截图
+  `/tmp/dsh-e2e/rail-top-dock.jpg`、`/tmp/dsh-e2e/rail-left-dock.jpg`。回归测试
+  `tests/client-target-rail.test.ts`（吸附/夹取/默认 dock）。
 - 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
   `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
   `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。

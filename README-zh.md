@@ -29,8 +29,9 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 ![浮动 target rail 与全屏 iframe 中的 server 官方 UI](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
 client 只保留一个远程面：浮动 **target rail**（默认收起，hover 或 `Alt+R` 展开），列已保存连接、实时
-阶段与连接/切换/忘记动作。连接后，server 自己的 sidebar 与对话就是导航；iframe 挂载期间 client shell
-sidebar 隐藏。
+阶段与连接/切换/忘记动作。target rail 可拖到任意屏幕边缘并自动吸附：左右为竖排收起条（展开 280px），
+上下为横排（展开最宽 720px），位置跨刷新记忆。连接后，server 自己的 sidebar 与对话就是导航；iframe
+挂载期间 client shell sidebar 隐藏。
 
 ## Why this exists
 

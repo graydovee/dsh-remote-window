@@ -9,7 +9,7 @@
  * through `remote-store` and the existing connection dialogs.
  */
 import { useEffect, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   IconPlusOutlineRegular, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular,
@@ -29,6 +29,178 @@ export const TARGET_RAIL_ATTR = 'data-dsh-remote-workspace-rail'
 
 /** Keyboard shortcut that pins the rail open (`Alt+R`). */
 export const RAIL_SHORTCUT = 'r'
+
+/** Screen edge the rail is docked to after a drag (or automatically). */
+export type RailDock = 'left' | 'right' | 'top' | 'bottom'
+
+/** Snapped rail position: docked edge plus a pixel offset along it. */
+export interface RailPlacement {
+  readonly dock: RailDock
+  /** For left/right: distance from the viewport top. For top/bottom: from the left edge. */
+  readonly offset: number
+}
+
+/** Gap between the rail and the screen edge. */
+export const RAIL_MARGIN = 10
+
+/** Collapsed rail thickness (side width / bar height). */
+export const RAIL_COMPACT_SIZE = 44
+
+/** Expanded vertical rail width. */
+export const RAIL_SIDE_WIDTH = 280
+
+/** Hard cap for the expanded horizontal rail. */
+export const RAIL_BAR_MAX_WIDTH = 720
+
+/** `localStorage` key that remembers the user's chosen dock across remounts. */
+export const RAIL_DOCK_STORAGE_KEY = 'dsh-remote-workspace.rail-dock'
+
+/** Pointer travel that turns a press into a drag instead of a click. */
+const RAIL_DRAG_THRESHOLD = 4
+
+/** The subset of a React pointer event the drag start needs. */
+interface RailPointerDown {
+  readonly button: number
+  readonly clientX: number
+  readonly clientY: number
+  readonly pointerId: number
+}
+
+/** Collapsed width of one bar chip, used to size the horizontal rail. */
+const RAIL_BAR_CHIP_WIDTH = 34
+
+const RAIL_DOCKS: readonly RailDock[] = ['left', 'right', 'top', 'bottom']
+
+/** Clamp a value into `[min, max]` (max may fall below min on tiny viewports). */
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, Math.max(min, max)))
+}
+
+/** Pick the screen edge closest to the pointer. */
+export function nearestRailDock(
+  pointer: { readonly x: number; readonly y: number },
+  viewport: { readonly width: number; readonly height: number },
+): RailDock {
+  const distances: Array<[RailDock, number]> = [
+    ['left', pointer.x],
+    ['right', viewport.width - pointer.x],
+    ['top', pointer.y],
+    ['bottom', viewport.height - pointer.y],
+  ]
+  let best: [RailDock, number] = distances[0]!
+  for (const candidate of distances.slice(1)) {
+    if (candidate[1] < best[1]) best = candidate
+  }
+  return best[0]
+}
+
+/**
+ * Snap a free position to the nearest edge.
+ *
+ * Left/right docks keep the collapsed vertical column and offset along Y;
+ * top/bottom docks become the horizontal bar and offset along X.
+ * @param pointer - final pointer position in viewport coordinates.
+ * @param viewport - current viewport size in CSS pixels.
+ * @returns the dock and the clamped edge offset.
+ */
+export function snapRailPlacement(
+  pointer: { readonly x: number; readonly y: number },
+  viewport: { readonly width: number; readonly height: number },
+): RailPlacement {
+  const dock = nearestRailDock(pointer, viewport)
+  if (dock === 'left' || dock === 'right') {
+    return {
+      dock,
+      offset: clamp(
+        pointer.y - RAIL_COMPACT_SIZE / 2,
+        RAIL_MARGIN,
+        viewport.height - RAIL_COMPACT_SIZE - RAIL_MARGIN,
+      ),
+    }
+  }
+  return {
+    dock,
+    offset: clamp(
+      pointer.x - RAIL_COMPACT_SIZE / 2,
+      RAIL_MARGIN,
+      viewport.width - RAIL_COMPACT_SIZE - RAIL_MARGIN,
+    ),
+  }
+}
+
+/** Keep an already-snapped placement inside the current viewport. */
+export function clampRailPlacement(
+  placement: RailPlacement,
+  viewport: { readonly width: number; readonly height: number },
+): RailPlacement {
+  if (viewport.width <= 0 || viewport.height <= 0) return placement
+  if (placement.dock === 'left' || placement.dock === 'right') {
+    return {
+      dock: placement.dock,
+      offset: clamp(
+        placement.offset,
+        RAIL_MARGIN,
+        viewport.height - RAIL_COMPACT_SIZE - RAIL_MARGIN,
+      ),
+    }
+  }
+  return {
+    dock: placement.dock,
+    offset: clamp(
+      placement.offset,
+      RAIL_MARGIN,
+      viewport.width - RAIL_COMPACT_SIZE - RAIL_MARGIN,
+    ),
+  }
+}
+
+function isRailDock(value: unknown): value is RailDock {
+  return typeof value === 'string' && (RAIL_DOCKS as readonly string[]).includes(value)
+}
+
+function readStoredPlacement(): RailPlacement | undefined {
+  if (typeof window === 'undefined') return undefined
+  try {
+    const raw = window.localStorage.getItem(RAIL_DOCK_STORAGE_KEY)
+    if (raw === null) return undefined
+    const value = JSON.parse(raw) as Partial<RailPlacement>
+    if (isRailDock(value.dock) && typeof value.offset === 'number' && Number.isFinite(value.offset)) {
+      return { dock: value.dock, offset: Math.max(RAIL_MARGIN, value.offset) }
+    }
+  } catch {
+    // Storage may be unavailable (private mode) — fall back to the default dock.
+  }
+  return undefined
+}
+
+function storePlacement(placement: RailPlacement): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(RAIL_DOCK_STORAGE_KEY, JSON.stringify(placement))
+  } catch {
+    // Ignore storage failures; the dock simply resets on remount.
+  }
+}
+
+function viewportSize(): { width: number; height: number } {
+  if (typeof window === 'undefined') return { width: 0, height: 0 }
+  return { width: window.innerWidth, height: window.innerHeight }
+}
+
+/** Default dock: a tall-centred column on the left edge. */
+const DEFAULT_PLACEMENT: RailPlacement = { dock: 'left', offset: 96 }
+
+/** Live viewport size, re-read on window resizes (0×0 outside a document). */
+function useViewport(): { readonly width: number; readonly height: number } {
+  const [size, setSize] = useState(viewportSize)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onResize = (): void => { setSize(viewportSize()) }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return size
+}
 
 /** Short label shown in collapsed mode: first visible character of the name. */
 function initialOf(label: string): string {
@@ -117,6 +289,22 @@ export function TargetRail(): ReactElement {
   const [pinned, setPinned] = useState(false)
   const expanded = pinned || hovered
   const portalActive = active !== undefined
+  // Placement and drag live in the rail itself: the host div only provides the
+  // fixed viewport layer (pointer-events: none) so every screen pixel can be a
+  // drop target without blocking the client shell underneath.
+  const [placement, setPlacement] = useState<RailPlacement>(
+    () => clampRailPlacement(readStoredPlacement() ?? DEFAULT_PLACEMENT, viewportSize()),
+  )
+  const [userDocked, setUserDocked] = useState(() => readStoredPlacement() !== undefined)
+  const [drag, setDrag] = useState<{ readonly x: number; readonly y: number } | null>(null)
+  const viewport = useViewport()
+  const dragSession = useState(() => ({
+    startX: 0,
+    startY: 0,
+    pointerId: undefined as number | undefined,
+    moved: false,
+    suppressClick: false,
+  }))[0]
 
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -125,6 +313,27 @@ export function TargetRail(): ReactElement {
     if (portalActive) host.setAttribute('data-portal', 'true')
     else host.removeAttribute('data-portal')
   }, [portalActive])
+
+  // Before the user ever drags the rail, opening the full-screen official UI
+  // docks it right (the official sidebar owns the left edge); a manual dock
+  // always wins over this default.
+  useEffect(() => {
+    if (!portalActive || userDocked) return
+    const size = viewportSize()
+    if (size.width <= 0 || size.height <= 0) return
+    setPlacement(current => current.dock === 'right'
+      ? current
+      : {
+          dock: 'right',
+          offset: Math.max(RAIL_MARGIN, Math.round((size.height - RAIL_COMPACT_SIZE) / 2)),
+        })
+  }, [portalActive, userDocked])
+
+  // Shrinking the window must never strand the rail off-screen.
+  useEffect(() => {
+    if (viewport.width <= 0 || viewport.height <= 0) return
+    setPlacement(current => clampRailPlacement(current, viewport))
+  }, [viewport.width, viewport.height])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -140,18 +349,114 @@ export function TargetRail(): ReactElement {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
+  /**
+   * Start a pointer drag.
+   *
+   * A press only becomes a drag after `RAIL_DRAG_THRESHOLD` pixels, so every
+   * chip/button inside the rail still behaves as a normal click; once the drag
+   * ends the rail snaps to the nearest edge and the trailing click is eaten.
+   */
+  const startDrag = (event: RailPointerDown): void => {
+    if (event.button !== 0 || typeof window === 'undefined') return
+    dragSession.startX = event.clientX
+    dragSession.startY = event.clientY
+    dragSession.pointerId = event.pointerId
+    dragSession.moved = false
+    const onMove = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== dragSession.pointerId) return
+      const dx = moveEvent.clientX - dragSession.startX
+      const dy = moveEvent.clientY - dragSession.startY
+      if (!dragSession.moved && Math.hypot(dx, dy) < RAIL_DRAG_THRESHOLD) return
+      dragSession.moved = true
+      setDrag({
+        x: moveEvent.clientX - RAIL_COMPACT_SIZE / 2,
+        y: moveEvent.clientY - RAIL_COMPACT_SIZE / 2,
+      })
+    }
+    const finish = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== dragSession.pointerId) return
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      dragSession.pointerId = undefined
+      if (!dragSession.moved) return
+      dragSession.suppressClick = true
+      setDrag(null)
+      const snapped = snapRailPlacement(
+        { x: upEvent.clientX, y: upEvent.clientY },
+        { width: window.innerWidth, height: window.innerHeight },
+      )
+      setPlacement(snapped)
+      setUserDocked(true)
+      storePlacement(snapped)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+  }
+
+  const suppressDraggedClick = (event: { stopPropagation: () => void; preventDefault: () => void }): void => {
+    if (!dragSession.suppressClick) return
+    dragSession.suppressClick = false
+    event.stopPropagation()
+    event.preventDefault()
+  }
+
   const views = state.order
     .map(targetId => state.connections[targetId])
     .filter((view): view is RemoteConnectionView => view !== undefined)
 
+  const isBar = placement.dock === 'top' || placement.dock === 'bottom'
+  // Horizontal bars cannot use an auto width with a CSS transition, so the
+  // component sizes them: one 34px chip per target collapsed, a wider bar when
+  // labels/actions expand.
+  const collapsedBarWidth = Math.max(RAIL_COMPACT_SIZE, views.length * RAIL_BAR_CHIP_WIDTH + 12)
+  const expandedBarWidth = Math.min(
+    RAIL_BAR_MAX_WIDTH,
+    Math.max(RAIL_COMPACT_SIZE, viewport.width - RAIL_MARGIN * 2),
+  )
+  const railStyle: CSSProperties = {}
+  if (drag !== null) {
+    railStyle.left = drag.x
+    railStyle.top = drag.y
+  } else if (placement.dock === 'left') {
+    railStyle.left = RAIL_MARGIN
+    railStyle.top = placement.offset
+  } else if (placement.dock === 'right') {
+    railStyle.right = RAIL_MARGIN
+    railStyle.top = placement.offset
+  } else {
+    // Top/bottom bars grow to the right, so their left edge also honors the
+    // expanded width to stay inside the viewport.
+    const barWidth = expanded ? expandedBarWidth : collapsedBarWidth
+    const barLeft = Math.min(
+      placement.offset,
+      Math.max(RAIL_MARGIN, viewport.width - RAIL_MARGIN - barWidth),
+    )
+    if (placement.dock === 'top') {
+      railStyle.top = RAIL_MARGIN
+    } else {
+      railStyle.bottom = RAIL_MARGIN
+    }
+    railStyle.left = barLeft
+    railStyle.width = barWidth
+  }
+
   return (
     <div
       className="dsh-rw-rail"
+      style={railStyle}
       data-expanded={expanded ? 'true' : undefined}
       data-portal={portalActive ? 'true' : undefined}
       data-pinned={pinned ? 'true' : undefined}
+      data-dock={placement.dock}
+      data-dragging={drag !== null ? 'true' : undefined}
+      data-user-docked={userDocked ? 'true' : undefined}
       role="navigation"
       aria-label={t('rail.aria')}
+      title={t('rail.dragHint')}
+      onPointerDown={startDrag}
+      onClickCapture={suppressDraggedClick}
       onMouseEnter={() => { setHovered(true) }}
       onMouseLeave={() => { setHovered(false) }}
       onFocus={() => { setHovered(true) }}

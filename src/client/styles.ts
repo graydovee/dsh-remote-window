@@ -2577,38 +2577,24 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   grid-template-columns: minmax(0, 1fr) !important;
 }
 
+/* Body-level host: covers the viewport but never steals input; the rail itself
+   is an absolutely positioned child so it can be dragged and docked to any of
+   the four screen edges (left/right = vertical column, top/bottom = bar). */
 .dsh-rw-rail-host {
   position: fixed;
-  left: 10px;
-  bottom: 14px;
+  inset: 0;
   z-index: 70;
-  display: flex;
-  flex-direction: column-reverse;
-  align-items: flex-start;
   pointer-events: none;
 }
 
-/* While the official full UI owns the screen, the frame's sidebar and its
-   account button sit along the left edge: dock the floating rail to the right
-   edge (where the official content keeps its margin) so nothing official is
-   covered while the rail is collapsed. */
-.dsh-rw-rail-host[data-portal="true"] {
-  right: 10px;
-  left: auto;
-  top: 50%;
-  bottom: auto;
-  transform: translateY(-50%);
-  flex-direction: column;
-  align-items: flex-end;
-}
-
 .dsh-rw-rail {
+  position: absolute;
   pointer-events: auto;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   width: 44px;
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - 20px);
   padding: 6px;
   border-radius: 16px;
   background: color-mix(in srgb, var(--dsw-alias-bg-elevated, var(--dsw-alias-bg-base)) 94%, transparent);
@@ -2617,15 +2603,84 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
     0 0 0 1px var(--dsw-alias-border-secondary, rgb(127 127 127 / 18%));
   backdrop-filter: blur(8px);
   overflow: hidden;
-  /* No width transition: the expansion must be an instant, deterministic
-     layout (background tabs can freeze animations mid-flight and leave the
-     collapsed 44px box with expanded children clipped). */
-  transition: none;
+  /* Expanding/collapsing animates the box on both axes; the snap transition
+     reuses the same curve when the rail is dropped on another edge. */
+  transition:
+    left 200ms cubic-bezier(0.22, 0.8, 0.26, 1),
+    top 200ms cubic-bezier(0.22, 0.8, 0.26, 1),
+    right 200ms cubic-bezier(0.22, 0.8, 0.26, 1),
+    bottom 200ms cubic-bezier(0.22, 0.8, 0.26, 1),
+    width 200ms cubic-bezier(0.22, 0.8, 0.26, 1),
+    height 200ms cubic-bezier(0.22, 0.8, 0.26, 1),
+    border-radius 200ms ease;
+  will-change: left, top, width;
 }
 
-.dsh-rw-rail[data-expanded="true"],
-.dsh-rw-rail:focus-within {
+/* While the user drags, position changes must be immediate. */
+.dsh-rw-rail[data-dragging="true"] {
+  transition: none;
+  cursor: grabbing;
+}
+
+.dsh-rw-rail[data-dock="left"][data-expanded="true"],
+.dsh-rw-rail[data-dock="right"][data-expanded="true"],
+.dsh-rw-rail[data-dock="left"]:focus-within,
+.dsh-rw-rail[data-dock="right"]:focus-within {
   width: 280px;
+}
+
+/* Top/bottom docks are horizontal bars: collapsed shows a row of glyph chips,
+   expanded widens the bar in place so labels/actions read left-to-right. */
+.dsh-rw-rail[data-dock="top"],
+.dsh-rw-rail[data-dock="bottom"] {
+  flex-direction: row;
+  align-items: stretch;
+  height: 44px;
+  max-height: 44px;
+  padding: 6px;
+}
+
+.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-head,
+.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-head {
+  flex: none;
+  padding: 0 6px 0 0;
+  align-items: center;
+}
+
+.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-list,
+.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-list {
+  flex: none;
+  flex-direction: row;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-target,
+.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-target,
+.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-empty,
+.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-empty {
+  flex: none;
+  max-width: 200px;
+}
+
+.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-target .dsh-rw-rail-main,
+.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-target .dsh-rw-rail-main {
+  padding: 4px;
+  text-align: left;
+}
+
+.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-status,
+.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-status {
+  flex: none;
+  margin: 0 4px;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsh-rw-rail {
+    transition: none;
+  }
 }
 
 .dsh-rw-rail-head {

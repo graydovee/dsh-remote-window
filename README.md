@@ -35,9 +35,10 @@ a new session.
 ![The target rail with a live connection, and the server's official UI in the full-screen frame](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
 The client keeps exactly one remote surface: a floating **target rail** (collapsed by default, hover or
-`Alt+R` to expand) listing saved connections, their live phase and the connect/switch/forget actions. Once
-connected, the server's own sidebar and conversation are the navigation; the client shell sidebar hides
-while the iframe is mounted.
+`Alt+R` to expand) listing saved connections, their live phase and the connect/switch/forget actions. Drag
+the rail to any screen edge: it snaps to left/right as a compact column (280px when expanded) or to
+top/bottom as a horizontal bar, and remembers that dock across reloads. Once connected, the server's own
+sidebar and conversation are the navigation; the client shell sidebar hides while the iframe is mounted.
 
 ## Why this exists
 

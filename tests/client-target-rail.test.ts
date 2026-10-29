@@ -174,4 +174,42 @@ describe('target rail', () => {
     ;(disconnect?.onClick as (() => void) | undefined)?.()
     expect(store.disconnect).toHaveBeenCalledWith('t1')
   })
+
+  it('docks to the nearest edge and clamps the offset along it', async () => {
+    const module = await import('../src/client/rail.tsx')
+    const viewport = { width: 1440, height: 900 }
+    expect(module.snapRailPlacement({ x: 2, y: 400 }, viewport)).toEqual({ dock: 'left', offset: 378 })
+    expect(module.snapRailPlacement({ x: 1438, y: 400 }, viewport)).toEqual({ dock: 'right', offset: 378 })
+    expect(module.snapRailPlacement({ x: 700, y: 3 }, viewport)).toEqual({ dock: 'top', offset: 678 })
+    expect(module.snapRailPlacement({ x: 700, y: 897 }, viewport)).toEqual({ dock: 'bottom', offset: 678 })
+    // Corners clamp to the margin instead of leaving the viewport.
+    expect(module.snapRailPlacement({ x: 1, y: 1 }, viewport)).toEqual({ dock: 'left', offset: 10 })
+    expect(module.snapRailPlacement({ x: 1439, y: 899 }, viewport)).toEqual({ dock: 'right', offset: 846 })
+    // A tiny viewport still produces a valid on-screen offset.
+    expect(module.snapRailPlacement({ x: 200, y: 50 }, { width: 400, height: 100 })).toEqual({ dock: 'top', offset: 178 })
+  })
+
+  it('keeps a snapped placement inside the viewport when the window resizes', async () => {
+    const module = await import('../src/client/rail.tsx')
+    expect(module.clampRailPlacement({ dock: 'top', offset: 9999 }, { width: 1440, height: 900 })).toEqual({ dock: 'top', offset: 1386 })
+    expect(module.clampRailPlacement({ dock: 'left', offset: -20 }, { width: 1440, height: 900 })).toEqual({ dock: 'left', offset: 10 })
+    // Zero-sized viewports (SSR / before layout) leave the placement untouched.
+    expect(module.clampRailPlacement({ dock: 'right', offset: 40 }, { width: 0, height: 0 })).toEqual({ dock: 'right', offset: 40 })
+  })
+
+  it('renders the rail at its default left dock with a position style', async () => {
+    store.state = {
+      loaded: true,
+      loading: false,
+      order: ['t1'],
+      connections: { t1: view() },
+    }
+    const module = await import('../src/client/rail.tsx')
+    const rail = collect(module.TargetRail()).find(element => element.props?.className === 'dsh-rw-rail')
+    expect(rail).toBeDefined()
+    expect(rail?.props['data-dock']).toBe('left')
+    expect(rail?.props['data-expanded']).toBeUndefined()
+    expect((rail?.props.style as Record<string, unknown>).left).toBe(10)
+    expect((rail?.props.style as Record<string, unknown>).top).toBe(96)
+  })
 })
