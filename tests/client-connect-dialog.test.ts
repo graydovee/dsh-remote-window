@@ -1,17 +1,30 @@
 /**
- * v3 connect dialog: the model source moved into 高级选项, local defaults to
- * auto-proxying this DSH's own providers.
+ * v3 connect dialog: the model source lives in 高级选项 and the local source is
+ * always the auto-discovered catalog of this DSH's providers — there is no
+ * manual endpoint/API-key UI any more.
  *
  * The dialog is driven by store state and the primitives package is external to
  * this repository, so the component tree is walked with hook/JSX mocks (the
  * pattern used by the other client specs). What is pinned here: DSH_HOME and
  * the model-source segmented control live inside the advanced disclosure, the
- * auto panel renders the discovered provider summary/chips, the empty catalog
- * tells the user to configure a provider first, and only manual mode blocks on
- * a missing endpoint.
+ * discovered catalog renders one provider group with a checkbox per model plus
+ * per-provider 全选/清空, an empty catalog tells the user to configure a
+ * provider first, and the deploy step shows a waiting hint while the first
+ * progress poll has not answered yet.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { t } from '../src/client/locales.ts'
+
+const PROVIDER_ONE = {
+  id: 'p1',
+  name: 'Provider one',
+  models: [{ id: 'a', name: 'Model A' }, { id: 'b', name: 'Model B' }],
+}
+const PROVIDER_TWO = {
+  id: 'p2',
+  name: 'Provider two',
+  models: [{ id: 'c', name: 'Model C' }],
+}
 
 const dialog = {
   phase: 'idle' as const,
@@ -25,26 +38,21 @@ const dialog = {
   dshHome: '',
   runtimePolicy: 'auto' as const,
   modelSource: 'local' as 'local' | 'server',
-  localMode: 'auto' as 'auto' | 'manual',
-  localBaseUrl: '',
-  localModels: [] as string[],
-  localTimeoutMs: 120_000,
   localProviders: [] as Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>,
   localProvidersLoading: false,
-  localProvidersLoaded: false,
-  localHasApiKey: false,
+  localProvidersLoaded: true,
+  localSelection: {} as Record<string, readonly string[]>,
   localSettingsLoading: false,
-  localModelsLoading: false,
 }
 
 const storeSpies = vi.hoisted(() => ({
   appState: {} as Record<string, unknown>,
   discoverLocalProviders: vi.fn(),
-  probeLocalLlmModels: vi.fn(),
-  clearLocalLlmKey: vi.fn(),
   patchConnectDialog: vi.fn(),
+  setLocalProviderSelected: vi.fn(),
   submitConnectDialog: vi.fn(),
   closeConnectDialog: vi.fn(),
+  toggleLocalModel: vi.fn(),
 }))
 
 const reactState = vi.hoisted(() => ({
@@ -83,12 +91,12 @@ vi.mock('react/jsx-dev-runtime', () => ({
 
 const remoteStore = vi.hoisted(() => ({
   noop: vi.fn(),
-  clearLocalLlmKey: storeSpies.clearLocalLlmKey,
+  closeConnectDialog: storeSpies.closeConnectDialog,
   discoverLocalProviders: storeSpies.discoverLocalProviders,
   patchConnectDialog: storeSpies.patchConnectDialog,
-  probeLocalLlmModels: storeSpies.probeLocalLlmModels,
+  setLocalProviderSelected: storeSpies.setLocalProviderSelected,
   submitConnectDialog: storeSpies.submitConnectDialog,
-  closeConnectDialog: storeSpies.closeConnectDialog,
+  toggleLocalModel: storeSpies.toggleLocalModel,
 }))
 vi.mock('../src/client/remote-store.ts', () => ({
   LOCAL_MODE_READY: true,
@@ -96,7 +104,6 @@ vi.mock('../src/client/remote-store.ts', () => ({
   browseAddWorkspace: remoteStore.noop,
   cancelModeSwitch: remoteStore.noop,
   cancelProfileRestart: remoteStore.noop,
-  clearLocalLlmKey: remoteStore.clearLocalLlmKey,
   closeAddWorkspace: remoteStore.noop,
   closeArchiveActivity: remoteStore.noop,
   closeConnectDialog: remoteStore.closeConnectDialog,
@@ -111,9 +118,9 @@ vi.mock('../src/client/remote-store.ts', () => ({
   modeDialogFor: () => undefined,
   patchConnectDialog: remoteStore.patchConnectDialog,
   previewModeSwitch: remoteStore.noop,
-  probeLocalLlmModels: remoteStore.probeLocalLlmModels,
   setAddWorkspacePath: remoteStore.noop,
   setAddWorkspaceTitle: remoteStore.noop,
+  setLocalProviderSelected: remoteStore.setLocalProviderSelected,
   setRenameSessionValue: remoteStore.noop,
   setRenameWorkspaceValue: remoteStore.noop,
   submitAddWorkspace: remoteStore.noop,
@@ -122,12 +129,14 @@ vi.mock('../src/client/remote-store.ts', () => ({
   submitForgetTarget: remoteStore.noop,
   submitRenameSession: remoteStore.noop,
   submitRenameWorkspace: remoteStore.noop,
+  toggleLocalModel: remoteStore.toggleLocalModel,
   useRemoteAppState: () => storeSpies.appState,
 }))
 vi.mock('../src/client/api.ts', () => ({
   api: { sshAliases: vi.fn(async () => ({ aliases: [], warnings: [] })) },
 }))
-vi.mock('../src/client/remote-api.ts', () => ({ remoteApi: { connectProgress: vi.fn() } }))
+const apiSpies = vi.hoisted(() => ({ connectProgress: vi.fn() }))
+vi.mock('../src/client/remote-api.ts', () => ({ remoteApi: apiSpies }))
 vi.mock('../src/client/executor.ts', () => ({ summarizeModeSwitch: () => undefined }))
 vi.mock('../src/client/common.tsx', () => ({
   Field: (props: Record<string, unknown>) => ({ type: 'mock-field', props }),
@@ -193,8 +202,17 @@ function hasText(elements: readonly Element[], text: string): boolean {
   return elements.some(element => element.props?.children === text)
 }
 
+function text(elements: readonly Element[], testId: string): string | undefined {
+  const element = elements.find(candidate => candidate.props?.['data-testid'] === testId)
+  return element?.props?.children as string | undefined
+}
+
 function button(elements: readonly Element[], label: string): Element | undefined {
   return elements.find(element => element.type === 'mock-button' && element.props.children === label)
+}
+
+function buttons(elements: readonly Element[], label: string): Element[] {
+  return elements.filter(element => element.type === 'mock-button' && element.props.children === label)
 }
 
 /** The advanced disclosure of the config step. */
@@ -215,11 +233,17 @@ function segmented(elements: readonly Element[], id: string): Element {
   return control
 }
 
+function checkbox(elements: readonly Element[], providerId: string, modelId: string): Element {
+  const input = elements.find(element => element.props?.['data-testid'] === `dsh-rw-local-model-${providerId}-${modelId}`)
+  if (input === undefined) throw new Error(`checkbox ${providerId}/${modelId} not rendered`)
+  return input
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   reactState.values.length = 0
   reactState.cursor = 0
-  storeSpies.probeLocalLlmModels.mockResolvedValue(undefined)
+  apiSpies.connectProgress.mockResolvedValue({ events: [] })
 })
 
 describe('v3 connect dialog model source', () => {
@@ -227,51 +251,80 @@ describe('v3 connect dialog model source', () => {
     const elements = await renderDialog()
     const nested = advancedContent(elements)
     expect(advanced(elements).props.title).toBe(t('remote.connect.advanced'))
-    // DSH_HOME stays the first advanced field.
-    expect(nested.some(element => element.type === 'mock-field' && element.props.label === t('remote.connect.dshHome'))).toBe(true)
-    // Source first, then the local sub-mode.
+    // DSH_HOME stays the first advanced field; there is no manual endpoint
+    // form, so the only other field is the model-source label.
+    const fields = nested.filter(element => element.type === 'mock-field')
+    expect(fields.map(field => field.props.label)).toEqual([
+      t('remote.connect.dshHome'),
+      t('connect.local.title'),
+    ])
+    expect(elements.some(element => element.props?.id === 'dsh-rw-connect-local-mode')).toBe(false)
+    // Source segmented control keeps only local|server.
     const source = segmented(nested, 'dsh-rw-connect-model-source')
     expect(source.props.value).toBe('local')
     expect((source.props.options as Array<{ value: string }>).map(option => option.value)).toEqual(['local', 'server'])
-    const mode = segmented(nested, 'dsh-rw-connect-local-mode')
-    expect(mode.props.value).toBe('auto')
-    expect((mode.props.options as Array<{ value: string }>).map(option => option.value)).toEqual(['auto', 'manual'])
-    // The auto panel is the default local path: hint + refresh + summary.
+    // Local is always auto-discovery: hint + refresh + summary.
     expect(hasText(nested, t('connect.local.auto.hint'))).toBe(true)
     expect(button(nested, t('connect.local.auto.refresh'))).toBeDefined()
-    expect(hasText(nested, t('connect.local.auto.summary', { providers: 0, models: 0 }))).toBe(true)
-    // The removed standalone block means no model-source control outside it.
-    expect(elements.some(element => element.type === 'mock-segmented' && element.props.id === 'dsh-rw-connect-model-source')).toBe(true)
-    expect(nested.filter(element => element.type === 'mock-segmented' && element.props.id === 'dsh-rw-connect-model-source')).toHaveLength(1)
+    expect(text(nested, 'dsh-rw-local-summary')).toBe(
+      t('connect.local.auto.summary', { providers: 0, selected: 0, models: 0 }),
+    )
   })
 
-  it('renders the discovered provider summary and chips in the auto panel', async () => {
-    const elements = await renderDialog({
-      localProviders: [
-        { id: 'p1', name: 'Provider one', models: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] },
-        { id: 'p2', name: 'Provider two', models: [{ id: 'c', name: 'C' }] },
-      ],
-      localProvidersLoaded: true,
-    })
-    const nested = advancedContent(elements)
-    expect(hasText(nested, t('connect.local.auto.summary', { providers: 2, models: 3 }))).toBe(true)
+  it('renders the discovered catalog grouped per provider with every model checked', async () => {
+    const nested = advancedContent(await renderDialog({
+      localProviders: [PROVIDER_ONE, PROVIDER_TWO],
+      localSelection: { p1: ['a', 'b'], p2: ['c'] },
+    }))
+    expect(text(nested, 'dsh-rw-local-summary')).toBe(
+      t('connect.local.auto.summary', { providers: 2, selected: 3, models: 3 }),
+    )
     expect(hasText(nested, 'Provider one')).toBe(true)
     expect(hasText(nested, 'Provider two')).toBe(true)
+    expect(hasText(nested, 'Model A')).toBe(true)
+    expect(hasText(nested, 'Model C')).toBe(true)
+    expect(checkbox(nested, 'p1', 'a').props.checked).toBe(true)
+    expect(checkbox(nested, 'p1', 'b').props.checked).toBe(true)
+    expect(checkbox(nested, 'p2', 'c').props.checked).toBe(true)
+    expect(checkbox(nested, 'p1', 'a').props.disabled).toBe(false)
     expect(hasText(nested, t('connect.local.auto.empty'))).toBe(false)
-    const refresh = button(nested, t('connect.local.auto.refresh'))
-    expect(refresh).toBeDefined()
-    ;(refresh?.props.onClick as () => void)()
+    // Per-provider count + 全选/清空 buttons, one pair per provider.
+    expect(hasText(nested, t('connect.local.auto.providerCount', { selected: 2, total: 2 }))).toBe(true)
+    expect(hasText(nested, t('connect.local.auto.providerCount', { selected: 1, total: 1 }))).toBe(true)
+    const selectAll = buttons(nested, t('connect.local.auto.selectAll'))
+    const clear = buttons(nested, t('connect.local.auto.clear'))
+    expect(selectAll).toHaveLength(2)
+    expect(clear).toHaveLength(2)
+    ;(selectAll[0]!.props.onClick as () => void)()
+    expect(storeSpies.setLocalProviderSelected).toHaveBeenCalledWith('p1', true)
+    ;(clear[1]!.props.onClick as () => void)()
+    expect(storeSpies.setLocalProviderSelected).toHaveBeenCalledWith('p2', false)
+  })
+
+  it('delegates checkbox changes and refreshes the catalog', async () => {
+    const nested = advancedContent(await renderDialog({
+      localProviders: [PROVIDER_ONE, PROVIDER_TWO],
+      localSelection: { p1: ['a', 'b'], p2: ['c'] },
+    }))
+    ;(checkbox(nested, 'p1', 'a').props.onChange as () => void)()
+    expect(storeSpies.toggleLocalModel).toHaveBeenCalledWith('p1', 'a')
+    ;(checkbox(nested, 'p2', 'c').props.onChange as () => void)()
+    expect(storeSpies.toggleLocalModel).toHaveBeenCalledWith('p2', 'c')
+    ;(button(nested, t('connect.local.auto.refresh'))?.props.onClick as () => void)()
     expect(storeSpies.discoverLocalProviders).toHaveBeenCalledTimes(1)
   })
 
   it('asks the user to configure a provider when discovery returns nothing', async () => {
-    const elements = await renderDialog({ localProviders: [], localProvidersLoaded: true })
-    const nested = advancedContent(elements)
-    expect(hasText(nested, t('connect.local.auto.empty'))).toBe(true)
+    const nested = advancedContent(await renderDialog({ localProviders: [], localProvidersLoaded: true }))
+    expect(text(nested, 'dsh-rw-local-empty')).toBe(t('connect.local.auto.empty'))
   })
 
   it('shows the loading and error states inline while refreshing', async () => {
-    const loading = advancedContent(await renderDialog({ localProvidersLoading: true }))
+    const loading = advancedContent(await renderDialog({
+      localProviders: [PROVIDER_ONE],
+      localProvidersLoading: true,
+      localProvidersLoaded: false,
+    }))
     expect(button(loading, t('connect.local.auto.refreshing'))).toBeDefined()
     const failed = advancedContent(await renderDialog({ localError: 'boom' }))
     expect(hasText(failed, 'boom')).toBe(true)
@@ -280,42 +333,34 @@ describe('v3 connect dialog model source', () => {
   it('keeps the server hint when the source is server', async () => {
     const nested = advancedContent(await renderDialog({ modelSource: 'server' }))
     expect(hasText(nested, t('connect.local.serverHint'))).toBe(true)
+    expect(nested.some(element => element.props?.['data-testid']?.toString().startsWith('dsh-rw-local-provider-'))).toBe(false)
     expect(nested.some(element => element.type === 'mock-segmented' && element.props.id === 'dsh-rw-connect-local-mode')).toBe(false)
   })
 
-  it('switches the local sub-mode through the store', async () => {
-    const nested = advancedContent(await renderDialog())
-    const mode = segmented(nested, 'dsh-rw-connect-local-mode')
-    ;(mode.props.onChange as (next: string) => void)('manual')
-    expect(storeSpies.patchConnectDialog).toHaveBeenCalledWith({ localMode: 'manual', localError: undefined })
-    expect(storeSpies.discoverLocalProviders).not.toHaveBeenCalled()
-    // The manual panel keeps today's endpoint/key/probe controls.
-    const manual = advancedContent(await renderDialog({ localMode: 'manual' }))
-    expect(manual.some(element => element.type === 'mock-field' && element.props.label === t('connect.local.baseUrl'))).toBe(true)
-    expect(button(manual, t('connect.local.refresh'))).toBeDefined()
-  })
-
-  it('requires an endpoint in manual mode before leaving the config step', async () => {
+  it('lets the config step advance without any endpoint (discovery is the only model config)', async () => {
     reactState.values[0] = 'config'
-    const elements = await renderDialog({ localMode: 'manual', localBaseUrl: '' })
+    const elements = await renderDialog()
     const next = button(elements, t('remote.connect.next'))
     expect(next).toBeDefined()
     ;(next?.props.onClick as () => void)()
     const rerendered = await rerender()
-    expect(hasText(rerendered, t('connect.local.baseUrlRequired'))).toBe(true)
-    expect(storeSpies.submitConnectDialog).not.toHaveBeenCalled()
-    // The step did not advance: the deploy section is absent.
-    expect(hasText(rerendered, t('connect.deploy.title'))).toBe(false)
-  })
-
-  it('lets auto mode leave the config step without any endpoint', async () => {
-    reactState.values[0] = 'config'
-    const elements = await renderDialog({ localMode: 'auto', localBaseUrl: '' })
-    const next = button(elements, t('remote.connect.next'))
-    expect(next).toBeDefined()
-    ;(next?.props.onClick as () => void)()
-    const rerendered = await rerender()
-    expect(hasText(rerendered, t('connect.local.baseUrlRequired'))).toBe(false)
     expect(hasText(rerendered, t('connect.deploy.title'))).toBe(true)
+  })
+
+  it('shows the elapsed timer next to the primary action while submitting', async () => {
+    const elements = await renderDialog({ phase: 'submitting', attemptId: 'attempt-1' })
+    expect(text(elements, 'dsh-rw-connect-elapsed')).toBe(t('connect.progress.elapsed', { seconds: 0 }))
+    expect(button(elements, t('remote.connect.next'))?.props.disabled).toBe(true)
+  })
+
+  it('shows a waiting hint above the steps until the first progress poll answers', async () => {
+    reactState.values[0] = 'connect'
+    const submitting = await renderDialog({ phase: 'submitting', attemptId: 'attempt-1' })
+    expect(text(submitting, 'dsh-rw-progress-waiting')).toBe(t('connect.progress.waiting'))
+    expect(hasText(submitting, t('connect.deploy.title'))).toBe(true)
+    // Idle/retry renders keep the hint hidden.
+    const idle = await renderDialog({ phase: 'failed' })
+    expect(text(idle, 'dsh-rw-progress-waiting')).toBeUndefined()
+    expect(text(idle, 'dsh-rw-connect-elapsed')).toBeUndefined()
   })
 })

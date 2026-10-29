@@ -350,6 +350,37 @@ describe('ProfileService local model source', () => {
     await expect(fetch(`http://127.0.0.1:${port}/openai/v1/models`)).rejects.toThrow()
   })
 
+  it('exposes only the saved selection of the automatic source to the profile and bridge', async () => {
+    store = fakeStore({
+      mode: 'auto',
+      baseUrl: '',
+      models: [],
+      timeoutMs: 5_000,
+      localSelection: [{ providerId: 'ollama', models: ['llama3'] }],
+    })
+    const runtime = autoRuntime()
+    const fixture = fakeConnector()
+    const service = serviceWith(fixture.connector, autoContext(runtime))
+    const result = await service.connect({ ...request, modelSource: 'local' })
+    expect(fixture.forwardTargets).toHaveLength(1)
+    const port = fixture.forwardTargets[0] as number
+
+    const patch = fixture.remote.writes.filter(write => write.path.endsWith('/cordis.patch.yml')).at(-1)?.content ?? ''
+    // Only the selected provider becomes a route (and the profile default);
+    // the unselected provider must not leak into the profile patch.
+    expect(patch).toContain('      "remote-ollama":')
+    expect(patch).not.toContain('remote-openai')
+    expect(patch).toContain('    provider: "remote-ollama"')
+    expect(patch).toContain('    model: "llama3"')
+
+    // The bridge serves the filtered catalog only: unselected routes are 404.
+    const models = await (await fetch(`http://127.0.0.1:${port}/ollama/v1/models`)).json() as { data: { id: string }[] }
+    expect(models.data.map(entry => entry.id)).toEqual(['llama3'])
+    expect((await fetch(`http://127.0.0.1:${port}/openai/v1/models`)).status).toBe(404)
+
+    await service.stop(result.target.id)
+  })
+
   it('writes an empty patch and opens no tunnel for the server source', async () => {
     store = fakeStore(localSettings(), 'sk-local-key')
     const fixture = fakeConnector()

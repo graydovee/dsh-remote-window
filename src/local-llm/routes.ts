@@ -7,9 +7,11 @@
  * returns the API key — the read shape exposes `hasApiKey` and nothing else.
  */
 import type { TargetStore } from '../targets/store.ts'
+import type { LocalLlmSelection } from '../targets/types.ts'
 import {
   clearLocalLlmKey,
   LocalLlmError,
+  parseLocalLlmSelection,
   probeLocalModels,
   readLocalLlmState,
   saveLocalLlmState,
@@ -60,6 +62,15 @@ function optionalMode(body: Record<string, unknown>): 'auto' | 'manual' | undefi
 }
 
 /**
+ * Parse the optional `selection` field (the automatic source's opt-in list).
+ * @param body - the `local-llm/save` body.
+ * @returns normalized entries, or undefined when the caller omitted the field.
+ */
+function optionalSelection(body: Record<string, unknown>): readonly LocalLlmSelection[] | undefined {
+  return parseLocalLlmSelection(body.selection)
+}
+
+/**
  * Parse the optional `modelSource` connect field.
  * @param body - the `v1/connect` body.
  * @returns the validated source, or undefined when the caller omitted it.
@@ -107,12 +118,14 @@ export async function dispatchLocalLlmApi(
       const models = optionalStringArray(body, 'models')
       const timeoutMs = optionalInteger(body, 'timeoutMs')
       const apiKey = optionalString(body, 'apiKey')
+      const selection = optionalSelection(body)
       return await saveLocalLlmState(store, {
         ...(mode === undefined ? {} : { mode }),
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(models === undefined ? {} : { models }),
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
         ...(apiKey === undefined ? {} : { apiKey }),
+        ...(selection === undefined ? {} : { selection }),
       }, llm)
     }
     case 'local-llm/probe': {

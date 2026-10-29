@@ -15,11 +15,13 @@ import {
   localUpstreamUrl,
   modelsFromCatalog,
   normalizeLocalBaseUrl,
+  parseLocalLlmSelection,
   planLocalLlm,
   probeLocalModels,
   readLocalLlmState,
   saveLocalLlmState,
 } from '../src/local-llm/settings.ts'
+import type { NativeLlmRuntime } from '../src/local-llm/native.ts'
 import {
   packagePolicySettingsSchema,
   type LocalLlmSettings,
@@ -289,5 +291,161 @@ describe('planLocalLlm', () => {
     } finally {
       await fake.close()
     }
+  })
+})
+
+/* ------------------------------------------------------- automatic selection */
+
+/** A client host whose own DSH serves two providers (the auto source). */
+function catalogRuntime(): NativeLlmRuntime {
+  return {
+    async listProviders() {
+      return [{ id: 'openai', name: 'OpenAI' }, { id: 'ollama', name: 'Ollama' }]
+    },
+    async listModels(provider: string) {
+      return provider === 'openai'
+        ? [
+            { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+            { provider: 'openai', id: 'gpt-5-mini', name: 'GPT-5 mini' },
+          ]
+        : [
+            { provider: 'ollama', id: 'llama3', name: 'llama3' },
+            { provider: 'ollama', id: 'qwen3', name: 'qwen3' },
+          ]
+    },
+    async *stream() {
+      yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+    },
+  }
+}
+
+describe('automatic source selection', () => {
+  it('persists a trimmed, de-duplicated selection and reads it back beside the full catalog', async () => {
+    const { store, raw } = fakeStore()
+    const saved = await saveLocalLlmState(store, {
+      mode: 'auto',
+      selection: [
+        { providerId: ' openai ', models: ['gpt-5', 'gpt-5', ' gpt-5-mini '] },
+        { providerId: 'openai', models: ['gpt-5'] },
+        { providerId: 'ollama', models: [] },
+      ],
+    }, catalogRuntime())
+    const normalized = [
+      { providerId: 'openai', models: ['gpt-5', 'gpt-5-mini'] },
+      { providerId: 'ollama', models: [] },
+    ]
+    expect(saved).toMatchObject({ mode: 'auto', baseUrl: '', models: [], selection: normalized })
+    expect(raw.global.localLlm?.localSelection).toEqual(normalized)
+    // The read shape carries the *unfiltered* catalog: the dialog needs every
+    // model to render checkboxes; the plan is what applies the selection.
+    expect(saved.catalog?.providers.map(provider => provider.id)).toEqual(['openai', 'ollama'])
+    expect(saved.catalog?.providers.flatMap(provider => provider.models.map(model => model.id))).toEqual([
+      'gpt-5',
+      'gpt-5-mini',
+      'llama3',
+      'qwen3',
+    ])
+    expect(saved.selection).toEqual(normalized)
+    expect((await readLocalLlmState(store)).selection).toEqual(normalized)
+  })
+
+  it('drops the selection when saving the manual source', async () => {
+    const { store, raw } = fakeStore()
+    await saveLocalLlmState(store, { mode: 'auto', selection: [{ providerId: 'openai', models: ['gpt-5'] }] }, catalogRuntime())
+    const manual = await saveLocalLlmState(store, {
+      mode: 'manual',
+      baseUrl: 'http://127.0.0.1:11434',
+      selection: [{ providerId: 'openai', models: ['gpt-5'] }],
+    })
+    expect(manual).not.toHaveProperty('selection')
+    expect(raw.global.localLlm?.localSelection).toBeUndefined()
+    expect(raw.global.localLlm?.mode).toBe('manual')
+    expect(await readLocalLlmState(store)).not.toHaveProperty('selection')
+  })
+
+  it('clears a stored selection when an auto save omits it (back-compat keep-all)', async () => {
+    const { store, raw } = fakeStore()
+    await saveLocalLlmState(store, { mode: 'auto', selection: [{ providerId: 'openai', models: ['gpt-5'] }] }, catalogRuntime())
+    expect(raw.global.localLlm?.localSelection).toBeDefined()
+    const cleared = await saveLocalLlmState(store, { mode: 'auto' }, catalogRuntime())
+    expect(cleared).not.toHaveProperty('selection')
+    expect(raw.global.localLlm?.localSelection).toBeUndefined()
+    const plan = await planLocalLlm(store, { llm: catalogRuntime() })
+    expect(plan.models).toEqual(['openai/gpt-5', 'openai/gpt-5-mini', 'ollama/llama3', 'ollama/qwen3'])
+  })
+
+  it('filters the plan to the selected providers and models, in catalog order', async () => {
+    const { store } = fakeStore()
+    await saveLocalLlmState(store, {
+      mode: 'auto',
+      selection: [
+        { providerId: 'ollama', models: ['qwen3'] },
+        { providerId: 'openai', models: ['gpt-5-mini'] },
+      ],
+    }, catalogRuntime())
+    const plan = await planLocalLlm(store, { llm: catalogRuntime() })
+    expect(plan.mode).toBe('auto')
+    expect(plan.catalog?.providers).toEqual([
+      { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }] },
+      { id: 'ollama', name: 'Ollama', models: [{ id: 'qwen3', name: 'qwen3' }] },
+    ])
+    expect(plan.models).toEqual(['openai/gpt-5-mini', 'ollama/qwen3'])
+  })
+
+  it('drops unknown providers and unknown models from the filtered plan', async () => {
+    const { store } = fakeStore()
+    await saveLocalLlmState(store, {
+      mode: 'auto',
+      selection: [
+        { providerId: 'missing', models: ['whatever'] },
+        { providerId: 'openai', models: ['gpt-5', 'gone-model'] },
+        { providerId: 'ollama', models: [] },
+      ],
+    }, catalogRuntime())
+    const plan = await planLocalLlm(store, { llm: catalogRuntime() })
+    expect(plan.catalog?.providers).toEqual([
+      { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-5', name: 'GPT-5' }] },
+    ])
+    expect(plan.models).toEqual(['openai/gpt-5'])
+  })
+
+  it('fails with local-llm-no-models when the selection matches nothing', async () => {
+    const { store } = fakeStore()
+    await saveLocalLlmState(store, { mode: 'auto', selection: [{ providerId: 'missing', models: ['x'] }] }, catalogRuntime())
+    await expect(planLocalLlm(store, { llm: catalogRuntime() })).rejects.toMatchObject({
+      code: 'local-llm-no-models',
+      status: 400,
+    })
+    // An explicit empty selection is the same "nothing to proxy" state.
+    await saveLocalLlmState(store, { mode: 'auto', selection: [] }, catalogRuntime())
+    await expect(planLocalLlm(store, { llm: catalogRuntime() })).rejects.toMatchObject({ code: 'local-llm-no-models' })
+    try {
+      await planLocalLlm(store, { llm: catalogRuntime() })
+    } catch (error) {
+      expect((error as Error).message).toContain('selection')
+    }
+  })
+
+  it('rejects malformed selections as coded 400s before writing anything', async () => {
+    const { store, raw } = fakeStore()
+    const malformed: unknown[] = [
+      'openai/gpt-5',
+      [null],
+      [{ providerId: '', models: [] }],
+      [{ providerId: '   ', models: [] }],
+      [{ providerId: 'openai' }],
+      [{ providerId: 'openai', models: 'gpt-5' }],
+      [{ providerId: 'openai', models: [''] }],
+      [{ providerId: 'openai', models: [42] }],
+      [{ providerId: 'openai', models: [], extra: true }],
+    ]
+    for (const selection of malformed) {
+      await expect(
+        saveLocalLlmState(store, { mode: 'auto', selection: selection as never }, catalogRuntime()),
+      ).rejects.toMatchObject({ code: 'local-llm-bad-settings', status: 400 })
+    }
+    expect(raw.global.localLlm).toBeUndefined()
+    expect(parseLocalLlmSelection(undefined)).toBeUndefined()
+    expect(parseLocalLlmSelection([])).toEqual([])
   })
 })

@@ -16,9 +16,10 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 
 - **local（默认）**：agent、会话日志与工具仍在 server，但每次模型请求经 SSH 反向隧道转发到 client
   本机。默认接入方式是 **自动代理本机模型**：client 用本机 DSH 的 `ctx.llm` 枚举全部 provider/model，
-  无需填 endpoint 或 key，每个 provider 在 server profile 的模型选择器里各成一条 route；「手动指定
-  OpenAI 兼容 endpoint」保留在高级选项。新 server 通常没配模型 key，所以默认走这里；本机模型目录读不到
-  时阻止连接，绝不静默回退到 server 模型。
+  无需填 endpoint 或 key，每个 provider 在 server profile 的模型选择器里各成一条 route。**高级选项**
+  会列出发现到的全部 provider/model（默认全选，可逐项勾选、按 provider 全选/清空、刷新），选择会
+  保存并决定 profile 生成哪些 route，server 会话即可在你允许的本地模型之间自由切换。新 server 通常
+  没配模型 key，所以默认走这里；本机模型目录读不到时阻止连接，绝不静默回退到 server 模型。
 - **server（可选）**：server profile 使用自己的模型配置；仅当 server 已配置模型凭据时显式选择。
 
 两种来源写同一份 server 会话日志；切换模型来源需要重连，而不是换会话。
@@ -107,9 +108,10 @@ shell sidebar 隐藏，target rail 保留可用。
 `http://127.0.0.1:<随机>/<provider>/v1`。该端口是 SSH `forwardIn` 反向隧道，终止在 client 的
 loopback-only bridge。默认的 **自动代理** 用本机 DSH 自己的 `ctx.llm` 枚举 provider/model
 （`listProviders`/`listModels`），每个模型请求都以官方类型转成 `ctx.llm.stream()`，因此本机 DSH 的
-凭据与协议原样生效、无需重填。可选的 **手动 endpoint** 模式只转发 `/v1/*`，把 `Authorization`
-注入/覆盖为 client 官方凭据库中的 key，不落日志；profile 始终只看到占位 key。本机目录读不到、模型列表
-为空、endpoint 不可达或 sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退 server 模型。
+凭据与协议原样生效、无需重填。**高级选项** 保存的 `localSelection` 决定代理哪些 provider/model：
+未保存 = 全量，过滤后的集合裁剪生成的 route，过滤为空则报错拒绝。（旧的 **手动 endpoint** 路径仅为
+兼容旧设置/测试保留，对话框不再提供；profile 始终只看到占位 key。）本机目录读不到、模型列表为空或
+sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退 server 模型。
 
 **server 权威数据。** workspace 清单/标题/顺序/pin/archive 来自 server 官方
 `workspaceRegistry`；session 清单/标题/blank/running 来自 `sessionController` + 插件 JSONL title fold。
@@ -151,9 +153,9 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 
 1. 打开浮动 **target rail**（hover 或按 `Alt+R`），点 **新建连接**。
 2. 选择 `SSH`，填目标信息，首次连接确认 host key 指纹。
-3. 选择模型来源：**local**（默认；在 **高级选项** 里，默认子模式自动代理本机全部 provider/model，
-   无需 endpoint 或 key；也可以在那里改成手动 OpenAI 兼容 endpoint）或 **server**（使用 server
-   profile 自己的模型配置）。
+3. 选择模型来源：**local**（默认）或 **server**（使用 server profile 自己的模型配置）。选 **local**
+   时，**高级选项** 会列出本机 DSH 的全部 provider/model（默认全选）；取消勾选即可不暴露某些模型，
+   点刷新重新发现，保存的选择决定 server profile 能切换到哪些模型。
 4. 查看探测结果。client 检查 server 的 Node/DSH 运行时与 server 插件，决定后续步骤是部署、更新还是
    跳过；随后启动 profile server，选 local 模型时打开 SSH 反向隧道，并完成握手鉴权。失败的尝试不会
    保存。
@@ -241,8 +243,8 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
   [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)。
 - **每个 client 只挂一个 iframe。** 打开第二个远程 target 会替换 frame（前一个 target 断开或在 rail
   中保持非激活）。没有两个 server 的分屏。
-- **手动本机 endpoint 只支持 HTTP（`/v1/*`）。** 手动模式的 TLS 尚未实现；endpoint 需在 client
-  本机以明文 HTTP 可达。自动代理模式没有这个问题（走本机 DSH 自己的 provider 客户端）。
+- **旧的手动本机 endpoint 只支持 HTTP（`/v1/*`）。** 它仅为旧设置保留、对话框不再提供，TLS 从未
+  实现。自动代理模式没有这个问题（走本机 DSH 自己的 provider 客户端）。
 - **sshd 必须允许反向转发。** 若 `AllowTcpForwarding`/`GatewayPorts` 策略拒绝 `forwardIn`，连接会以
   可操作错误失败，绝不静默改用 server 模型。
 - **重启 profile 会取消它的所有 turn。** 普通刷新只重读数据；加载 workspace registry 变更用进程内官方
@@ -262,7 +264,8 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
 | `registry-stale` | 另一个进程改了 server workspace registry。点远程段刷新；仍失败则按 D20 确认后重连（重启 profile）。 |
 | `session/writer-held` | 该会话已被另一个实例驱动。等它结束，或刷新/重连；日志不会被写坏。 |
 | `runtime-global-unsupported` / `plugin-profile-not-managed` | v1 不修改共享全局 runtime/其它 profile；使用专用 profile/独立 runtime。 |
-| `local-llm-*`（如 `local-llm-providers-unavailable`、`local-llm-no-models`、`local-llm-unreachable`、`local-llm-tunnel-failed`） | 自动代理模式先看本机 DSH 是否配了可用模型；手动模式检查 endpoint/key；再查 server sshd 的反向转发策略。修好后重试，或改选 server 模型来源。 |
+| `local-llm-*`（如 `local-llm-providers-unavailable`、`local-llm-no-models`、`local-llm-unreachable`、`local-llm-tunnel-failed`） | 先确认本机 DSH 配了可用模型；在高级选项点「刷新」重读目录；再查 server sshd 的反向转发策略。修好后重试，或改选 server 模型来源。 |
+| 连接对话框看起来卡住 | 对话框有逐步状态、`已用 Ns` 计时和等待提示；单个长步骤（例如隔离 runtime 部署 Node）会一直显示「进行中」，直到该步结束才更新文案。若 host 不可达会出现轮询告警，而不是静默卡住。 |
 | `mode-switch/cancel-failed` / `shutdown-flush-timeout` | 重启前有 turn 取消失败/未完成落盘；UI 会列出，等它们收尾后重试。 |
 | SSH 在部署前失败 | 检查账号、密钥权限、agent 与指纹；`ssh -v <host>` 是好用的下一步。 |
 | 命令提示没有可用的沙箱 backend | 目标机没有隔离 backend；这是文档化的 partial enforcement 路径。 |

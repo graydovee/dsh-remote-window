@@ -12,8 +12,8 @@ DSH UI 的全屏同源 iframe；模型来源新增 **local（本机模型，默�
 | client iframe 外壳 / target rail / 连接生命周期 | 已完成 |
 | server 插件 embed `full` 模式 | 已完成（server 仓库，随 tarball 内置） |
 | 本地模型自动代理（`ctx.llm` 枚举 + 原生 bridge）+ SSH 反向隧道 + per-provider profile patch | 已完成（`src/local-llm/`，`native.ts`） |
-| 手动 OpenAI 兼容 endpoint（高级选项） | 已完成（`bridge.ts`） |
-| 连接对话框模型来源设置（默认 local、auto 子模式） | 已完成 |
+| 手动 OpenAI 兼容 endpoint | 仅 `bridge.ts` 旧路径/API 兼容，对话框不再提供 |
+| 连接对话框模型来源设置（默认 local）+ 全部 provider/model 勾选代理 | 已完成（`localSelection`） |
 | portal 必须带 `dshRwSession` 深链 | 已完成（`portalSessionFor`） |
 | 重连复用已保存绝对 `DSH_HOME` | 已完成（`reconnectDshHome`） |
 | native v2 主区与 vendored 组件删除 | 验收后清理，代码暂留但不注册/不挂载 |
@@ -71,9 +71,11 @@ server profile agent
   在 profile 里生成一条 route（路径前缀 `<provider>`），`agent-default-model` 取第一个 route 的首个
   模型；本机 DSH 自己的 provider 凭据/协议原样使用，client 不另存 key。`ctx.llm` 不存在时
   `local-llm-providers-unavailable`，目录为空时 `local-llm-no-models`。
-- manual 模式（高级选项）：endpoint/模型/超时存 client 存储域 `dsh_remote_workspace` 的 global
-  `localLlm`（可选字段，域版本仍为 1）；API key 只存官方 `ctx.credentials`（固定 key），浏览器只看
-  到 `hasApiKey`。
+- 选择过滤：高级选项保存的 `localSelection: [{providerId, models[]}]` 决定 profile 生成哪些 route
+  （按目录顺序、未知项静默丢弃）；未保存选择 = 全量代理，过滤后为空 → `local-llm-no-models`（400）。
+  选择存在 client 存储域 `dsh_remote_workspace` 的 global `localLlm`（可选字段，域版本仍为 1）。
+- manual 模式仅为旧 API/测试保留（对话框不再提供）：endpoint/模型/超时存同上 `localLlm`，API key
+  只存官方 `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`。
 - bridge 必须把 adapter 的 error/aborted 终止 chunk 转成显式错误：首个 chunk 前 → HTTP 502 JSON
   `{error:{type:'model-call-failed'}}`；已开始流式 → OpenAI `error` chunk。不得把 failure 映射成
   `finish_reason:"stop"`，否则 server pi-ai 会得到空回复（EMPTY_RESPONSE）。
@@ -89,14 +91,15 @@ server profile agent
 
 连接对话框 config 步骤的「模型来源」区块收进 **高级选项**（不新增步骤）：
 
-- 单选 **本地模型（默认）** / **server 模型**；
-- 本地子模式：**自动代理本机模型**（默认）与 **手动指定 endpoint**；
-- auto 显示发现结果（`刷新 N 个 provider · M 个模型 …`），不需要 endpoint/key；「刷新」调用
-  host `local-llm/discover`；
-- manual 显示 endpoint、API key（只写本机凭据，输入后不回显）、「保存并刷新模型」，模型 chips 显示
-  探测结果，第一个作为默认；
-- auto 目录为空/读不到由 host 以 `local-llm-no-models` / `local-llm-providers-unavailable` 拒绝；
-  manual 未配置时由 host 以 `local-llm-unconfigured` 拒绝；用户显式选 server 才走 server provider。
+- 单选 **本地模型（默认）** / **server 模型**；选择 **server** 时不显示本地目录；
+- 本地目录按 provider 分组列出**全部**发现到的模型，默认全选；每行 checkbox，provider 行支持全选/
+  清空，底部提供「刷新」、已选统计与空/失败提示（`local-llm-providers-unavailable`）；
+- 「刷新」调用 host `local-llm/discover`，读取 `local-llm/read` 同时返回完整目录 + 已存选择；
+- 「下一步」前保存 `local-llm/save {mode:'auto', selection?}`；catalog 读取成功但为空且无已存选择时
+  以 `local-llm-unconfigured` 阻止提交；目录读不到由 host 以 `local-llm-providers-unavailable` 拒绝；
+- 选择持久化后重连生效（改选择 → 重连 → profile patch 只生成所选 route），server 会话内可在这些模型
+  之间随意切换；
+- 进度区在长步骤上显示 `已用 Ns` 与「等待…」提示，轮询连续失败 3 次显示告警（不静默）。
 
 `v1/connect` body 增加可选 `modelSource`；target 记录增加可选 `modelSource`，`executor` 轴保持原义
 （v3 的 iframe 主区始终由 server 官方 UI 打开 server 侧 agent，因此 executor=local 的旧记录不会触发
@@ -110,8 +113,9 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 |---|---|
 | 本机 ctx.llm 不可用（auto） | `local-llm-providers-unavailable`（502）；不 fallback |
 | 本机目录为空（auto） | `local-llm-no-models`；profile 不启动 |
-| manual 未配置 | 连接被阻止 / host `local-llm-unconfigured`；不 fallback |
-| manual endpoint 拒绝/超时 | `local-llm-unauthorized` / `local-llm-unreachable`；profile 不启动 |
+| 选择过滤为空 | host `local-llm-no-models`（400）；profile 不启动 |
+| manual（旧 API）未配置 | host `local-llm-unconfigured`；不 fallback |
+| manual endpoint 拒绝/超时（旧 API） | `local-llm-unauthorized` / `local-llm-unreachable`；profile 不启动 |
 | bridge 内模型调用失败 | 流式前 502 JSON、流式中 OpenAI error chunk；不再映射成空 stop |
 | sshd 禁止 forwardIn | `local-llm-forwarding-unavailable`；不降级 |
 | iframe 20 s 未 ready | 主区错误 + 重试；连接保持，可断开重连 |
@@ -169,7 +173,11 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 - 连接对话框（v3 文案、模型来源默认 local、高级选项里的自动代理）：SSH → host key SHA-256 展示并确认 →
   全局 runtime 复用 → 专用 profile 离线安装 server plugin → 启动 profile server → portal 打开；首次
   连接暴露的 ssh2 host-key 崩溃已修复并加回归测试 `tests/ssh-connect.test.ts`。
-- 自动代理（普通连接即验证）：对话框显示 `刷新 2 个 provider · 3 个模型 DeepSeek E2E provider`；
+- 模型选择（普通连接即验证；临时 debug 实例 + fake sshd/LLM）：高级选项列出 2 个 provider / 3 个
+  模型并默认全选；取消勾选 DeepSeek（2 个模型）后连接成功，profile patch 只生成
+  `remote-e2e-provider`（tunnel 51817），`agent-default-model` = `remote-e2e-provider/e2e-test-model`；
+  portal 深链恢复会话后模型选择器为 `e2e-test-model`，发送「选择过滤验收：请回复收到」得到
+  `本地模型 E2E 已收到：…`（已完成，用时 1 秒，3 轮 3 步），fake LLM 日志确认请求经所选 route 到达；
   profile patch 写出 `remote-deepseek-official` 与 `remote-e2e-provider` 两条 route（各自 baseURL
   `http://127.0.0.1:<tunnel>/<provider>/v1`），`agent-default-model` 取第一条 route 的首个模型；
   直接 curl `<tunnel>/e2e-provider/v1/models` 与 `/chat/completions` 均返回模型目录/正常回复。

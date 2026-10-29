@@ -285,6 +285,76 @@ const runtimeSchema = z.object({
 export const packageSourceSchema = z.enum(['auto', 'download', 'upload', 'reuse'])
 
 /**
+ * One provider's selected models for the automatic local model source.
+ *
+ * The connect dialog lists every provider/model the client host's own DSH can
+ * serve; only the entries ticked here are exposed to the server profile (both
+ * the profile patch and the native bridge see the filtered catalog). An empty
+ * `models` list is a meaningful *exclusion*: it means "do not proxy this
+ * provider", which is different from omitting the provider entirely.
+ */
+export interface LocalLlmSelection {
+  readonly providerId: string
+  readonly models: readonly string[]
+}
+
+/** Provider cap for one persisted selection (matches the discovery catalog cap). */
+export const LOCAL_LLM_SELECTION_MAX_PROVIDERS = 32
+/** Per-provider model cap for a persisted selection (matches the catalog cap). */
+export const LOCAL_LLM_SELECTION_MAX_MODELS = 256
+
+/**
+ * Trim, de-duplicate and merge a provider selection.
+ *
+ * One entry per provider is kept: the first occurrence decides the position in
+ * the result and later occurrences only contribute model ids. Model ids are
+ * trimmed and de-duplicated in first-seen order; an explicit empty list is
+ * preserved (see {@link LocalLlmSelection}). Blank provider ids and blank model
+ * ids are dropped defensively — route input is validated separately.
+ * @param selection - entries from a route body or a stored document.
+ * @returns a normalized selection with at most one entry per provider.
+ */
+export function sanitizeLocalLlmSelection(selection: readonly LocalLlmSelection[]): LocalLlmSelection[] {
+  const byProvider = new Map<string, string[]>()
+  for (const entry of selection) {
+    const providerId = entry.providerId.trim()
+    if (providerId === '') continue
+    const models = byProvider.get(providerId) ?? []
+    for (const raw of entry.models) {
+      const model = raw.trim()
+      if (model === '' || models.includes(model)) continue
+      models.push(model)
+    }
+    byProvider.set(providerId, models)
+  }
+  return [...byProvider].map(([providerId, models]) => ({ providerId, models }))
+}
+
+/** Validate one provider's selection entry; the list schema sanitizes/merges. */
+export const localLlmSelectionSchema = z.object({
+  providerId: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine(value => value.trim() !== '', 'provider ids must not be blank'),
+  models: z
+    .array(z.string().min(1).max(256).refine(value => value.trim() !== '', 'model ids must not be blank'))
+    .max(LOCAL_LLM_SELECTION_MAX_MODELS),
+}).strict()
+
+/**
+ * Validate a whole selection list (route input and the persisted document).
+ *
+ * The transform makes "sanitized/deduped" a property of the schema, not only
+ * of the save path: a document written by an older/foreign writer still reads
+ * back as one entry per provider with unique ids.
+ */
+export const localLlmSelectionListSchema = z
+  .array(localLlmSelectionSchema)
+  .max(LOCAL_LLM_SELECTION_MAX_PROVIDERS)
+  .transform(selection => sanitizeLocalLlmSelection(selection))
+
+/**
  * The client-host local model source used as a server agent's model source
  * (the "local model" feature).
  *
@@ -313,6 +383,15 @@ export interface LocalLlmSettings {
   readonly timeoutMs: number
   /** Non-secret credential address (`remote-workspace/<id>`); never a secret. */
   readonly apiKeyRef?: string
+  /**
+   * The automatic source's opt-in provider/model list (additive optional).
+   *
+   * Absent means "no filter": every discovered provider/model is proxied, which
+   * is both the pre-selection behavior and the back-compat path for documents
+   * written before this field existed. Only `auto` persists it — the manual
+   * source has no catalog to select from, so a manual save drops it.
+   */
+  readonly localSelection?: readonly LocalLlmSelection[]
 }
 
 /**
@@ -349,6 +428,9 @@ export const localLlmSettingsSchema = z.object({
   models: z.array(z.string().min(1).max(256)).max(256),
   timeoutMs: z.number().int().min(1_000).max(3_600_000),
   apiKeyRef: z.string().min(1).max(256).optional(),
+  // Additive optional (storage stays at version 1): an absent list keeps every
+  // discovered provider/model, an empty list is an explicit "nothing".
+  localSelection: localLlmSelectionListSchema.optional(),
 }).strict()
 
 /** The domain global slot's schema (global default policy + release mirror). */

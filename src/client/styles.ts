@@ -2400,7 +2400,7 @@ ${officialInputAliasStyles}
   border-top: 1px solid var(--dsw-alias-border-secondary, rgb(127 127 127 / 18%));
 }
 
-/* Source → sub-mode → auto/manual panel. */
+/* Source → grouped provider/model checklist (auto discovery). */
 .dsh-rw-local-source,
 .dsh-rw-local-auto {
   display: flex;
@@ -2414,20 +2414,115 @@ ${officialInputAliasStyles}
   align-items: center;
 }
 
-.dsh-rw-local-model-chips {
+.dsh-rw-local-catalog {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.dsh-rw-local-model-chip {
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
-  color: var(--dsw-alias-label-secondary);
+.dsh-rw-local-provider {
+  padding: 8px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-rw-local-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dsh-rw-local-provider-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-local-provider-id {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
-  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-local-provider-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--dsw-alias-label-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-rw-local-provider-actions {
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.dsh-rw-local-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 6px;
+}
+
+.dsh-rw-local-model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  border-radius: var(--dsw-radius-sm);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.dsh-rw-local-model-option:hover {
+  background: var(--dsw-alias-bg-secondary, rgb(127 127 127 / 10%));
+}
+
+.dsh-rw-local-model-option input[type='checkbox'] {
+  flex: none;
+  margin: 0;
+  accent-color: var(--dsw-alias-brand-primary, #4d6bfe);
+}
+
+.dsh-rw-local-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-rw-local-model-id {
+  min-width: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Elapsed time next to the primary connect action while submitting. */
+.dsh-rw-connect-elapsed {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 .dsh-rw-connect-hostkey {

@@ -21,8 +21,12 @@
 import {
   effectiveLocalLlmMode,
   effectiveModelSource,
+  LOCAL_LLM_SELECTION_MAX_MODELS,
+  LOCAL_LLM_SELECTION_MAX_PROVIDERS,
+  localLlmSelectionListSchema,
   localLlmSettingsSchema,
   scrubSecrets,
+  type LocalLlmSelection,
   type LocalLlmSettings,
 } from '../targets/types.ts'
 import { localLlmCredentialKey, type TargetStore } from '../targets/store.ts'
@@ -30,6 +34,7 @@ import {
   discoverLocalCatalog,
   LocalCatalogError,
   type LocalCatalog,
+  type LocalCatalogProvider,
   type NativeLlmRuntime,
 } from './native.ts'
 
@@ -94,6 +99,13 @@ export interface LocalLlmReadState {
   readonly catalog?: LocalCatalog
   /** Why discovery failed, when it did (the dialog still offers Retry). */
   readonly catalogError?: string
+  /**
+   * The saved provider/model opt-in of the automatic source (auto only).
+   *
+   * Omitted means "no filter — proxy everything"; an empty array is an explicit
+   * selection that matches nothing and fails the plan with `local-llm-no-models`.
+   */
+  readonly selection?: readonly LocalLlmSelection[]
   /** Effective model source of the requested target, when one was named. */
   readonly modelSource?: 'local' | 'server'
 }
@@ -124,6 +136,12 @@ export interface LocalLlmSaveInput {
    * current one (the browser never sends back what it does not have).
    */
   readonly apiKey?: string
+  /**
+   * The automatic source's provider/model opt-in. Only persisted in `auto`
+   * mode; `undefined` clears a previously saved selection (back-compat keep-all)
+   * and `[]` is an explicit selection that matches nothing.
+   */
+  readonly selection?: readonly LocalLlmSelection[]
 }
 
 /**
@@ -211,6 +229,28 @@ function normalizeModels(models: readonly unknown[]): string[] {
   return out
 }
 
+/**
+ * Validate, normalize and de-duplicate a route body's `selection` field.
+ *
+ * The wire shape is `{ providerId: string; models: string[] }[]`; malformed
+ * input is a coded 400 rather than a partially applied save. `undefined`/`null`
+ * mean "the caller did not state a selection" and are kept distinct from `[]`
+ * (an explicit selection that matches nothing).
+ * @param value - the raw JSON value of the `selection` field.
+ * @returns normalized entries, or undefined when the field was omitted.
+ */
+export function parseLocalLlmSelection(value: unknown): LocalLlmSelection[] | undefined {
+  if (value === undefined || value === null) return undefined
+  const parsed = localLlmSelectionListSchema.safeParse(value)
+  if (!parsed.success) {
+    throw new LocalLlmError(
+      'local-llm-bad-settings',
+      `"selection" must be an array of { providerId: string, models: string[] } entries (at most ${LOCAL_LLM_SELECTION_MAX_PROVIDERS} providers, ${LOCAL_LLM_SELECTION_MAX_MODELS} models each)`,
+    )
+  }
+  return parsed.data
+}
+
 /** The stored settings document, when one exists. */
 function currentSettings(store: TargetStore): LocalLlmSettings | undefined {
   return store.localLlmSettings()
@@ -262,6 +302,41 @@ export function catalogDisplayModels(catalog: LocalCatalog): string[] {
   return out
 }
 
+/**
+ * Keep only the providers/models a stored selection names.
+ *
+ * Matching is by exact id after trimming: a selected provider that no longer
+ * exists is dropped, and only selected models that the provider still lists
+ * survive. Providers without any surviving model disappear, so the caller can
+ * treat an empty result as "nothing to proxy". Catalog order (not selection
+ * order) is preserved so profile route ids stay stable across saves.
+ * @param catalog - the freshly discovered catalog.
+ * @param selection - the stored, sanitized selection entries.
+ * @returns the filtered catalog.
+ */
+function filterCatalogBySelection(catalog: LocalCatalog, selection: readonly LocalLlmSelection[]): LocalCatalog {
+  const wanted = new Map<string, Set<string>>()
+  for (const entry of selection) {
+    const providerId = entry.providerId.trim()
+    if (providerId === '') continue
+    const models = wanted.get(providerId) ?? new Set<string>()
+    for (const raw of entry.models) {
+      const model = raw.trim()
+      if (model !== '') models.add(model)
+    }
+    wanted.set(providerId, models)
+  }
+  const providers: LocalCatalogProvider[] = []
+  for (const provider of catalog.providers) {
+    const selected = wanted.get(provider.id)
+    if (selected === undefined || selected.size === 0) continue
+    const models = provider.models.filter(model => selected.has(model.id))
+    if (models.length === 0) continue
+    providers.push({ id: provider.id, name: provider.name, models })
+  }
+  return { providers }
+}
+
 /** The current settings as the browser sees them (no secret). */
 export async function readLocalLlmState(
   store: TargetStore,
@@ -286,13 +361,16 @@ export async function readLocalLlmState(
   }
   if (mode === 'manual') return base
   // Auto mode: discover so the dialog can show what would be proxied. A
-  // discovery failure is reported beside the mode instead of failing the read.
+  // discovery failure is reported beside the mode instead of failing the read;
+  // the saved selection is returned either way so the dialog can render it.
+  const selection = settings?.localSelection
+  const withSelection: LocalLlmReadState = selection === undefined ? base : { ...base, selection }
   try {
     const catalog = await discoverCatalog(llm, base.timeoutMs)
-    return { ...base, catalog }
+    return { ...withSelection, catalog }
   } catch (error) {
     const message = error instanceof LocalLlmError ? error.message : scrubSecrets(errorMessage(error))
-    return { ...base, catalogError: message }
+    return { ...withSelection, catalogError: message }
   }
 }
 
@@ -329,12 +407,16 @@ export async function saveLocalLlmState(
   if (mode === 'auto') {
     // Nothing to configure: the catalog is discovered live on demand. Keep the
     // timeout and drop any previously saved manual endpoint so switching back
-    // later starts from a clean slate.
+    // later starts from a clean slate. The selection is validated/normalized
+    // here, and an omitted field clears a stale filter (the pre-selection
+    // "proxy everything" behavior); manual mode drops the value entirely.
+    const selection = parseLocalLlmSelection(input.selection)
     settings = {
       mode: 'auto',
       baseUrl: '',
       models: [],
       timeoutMs,
+      ...(selection === undefined ? {} : { localSelection: selection }),
     }
   } else {
     const baseUrl = normalizeLocalBaseUrl(requireManualBaseUrl(input.baseUrl, current))
@@ -465,7 +547,17 @@ export async function planLocalLlm(
   const settings = currentSettings(store)
   const mode = effectiveLocalLlmMode(settings)
   if (mode === 'auto') {
-    const catalog = await discoverCatalog(options?.llm, settings?.timeoutMs ?? LOCAL_LLM_DEFAULT_TIMEOUT_MS)
+    const discovered = await discoverCatalog(options?.llm, settings?.timeoutMs ?? LOCAL_LLM_DEFAULT_TIMEOUT_MS)
+    // No stored selection keeps the historical behavior (proxy everything);
+    // a stored one narrows the catalog before it reaches the profile patch.
+    const selection = settings?.localSelection
+    const catalog = selection === undefined ? discovered : filterCatalogBySelection(discovered, selection)
+    if (catalog.providers.length === 0) {
+      throw new LocalLlmError(
+        'local-llm-no-models',
+        'the saved local model selection matches none of the client host\'s current models; reselect at least one provider/model in the connection settings',
+      )
+    }
     return { mode, catalog, models: catalogDisplayModels(catalog) }
   }
   if (settings === undefined || settings.baseUrl.trim() === '') {
