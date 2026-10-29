@@ -151,8 +151,8 @@ describe('createHostLocalRuntime.create', () => {
     expect(calls[0]?.params).toEqual({ workspaceId: WORKSPACE, sessionId: created.sessionId, executor: 'local' })
     expect(runtime.manager.owns(created.sessionId)).toBe(true)
     expect(handles).toHaveLength(1)
-    // Private anchor exists under $DSH_HOME/remote-workspaces/<clientId>/...
-    const anchor = join(dshHome, 'remote-workspaces', CLIENT, TARGET)
+    // Private anchor exists under $DSH_HOME/remote-windows/<clientId>/...
+    const anchor = join(dshHome, 'remote-windows', CLIENT, TARGET)
     expect((await stat(anchor)).isDirectory()).toBe(true)
     // The routing facade resolves the session's anchor cwd back to its route.
     expect(runtime.anchorForWorkspace(WORKSPACE)).toBeDefined()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repeatable smoke for one remote-workspace server profile: install side is
+# Repeatable smoke for one remote-window server profile: install side is
 # install-server-plugin.sh; this exercises handshake, lease error paths, embed
 # routes, index injection and the implemented P1 RPC surface.
 #
@@ -41,7 +41,7 @@ envfile="$QA_DIR/run/profile-$safe_profile.env"
 . "$envfile"
 PORT="$QA_PROFILE_PORT"
 URL="$QA_PROFILE_URL"
-CLIENT_ID="${PROFILE#graydovee-remote-workspace-}"
+CLIENT_ID="${PROFILE#graydovee-remote-window-}"
 [ "$CLIENT_ID" != "$PROFILE" ] || CLIENT_ID="$PROFILE"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -80,7 +80,7 @@ handshake() {
   [ "$with_cookie" = "1" ] || cookie=""
   docker exec -i -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
     "curl -sS -o /tmp/smoke-body.json -w '%{http_code}' $cookie \
-       -X POST 'http://127.0.0.1:$PORT/dsh-remote-workspace-server/api/handshake' \
+       -X POST 'http://127.0.0.1:$PORT/dsh-remote-window-server/api/handshake' \
        -H 'content-type: application/json' --data '$body'; echo; cat /tmp/smoke-body.json"
 }
 
@@ -131,7 +131,7 @@ rpc() {
   local body="{\"protocol\":1,\"method\":\"$method\",\"params\":$params}"
   docker exec -i -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
     "curl -sS -o /tmp/smoke-rpc.json -w '%{http_code}' -b $JAR \
-       -X POST 'http://127.0.0.1:$PORT/dsh-remote-workspace-server/api/rpc' \
+       -X POST 'http://127.0.0.1:$PORT/dsh-remote-window-server/api/rpc' \
        -H 'content-type: application/json' \
        -H 'x-dsh-rw-client: $CLIENT_ID' -H 'x-dsh-rw-instance: $INSTANCE' -H 'x-dsh-rw-protocol: 1' \
        --data '$body'; echo; cat /tmp/smoke-rpc.json"
@@ -206,16 +206,16 @@ fi
 
 # Embed routes + index injection (public static, cookie for index).
 b_code="$(docker exec -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
-  "curl -sS -o /tmp/bootstrap.js -w '%{http_code} %{content_type} %{size_download}' 'http://127.0.0.1:$PORT/dsh-remote-workspace-server/embed/bootstrap.js'")"
+  "curl -sS -o /tmp/bootstrap.js -w '%{http_code} %{content_type} %{size_download}' 'http://127.0.0.1:$PORT/dsh-remote-window-server/embed/bootstrap.js'")"
 case "$b_code" in
   200*) ok "embed/bootstrap.js ($b_code)" ;;
   *) bad "embed/bootstrap.js ($b_code)" ;;
 esac
 docker exec -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
-  "curl -sS 'http://127.0.0.1:$PORT/dsh-remote-workspace-server/embed/bootstrap.js' | grep -q '__dshRwShimmed__'" \
+  "curl -sS 'http://127.0.0.1:$PORT/dsh-remote-window-server/embed/bootstrap.js' | grep -q '__dshRwShimmed__'" \
   && ok "bootstrap contains storage shim" || bad "bootstrap shim missing"
 c_code="$(docker exec -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
-  "curl -sS -o /dev/null -w '%{http_code} %{content_type}' 'http://127.0.0.1:$PORT/dsh-remote-workspace-server/embed/embed.css'")"
+  "curl -sS -o /dev/null -w '%{http_code} %{content_type}' 'http://127.0.0.1:$PORT/dsh-remote-window-server/embed/embed.css'")"
 case "$c_code" in
   200*) ok "embed/embed.css ($c_code)" ;;
   *) bad "embed/embed.css ($c_code)" ;;
@@ -224,7 +224,7 @@ docker exec -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
   "curl -sS -b $JAR 'http://127.0.0.1:$PORT/' | grep -q '__DSH_RW_EMBED__'" \
   && ok "index injects __DSH_RW_EMBED__" || bad "index injection missing"
 docker exec -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
-  "curl -sS -b $JAR 'http://127.0.0.1:$PORT/' | grep -Eq '(src=\"dsh-remote-workspace-server/embed/bootstrap.js\"|src=\"/dsh-remote-workspace-server/embed/bootstrap.js\")'" \
+  "curl -sS -b $JAR 'http://127.0.0.1:$PORT/' | grep -Eq '(src=\"dsh-remote-window-server/embed/bootstrap.js\"|src=\"/dsh-remote-window-server/embed/bootstrap.js\")'" \
   && ok "index injects bootstrap script (relative or absolute path)" || bad "bootstrap script tag missing"
 
 echo "----" | tee -a "$LOG"

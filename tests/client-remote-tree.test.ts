@@ -162,7 +162,7 @@ function view(overrides: Partial<RemoteConnectionView> = {}): RemoteConnectionVi
       profile: { name: 'profile' },
       runtime: { kind: 'global' },
       plugin: { installed: true },
-      portal: { base: '/dsh-remote-workspace/portal/t1/', muxPath: '/dsh-remote-workspace/portal/t1/api/remote.mux' },
+      portal: { base: '/dsh-remote-window/portal/t1/', muxPath: '/dsh-remote-window/portal/t1/api/remote.mux' },
     },
     workspaces: {
       registry: { revision: 'r1', epoch: 'e1', initialized: true },

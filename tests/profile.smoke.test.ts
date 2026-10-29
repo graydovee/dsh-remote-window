@@ -3,7 +3,7 @@
  *
  * It lays out a profile exactly the way the provisioner does — an empty-bundle
  * profile whose patch layer mounts the execution providers plus
- * `dsh-remote-workspace/server`, with the built plugin copied into the profile's
+ * `dsh-remote-window/server`, with the built plugin copied into the profile's
  * `node_modules` — boots it with the installed `dsh` CLI, and speaks the
  * protocol over its stdio. This proves the part an in-process fixture cannot:
  * that a *profile* boot resolves the official providers and this plugin's own

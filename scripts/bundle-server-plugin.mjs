@@ -9,10 +9,11 @@
  * release train.
  *
  * Usage:
- *   node scripts/bundle-server-plugin.mjs --tarball ../dsh-remote-workspace-server/dist/server-plugin/dsh-remote-workspace-server-0.1.0-alpha.3.tgz
+ *   node scripts/bundle-server-plugin.mjs --tarball ../dsh-remote-window-server/dist/server-plugin/dsh-remote-window-server-0.1.0-alpha.3.tgz
  *   DSH_SERVER_PLUGIN_TARBALL=... node scripts/bundle-server-plugin.mjs
  */
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,7 +33,7 @@ const tarball = resolve(tarballArg)
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const clientVersion = String(manifest.version)
 const name = basename(tarball)
-const match = /^dsh-remote-workspace-server-(.+)\.tgz$/u.exec(name)
+const match = /^dsh-remote-window-server-(.+)\.tgz$/u.exec(name)
 if (match === null) {
   console.error(`bundle-server-plugin: unexpected tarball name ${name}`)
   process.exit(2)
@@ -57,6 +58,11 @@ let checksums = {}
 try {
   checksums = JSON.parse(await readFile(checksumPath, 'utf8'))
 } catch {}
+// Keep only entries whose artifact is still shipped; older release tarballs
+// are not part of this package.
+checksums = Object.fromEntries(
+  Object.entries(checksums).filter(([entry]) => entry === name || existsSync(join(targetDir, entry))),
+)
 checksums[name] = sha256
 await writeFile(checksumPath, `${JSON.stringify(checksums, null, 2)}\n`)
 console.log(`bundled ${name} (${info.size} bytes, sha256 ${sha256})`)

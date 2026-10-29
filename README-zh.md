@@ -1,11 +1,11 @@
-# dsh-remote-workspace
+# dsh-remote-window
 
 [English](README.md) | 中文
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-brightgreen.svg)](package.json)
 [![dsh](https://img.shields.io/badge/dsh-0.2.1--rc.3-blue.svg)](#compatibility)
-[![npm](https://img.shields.io/npm/v/dsh-remote-workspace.svg)](https://www.npmjs.com/package/dsh-remote-workspace)
+[![npm](https://img.shields.io/npm/v/dsh-remote-window.svg)](https://www.npmjs.com/package/dsh-remote-window)
 
 把一台 SSH 主机打开成 DeepSeek Harness 工作区。**server 是一台能独立工作的普通 DSH；本插件让它成为
 client 的远程入口。** 工作区、会话、会话日志与共享视图状态都以 server 为权威。client 只加一条浮动
@@ -26,7 +26,7 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 
 ## Screenshots
 
-![浮动 target rail 与全屏 iframe 中的 server 官方 UI](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
+![浮动 target rail 与全屏 iframe 中的 server 官方 UI](https://raw.githubusercontent.com/graydovee/dsh-remote-window/main/assets/screenshots/01-remote-window.jpg)
 
 client 只保留一个远程面：浮动 **target rail**（默认收起，hover 或 `Alt+R` 展开），列已保存连接、实时
 阶段与连接/切换/忘记动作。target rail 可拖到任意屏幕边缘并自动吸附：收起时跟随吸附边（左右为 44px 竖排图标条、
@@ -123,8 +123,8 @@ sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退 serve
 rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤。
 
 **per-client profile 与 runtime。** 每个 client 生成稳定 `clientId`，server 上用
-`graydovee-remote-workspace-<clientId>`。专用 profile 与 server 插件从 client 包内置的
-`dsh-remote-workspace-server-<version>.tgz` 离线安装；独立 Node+DSH runtime 自动安装/升级（或只读复用
+`graydovee-remote-window-<clientId>`。专用 profile 与 server 插件从 client 包内置的
+`dsh-remote-window-server-<version>.tgz` 离线安装；独立 Node+DSH runtime 自动安装/升级（或只读复用
 已验证的全局 DSH）。profile lease 拒绝第二个驱动实例。
 
 **Host key 必须确认。** 首次连接展示 host key SHA-256 并等待显式确认；之后 key 变化会中止连接。
@@ -138,12 +138,12 @@ rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤
 装进 client 的 `web` profile（Plugins 页面或 CLI）：
 
 ```bash
-dsh plugin --profile web add dsh-remote-workspace
+dsh plugin --profile web add dsh-remote-window
 ```
 
 pnpm 可能拦截 `ssh2` 的可选 native 构建脚本；用 Plugins 页面安装，或首次运行加
 `--config.strict-dep-builds=false`。已安装但未启用时，在 Plugins 页面启用（或把
-`dsh-remote-workspace` 加进 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）。重启服务
+`dsh-remote-window` 加进 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）。重启服务
 `dsh web` 的进程并刷新页面。
 
 从 checkout 构建安装：
@@ -151,7 +151,7 @@ pnpm 可能拦截 `ssh2` 的可选 native 构建脚本；用 Plugins 页面安�
 ```bash
 pnpm install && pnpm typecheck && pnpm test && pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
-dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
+dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-window-<version>.tgz
 ```
 
 client 包内置 server 插件 tarball，因此目标机不需要网络或包管理器。然后：
@@ -201,7 +201,7 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 如果确实要在本机试别的 DSH 版本，对这一对精确版本做豁免，并把结果视为不受支持：
 
 ```bash
-dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
+dsh plugin --profile web allow-version dsh-remote-window@<已安装版本> \
   --dsh-version <运行时版本> --accept-risk
 ```
 
@@ -215,14 +215,14 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
 
 | 位置 | 内容 |
 | --- | --- |
-| client `~/.dsh/storages/dsh_remote_workspace.json` | 连接记录（含模型来源）、本机模型 endpoint/模型/超时、包策略、旧 workspace refs（会清理） |
+| client `~/.dsh/storages/dsh_remote_window.json` | 连接记录（含模型来源）、本机模型 endpoint/模型/超时、包策略、旧 workspace refs（会清理） |
 | client `~/.dsh/.credentials.yaml` | SSH 凭据与本机模型 API key（官方存储，`0600`） |
-| client `~/.dsh/remote-workspaces/<clientId>/…` | v2 local 会话的私有 anchor（保留，非权威，不再展示） |
+| client `~/.dsh/remote-windows/<clientId>/…` | v2 local 会话的私有 anchor（保留，非权威，不再展示） |
 | client `~/.dsh/remote-assets/` | 本机 runtime/包缓存 |
 | server `~/.dsh/sessions/**` | 权威会话日志（两种模型来源共用） |
 | server `~/.dsh/storages/workspace.json` | 权威 workspace registry、pin/archive/顺序 |
-| server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile、server 插件、lease、日志 |
-| server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 Node/DSH runtime |
+| server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | 专用 profile、server 插件、lease、日志 |
+| server `~/.dsh/remote-window/<clientId>/runtime/` | 独立 Node/DSH runtime |
 | server `~/.dsh/remote-server-sessions/**`（旧） | 保留、不展示、不迁移 |
 
 本机模型 API key 不会到 server 或浏览器：它只存 client 官方凭据库，只由 loopback bridge 读取并注入
@@ -281,7 +281,7 @@ dsh plugin --profile web allow-version dsh-remote-workspace@<已安装版本> \
 模型来源契约见 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)；协议仍见
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) 与
 [doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md)。server 半边在
-[dsh-remote-workspace-server](https://github.com/graydovee/dsh-remote-workspace-server)。
+[dsh-remote-window-server](https://github.com/graydovee/dsh-remote-window-server)。
 
 ## License
 

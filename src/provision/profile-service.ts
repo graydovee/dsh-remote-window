@@ -499,7 +499,7 @@ export class ProfileService {
   }
 
   private profileForClient(clientId: string | undefined): string {
-    return clientId === undefined ? '' : `graydovee-remote-workspace-${clientId}`
+    return clientId === undefined ? '' : `graydovee-remote-window-${clientId}`
   }
 
   private readyState(live: LiveProfile): ConnectionStateV1 {
@@ -644,7 +644,7 @@ export class ProfileService {
           // Newer server tarballs inline/drop schemastery; only the older ones
           // need this peer copy. Do not fail the deploy when it cannot be found —
           // the handshake/start error will name the missing module if it is needed.
-          console.warn('[dsh-remote-workspace] @deepseek-ai/schemastery is not resolvable on the client; skipping the offline peer copy')
+          console.warn('[dsh-remote-window] @deepseek-ai/schemastery is not resolvable on the client; skipping the offline peer copy')
         }
         emit('upload', 'ok', setup.plugin.action === 'upgrade' ? 'server 插件已更新' : 'server 插件已安装')
       } else {

@@ -96,7 +96,7 @@ vi.mock('../src/client/api.ts', () => ({
   }),
 }))
 vi.mock('../src/client/session-main.tsx', () => ({
-  NATIVE_MAIN_ID: 'dsh-remote-workspace-native',
+  NATIVE_MAIN_ID: 'dsh-remote-window-native',
   openNativeSession: nativeSpies.open,
   closeNativeSession: nativeSpies.close,
 }))
@@ -107,7 +107,7 @@ vi.mock('../src/client/remote-api.ts', () => ({
   parseRemoteStateEvent: vi.fn(),
 }))
 vi.mock('../src/client/portal-main.tsx', () => ({
-  SERVER_MAIN_ID: 'dsh-remote-workspace-server',
+  SERVER_MAIN_ID: 'dsh-remote-window-server',
   openServerMain: portalSpies.openServerMain,
   closeServerMain: portalSpies.closeServerMain,
   serverMainRequest: () => portalSpies.request,
@@ -168,11 +168,11 @@ const SESSIONS = {
 const CONNECTION = {
   targetId: 't1',
   phase: 'ready',
-  profile: { name: 'graydovee-remote-workspace-abc' },
+  profile: { name: 'graydovee-remote-window-abc' },
   runtime: { kind: 'global' },
   plugin: { installed: true, protocol: 1 },
-  portal: { base: '/dsh-remote-workspace/portal/t1/', muxPath: '/dsh-remote-workspace/portal/t1/api/remote.mux' },
-  embed: { storagePrefix: 'dshrw:graydovee-remote-workspace-abc:', mode: 'reload' },
+  portal: { base: '/dsh-remote-window/portal/t1/', muxPath: '/dsh-remote-window/portal/t1/api/remote.mux' },
+  embed: { storagePrefix: 'dshrw:graydovee-remote-window-abc:', mode: 'reload' },
 }
 
 /** Load a fresh store module (module state resets). */
@@ -236,7 +236,7 @@ beforeEach(() => {
     targets: [TARGET],
     connections: { t1: CONNECTION },
     workspaces: { t1: WORKSPACES },
-    defaultProfile: 'graydovee-remote-workspace-abc',
+    defaultProfile: 'graydovee-remote-window-abc',
   })
 })
 
@@ -412,7 +412,7 @@ describe('server-mode session opening (v2 native main)', () => {
           }],
         },
       },
-      defaultProfile: 'graydovee-remote-workspace-abc',
+      defaultProfile: 'graydovee-remote-window-abc',
     })
     apiSpies.sessionPrepareServer.mockResolvedValue({ managed: true })
     await store.loadRemoteState()
@@ -807,9 +807,9 @@ describe('v3 full-screen official UI activation', () => {
       targetId: 't1',
       targetLabel: 'box',
       sessionId: 's1',
-      storagePrefix: 'dshrw:graydovee-remote-workspace-abc:',
+      storagePrefix: 'dshrw:graydovee-remote-window-abc:',
     }))
-    expect(shellSpies.selectPanel).toHaveBeenCalledWith('dsh-remote-workspace-server')
+    expect(shellSpies.selectPanel).toHaveBeenCalledWith('dsh-remote-window-server')
     expect(store.remoteAppSnapshot().selection).toEqual({ targetId: 't1' })
   })
 
@@ -820,7 +820,7 @@ describe('v3 full-screen official UI activation', () => {
       connections: { t1: CONNECTION },
       workspaces: { t1: WORKSPACES },
       sessions: { t1: { ...SESSIONS, sessions: [] } },
-      defaultProfile: 'graydovee-remote-workspace-abc',
+      defaultProfile: 'graydovee-remote-window-abc',
     })
     apiSpies.sessionCreate.mockResolvedValue({ sessionId: 'blank-1', workspaceId: 'w1' })
     const store = await freshStore()
@@ -846,7 +846,7 @@ describe('v3 full-screen official UI activation', () => {
       connections: { t1: CONNECTION },
       workspaces: { t1: { ...WORKSPACES, workspaces: [] } },
       sessions: { t1: { ...SESSIONS, sessions: [] } },
-      defaultProfile: 'graydovee-remote-workspace-abc',
+      defaultProfile: 'graydovee-remote-window-abc',
     })
     const store = await freshStore()
     bindFakeShell(store)

@@ -14,10 +14,10 @@
  * Layout (architecture §9, protocol §5.4):
  *
  * ```
- * $DSH_HOME/remote-workspaces/<clientId>/<targetId>/<hash(workspaceId)>
+ * $DSH_HOME/remote-windows/<clientId>/<targetId>/<hash(workspaceId)>
  * ```
  *
- * The legacy visible-stub root (`$DSH_HOME/remote-workspaces/<targetId>/…`,
+ * The legacy visible-stub root (`$DSH_HOME/remote-windows/<targetId>/…`,
  * `src/session/remote-guard.ts`) is intentionally a different, shallower shape; the
  * legacy guard and its stubs are retired separately (architecture §12), and
  * nothing here registers a shell row for the anchor.
@@ -53,11 +53,11 @@ export function anchorDshHome(env: Record<string, string | undefined> = process.
 /**
  * Private anchor root for one client.
  * @param options - client identity and environment.
- * @returns `<DSH_HOME>/remote-workspaces/<clientId>`.
+ * @returns `<DSH_HOME>/remote-windows/<clientId>`.
  */
 export function anchorRoot(options: AnchorOptions): string {
   const env = options.env ?? process.env
-  return join(anchorDshHome(env), 'remote-workspaces', segment(options.clientId, 'clientId'))
+  return join(anchorDshHome(env), 'remote-windows', segment(options.clientId, 'clientId'))
 }
 
 /** Stable 16-hex directory name for one server workspace. */

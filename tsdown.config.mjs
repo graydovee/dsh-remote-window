@@ -1,12 +1,12 @@
 /**
- * tsdown build for dsh-remote-workspace.
+ * tsdown build for dsh-remote-window.
  *
  * Host half (ESM, node): the plugin entry plus the two entries the loader
  * mounts as their own rows — `./connection` (the per-target `ctx.ssh` inside
  * an agent-preset realm), `./rsession` and `./session-persistence`.
  *
  * Client half (browser, CJS closure factory): one bundle registering through
- * `window.__ModuleLoader__.load({ id: 'dsh-remote-workspace', factory })`.
+ * `window.__ModuleLoader__.load({ id: 'dsh-remote-window', factory })`.
  * Only the platform module table is external; everything else is inlined and
  * cross-plugin value imports are rejected by the purity gate below.
  */
@@ -32,7 +32,7 @@ const CLIENT_EXTERNALS = [
 /** Wire/type layers a client bundle may inline (no runtime identity to share). */
 const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand)(\/|$)/
 
-const PLUGIN_ID = 'dsh-remote-workspace'
+const PLUGIN_ID = 'dsh-remote-window'
 
 const hostConfig = {
   entry: {

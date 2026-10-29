@@ -20,7 +20,7 @@ import { scrubSecrets } from '../targets/types.ts'
 export const REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1 as const
 
 /** Server plugin route prefix (protocol §4.1). */
-export const PLUGIN_ROUTE_PREFIX = '/dsh-remote-workspace-server'
+export const PLUGIN_ROUTE_PREFIX = '/dsh-remote-window-server'
 
 /** P1 route table. */
 export const PLUGIN_ROUTES = {

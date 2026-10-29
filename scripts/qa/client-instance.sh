@@ -2,7 +2,7 @@
 # Manage an isolated client debug instance (independent DSH_HOME) for QA.
 #
 #   scripts/qa/client-instance.sh start --name client-a --port 25022 \
-#       --client-tarball /tmp/dsh-rw-m1/dsh-remote-workspace-0.1.0-alpha.3.tgz \
+#       --client-tarball /tmp/dsh-rw-m1/dsh-remote-window-0.1.0-alpha.3.tgz \
 #       [--server-tarball <server plugin tarball>] [--dsh <cli>]
 #   scripts/qa/client-instance.sh stop  --name client-a
 #   scripts/qa/client-instance.sh status --name client-a
@@ -72,7 +72,7 @@ case "$MODE" in
     printf '  root: %s\n' "$CLIENT_ROOT"
     printf '  port: %s (%s)\n' "$PORT" "$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && echo listening || echo closed)"
     printf '  log:  %s\n' "$LOG"
-    node -e "const fs=require('fs');const p='$HOME_DIR/profiles/web/package.json';try{const j=JSON.parse(fs.readFileSync(p,'utf8'));console.log('  plugin:',j.dependencies?.['dsh-remote-workspace']||'absent');console.log('  bundles:',(j.dsh?.profile?.bundles||[]).join(', '))}catch{console.log('  profile: absent')}" 2>/dev/null || true
+    node -e "const fs=require('fs');const p='$HOME_DIR/profiles/web/package.json';try{const j=JSON.parse(fs.readFileSync(p,'utf8'));console.log('  plugin:',j.dependencies?.['dsh-remote-window']||'absent');console.log('  bundles:',(j.dsh?.profile?.bundles||[]).join(', '))}catch{console.log('  profile: absent')}" 2>/dev/null || true
     tail -2 "$LOG" 2>/dev/null | sed 's/^/  /' || true
     exit 0
     ;;
@@ -108,7 +108,7 @@ node -e "
 const fs=require('fs');
 const p='$HOME_DIR/profiles/web/package.json';
 const j=JSON.parse(fs.readFileSync(p,'utf8'));
-const plugin='dsh-remote-workspace';
+const plugin='dsh-remote-window';
 if (!(plugin in (j.dependencies||{}))) { console.error('plugin dependency missing'); process.exit(1) }
 j.dsh ??= {}; j.dsh.profile ??= {}; j.dsh.profile.bundles ??= [];
 if (!j.dsh.profile.bundles.includes(plugin)) j.dsh.profile.bundles.push(plugin);

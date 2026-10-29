@@ -65,7 +65,7 @@ export function registerRemotePresetSeat(ctx: ClientContext): () => void {
         }, RemotePresetSeat)
       } catch (error) {
         failed = true
-        console.error('[dsh-remote-workspace] remote preset seat registration failed', error)
+        console.error('[dsh-remote-window] remote preset seat registration failed', error)
       }
     }
     const stop = subscribeAppState(sync)

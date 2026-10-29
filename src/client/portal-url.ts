@@ -17,7 +17,7 @@
  */
 
 /** Client-host portal prefix (protocol §8.1). */
-export const PORTAL_PREFIX = '/dsh-remote-workspace/portal'
+export const PORTAL_PREFIX = '/dsh-remote-window/portal'
 
 /** Embed query keys (protocol §9.3, plus the §16.2 fallback). */
 export const EMBED_SESSION_PARAM = 'dshRwSession'
@@ -63,7 +63,7 @@ export interface PortalUrlInput {
  * GUI, so a relative `src` keeps the browser on the client origin (and avoids
  * ever exposing profile-server authority).
  * @param targetId - connected target id.
- * @returns `/dsh-remote-workspace/portal/<encoded targetId>/`.
+ * @returns `/dsh-remote-window/portal/<encoded targetId>/`.
  */
 export function portalPath(targetId: string): string {
   if (targetId === '') throw new TypeError('portalPath: targetId must not be empty')

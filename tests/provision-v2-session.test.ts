@@ -7,7 +7,7 @@ import { RemotePluginError, SESSION_RPC, sessionEventsPath } from '../src/remote
 
 describe('v2 session event query', () => {
   it('parses target/session/afterSeq and rejects missing or malformed fields', () => {
-    expect(sessionEventsQuery('/dsh-remote-workspace/api/session/events?targetId=rt-1&sessionId=s-1&afterSeq=4'))
+    expect(sessionEventsQuery('/dsh-remote-window/api/session/events?targetId=rt-1&sessionId=s-1&afterSeq=4'))
       .toEqual({ targetId: 'rt-1', sessionId: 's-1', afterSeq: 4 })
     expect(sessionEventsQuery('/?targetId=rt-1&sessionId=s-1')).toEqual({ targetId: 'rt-1', sessionId: 's-1' })
     expect(() => sessionEventsQuery('/?sessionId=s-1')).toThrowError(/targetId/)
@@ -30,7 +30,7 @@ describe('v2 session event query', () => {
       approval: 'session/approval',
       status: 'session/status',
     })
-    expect(sessionEventsPath({ sessionId: 's 1' })).toBe('/dsh-remote-workspace-server/api/session/events?sessionId=s+1')
+    expect(sessionEventsPath({ sessionId: 's 1' })).toBe('/dsh-remote-window-server/api/session/events?sessionId=s+1')
     expect(new RemotePluginError('session-events-failed', 'x').code).toBe('session-events-failed')
   })
 })
@@ -63,7 +63,7 @@ describe('v2 session SSE host bridge', () => {
     const res = new CaptureResponse()
     const ctx = { get: () => ({ trustedHosts: [] }) } as never
     const profiles = { connectionState: () => undefined } as never
-    await handleSessionEvents(ctx, profiles, eventRequest('/dsh-remote-workspace/api/session/events?targetId=rt-1&sessionId=s-1') as never, res as never)
+    await handleSessionEvents(ctx, profiles, eventRequest('/dsh-remote-window/api/session/events?targetId=rt-1&sessionId=s-1') as never, res as never)
     expect(res.status).toBe(404)
     expect(JSON.parse(res.body)).toMatchObject({ ok: false, error: { code: 'target-not-connected' } })
   })
@@ -78,7 +78,7 @@ describe('v2 session SSE host bridge', () => {
         yield { event: 'status', data: '{"running":true}' }
       },
     } as never
-    await handleSessionEvents(ctx, profiles, eventRequest('/dsh-remote-workspace/api/session/events?targetId=rt-1&sessionId=s-1&afterSeq=0') as never, res as never)
+    await handleSessionEvents(ctx, profiles, eventRequest('/dsh-remote-window/api/session/events?targetId=rt-1&sessionId=s-1&afterSeq=0') as never, res as never)
     expect(res.status).toBe(200)
     expect(res.headers['content-type']).toContain('text/event-stream')
     expect(res.body).toContain('event: timeline\ndata: {"seq":1,"type":"assistant"}')

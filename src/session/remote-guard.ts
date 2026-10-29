@@ -2,7 +2,7 @@
  * Fail-closed guard for local-mode sessions whose cwd is a private anchor.
  *
  * v1 local mode binds a server session to a plugin-private anchor
- * (`<DSH_HOME>/remote-workspaces/<clientId>/<targetId>/<hash>`); the anchor is
+ * (`<DSH_HOME>/remote-windows/<clientId>/<targetId>/<hash>`); the anchor is
  * **not** a workspace and must never be composed with an execution world other
  * than that target's remote preset. This module is the synchronous
  * `session/created` veto:
@@ -11,7 +11,7 @@
  * - a `remote:*` preset on any other cwd is rejected too (a remote execution
  *   world mounted on a local workspace runs tools on the wrong machine).
  *
- * The legacy visible-stub layout (`<DSH_HOME>/remote-workspaces/<targetId>/…`)
+ * The legacy visible-stub layout (`<DSH_HOME>/remote-windows/<targetId>/…`)
  * is retired with the old stdio architecture; those stubs are cleaned by the
  * migration sweep instead of being attachable here.
  */
@@ -28,7 +28,7 @@ import { remotePresetId, REMOTE_PRESET_PREFIX } from '../preset/world.ts'
  */
 export function remoteAnchorRoot(env: Record<string, string | undefined> = process.env): string {
   const configured = env['DSH_HOME']?.trim()
-  return join(configured !== undefined && configured !== '' ? configured : join(homedir(), '.dsh'), 'remote-workspaces')
+  return join(configured !== undefined && configured !== '' ? configured : join(homedir(), '.dsh'), 'remote-windows')
 }
 
 /**

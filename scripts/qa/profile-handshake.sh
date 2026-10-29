@@ -9,7 +9,7 @@
 #       [--expect-status <n>] [--expect-code <code>] [--json]
 #
 # The profile name determines the default clientId:
-#   graydovee-remote-workspace-<clientId>
+#   graydovee-remote-window-<clientId>
 # The cookie is obtained by GET /?token=... inside the container (one-time
 # token is read from the profile server log). Never paste the token into docs.
 set -euo pipefail
@@ -54,7 +54,7 @@ esac
 [ -n "$BODY_PROFILE" ] || BODY_PROFILE="$PROFILE"
 if [ -z "$CLIENT_ID" ]; then
   case "$PROFILE" in
-    graydovee-remote-workspace-*) CLIENT_ID="${PROFILE#graydovee-remote-workspace-}" ;;
+    graydovee-remote-window-*) CLIENT_ID="${PROFILE#graydovee-remote-window-}" ;;
     *) CLIENT_ID="$PROFILE" ;;
   esac
 fi
@@ -103,7 +103,7 @@ docker exec -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
 response="$(docker exec -i -u tester -e HOME=/home/tester "$QA_CONTAINER" bash -lc \
   "curl -sS -o /tmp/qa-handshake-body.json -w '%{http_code}' \\
      -b /home/tester/qa-run/handshake-cookies.txt \\
-     -X POST 'http://127.0.0.1:$PORT/dsh-remote-workspace-server/api/handshake' \\
+     -X POST 'http://127.0.0.1:$PORT/dsh-remote-window-server/api/handshake' \\
      -H 'content-type: application/json' \\
      --data '$body'; echo; cat /tmp/qa-handshake-body.json")"
 

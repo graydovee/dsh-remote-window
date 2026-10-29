@@ -115,7 +115,7 @@ export interface RemoteTargetRecord {
    * executor-derived default for display (see {@link effectiveModelSource}).
    */
   readonly modelSource?: 'local' | 'server'
-  /** v1: the per-client profile this target's server runs (`graydovee-remote-workspace-<clientId>`). */
+  /** v1: the per-client profile this target's server runs (`graydovee-remote-window-<clientId>`). */
   readonly profileName?: string
   /** v1: last profile server port (hint only; the process prints the real one). */
   readonly profilePort?: number
@@ -381,7 +381,7 @@ export interface LocalLlmSettings {
   readonly models: readonly string[]
   /** Upstream request/probe timeout in milliseconds. */
   readonly timeoutMs: number
-  /** Non-secret credential address (`remote-workspace/<id>`); never a secret. */
+  /** Non-secret credential address (`remote-window/<id>`); never a secret. */
   readonly apiKeyRef?: string
   /**
    * The automatic source's opt-in provider/model list (additive optional).
@@ -489,7 +489,7 @@ export const targetRecordSchema = z.object({
   executor: z.enum(['server', 'local']).optional(),
   /** Additive optional local-model source (storage domain stays at version 1). */
   modelSource: z.enum(['local', 'server']).optional(),
-  profileName: z.string().regex(/^graydovee-remote-workspace-[a-z0-9]{12}$/u).optional(),
+  profileName: z.string().regex(/^graydovee-remote-window-[a-z0-9]{12}$/u).optional(),
   profilePort: z.number().int().min(1).max(65_535).optional(),
   runtimeKind: z.enum(['isolated', 'global']).optional(),
   runtimeDir: z.string().min(1).optional(),
@@ -603,7 +603,7 @@ export interface PackagePolicySettings {
   /** Base URL prefixed to GitHub release URLs when set (CN-reachable mirror). */
   readonly mirror: string
   /**
-   * The client installation's stable id (v1 `graydovee-remote-workspace-<id>`).
+   * The client installation's stable id (v1 `graydovee-remote-window-<id>`).
    *
    * Additive optional on the domain global: an old document without it still
    * validates and is upgraded in place on the first `ensureClientId()`.

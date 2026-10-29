@@ -1,4 +1,4 @@
-# dsh-remote-workspace v1 QA 报告（2026-10-22）
+# dsh-remote-window v1 QA 报告（2026-10-22）
 
 > 环境与逐条口径见 `doc/qa-v1-plan.md`。本报告只记录实际执行结果，未执行项明确标 NOT RUN，
 > 失败项不写成通过。所有 QA 数据在 `/tmp/dsh-qa/**` 与 Docker 卷/容器内，真实 `~/.dsh` 未被
@@ -24,7 +24,7 @@
 | A1 server 独立建工作区/会话/一轮对话 | **PASS（沙箱 PARTIAL）** | server 官方 UI 浏览器操作；mock 返回 bash 工具调用；`work/qa-marker.txt` 写入；会话日志落 server `~/.dsh/sessions/<slug>/session-*/session.v4.jsonl.zstd`；截图 + DOM |
 | A2 会话日志位置 | PASS | server `~/.dsh/sessions/*.jsonl.zstd`，非 `remote-server-sessions`；宿主项目目录无该日志 |
 | A3 client 连接/断开不影响 server | PARTIAL | server 独立可用与 connect 并存/断开后 server 仍可开（M1/M2 期间），未做专门对照采样 |
-| B1–B6（连接/profile/隧道/断开/占用） | PARTIAL | B1/B4/B5 在 M1/M2 实测（host key 409→200、profile 名 `graydovee-remote-workspace-<clientId>`、断开重连 state ready）；B2/B3 独立 runtime/全局升级确认按钮 NOT RUN；B6 第二 client 同 profile 未构造（不同 clientId 多 client 已验证独立 profile） |
+| B1–B6（连接/profile/隧道/断开/占用） | PARTIAL | B1/B4/B5 在 M1/M2 实测（host key 409→200、profile 名 `graydovee-remote-window-<clientId>`、断开重连 state ready）；B2/B3 独立 runtime/全局升级确认按钮 NOT RUN；B6 第二 client 同 profile 未构造（不同 clientId 多 client 已验证独立 profile） |
 | C1–C7（左栏/远程数据） | PARTIAL | 远程树 连接→workspace→session、标题/sessionCount、双向刷新（server UI/远端 API）已验；pin/archive 跨 client 需 registry/refresh（见 M3）；搜索/拖拽/空错态 UI 点击 NOT RUN |
 | D1–D7（工作区/会话动作） | PARTIAL | add（目录浏览+手动路径）、rename、remove(force/409)、session create/open/rename/fork/pin/archive/reorder API 已验；D7 会话删除未实现（官方能力缺失，记录） |
 | E1–E5（server 模式） | PARTIAL | portal 官方对话区渲染、会话历史/标题一致、无 client 双 sidebar；模型/凭据在 server（mock 端口在 server 容器）、client 无 server key；E4 官方 UI 单实例占用/第二个实例错误 NOT RUN |
@@ -148,7 +148,7 @@
   - Lead 验收：artifact `/tmp/dsh-runtime-0.2.1-rc.2-linux-arm64.tar.gz`（210M，sha `3338e705…`）→
     client final10 + `DSH_RW_FORCE_ISOLATED_RUNTIME=1` + `DSH_RW_RUNTIME_ARTIFACT=…` → connect 200；
     state `runtime.kind="isolated"`、launcher 指向
-    `~/.dsh/remote-workspace/<clientId>/runtime/dsh/node_modules/.bin/dsh`、`dshVersion=0.2.1-rc.2`、
+    `~/.dsh/remote-window/<clientId>/runtime/dsh/node_modules/.bin/dsh`、`dshVersion=0.2.1-rc.2`、
     profile ready、plugin handshake 1。
   - dev-server 构建脚本 `scripts/build-runtime-artifact.mjs` 产出
     `dist-runtime/dsh-runtime-0.2.1-rc.2-<platform>-<arch>.tar.gz` + sha/manifest（root=`node/`+`dsh/`）；
@@ -208,7 +208,7 @@
 10. **[已解决] 独立 runtime：PASS（Lead 侧真实 install+start）**：使用本地构建 artifact
     `/tmp/dsh-runtime-0.2.1-rc.2-linux-arm64.tar.gz`（210M，sha `3338e705…`，容器内构建 node/+dsh/），
     client final10 + `DSH_RW_FORCE_ISOLATED_RUNTIME=1` + `DSH_RW_RUNTIME_ARTIFACT=…` → connect 200；
-    `/api/state`：`runtime.kind="isolated"`、launcher=`/home/tester/.dsh/remote-workspace/<clientId>/runtime/dsh/node_modules/.bin/dsh`、
+    `/api/state`：`runtime.kind="isolated"`、launcher=`/home/tester/.dsh/remote-window/<clientId>/runtime/dsh/node_modules/.bin/dsh`、
     `dshVersion=0.2.1-rc.2`，profile ready、plugin handshake 1。发布 CI artifact 仍属 server 仓库外部发布项。
     用户裁决“全局 runtime 只允许隔离 runtime”，因此 global 修改按钮路径**不再是缺口**；部署条显示
     隔离 runtime 自动安装即可。
@@ -227,7 +227,7 @@
   并删除上述临时目录。
 - 真实 `~/.dsh`：QA 的所有 client/server 实例均使用独立 `DSH_HOME=/tmp/dsh-qa/...`，未把真实
   `~/.dsh` 作为 DSH_HOME，未复制真实凭据。收尾只读检查：`~/.dsh/storages/workspace.json` 中无
-  `/tmp/dsh-qa` 引用；但真实 `~/.dsh` 下可见 `remote-workspaces/rt-1`（mtime 2026-10-22 20:25，
+  `/tmp/dsh-qa` 引用；但真实 `~/.dsh` 下可见 `remote-windows/rt-1`（mtime 2026-10-22 20:25，
   由本工作区其它 agent/真实 profile 的验证产生，不是 QA 实例写入）、本 harness 自身 session
   projection/attachments（其中会提及 QA 命令文本）。因此本报告不声称“~/.dsh 完全未被触碰”，
   只声称“QA 隔离实例未使用它，且 QA 未向其复制/写入凭据或 server 数据”；清理未删除任何
@@ -243,5 +243,5 @@
   `m3-writerheld-evidence.txt`、`local-e2e-*.txt`、`mux-spawn-evidence.txt`、
   `final-candidate-status.txt`、`final4-state-refresh-evidence.txt`、`deployment-ui-evidence.txt`。
 - 客户端会话隔离证据：`client-local/home/sessions` 不存在；`storages/workspace.json` 无远程 stub；
-  仅 plugin 私有 `home/remote-workspaces/<clientId>/<targetId>/<hash>`。
+  仅 plugin 私有 `home/remote-windows/<clientId>/<targetId>/<hash>`。
 - doc：`doc/qa-v1-plan.md`（逐条口径 + §12 阶段记录）、本报告。

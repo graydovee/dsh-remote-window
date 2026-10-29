@@ -65,7 +65,7 @@ export function installRemoteContext(ctx: Context, options: RemoteContextOptions
     })
   }
   service.context({
-    name: 'remote-workspace/execution-host',
+    name: 'remote-window/execution-host',
     order: order + 1,
     interpolate: false,
     text: executionHostText(options.target),

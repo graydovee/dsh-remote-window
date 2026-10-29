@@ -2,7 +2,7 @@
  * Stable identities for the per-client profile and the per-process instance.
  *
  * `clientId` is the client installation's identity: it names the server profile
- * (`graydovee-remote-workspace-<clientId>`) and the isolated runtime directory,
+ * (`graydovee-remote-window-<clientId>`) and the isolated runtime directory,
  * so it must be stable across restarts and safe in a path and a DSH profile
  * name. `instanceId` is deliberately not persisted: it identifies **one client
  * DSH process** and is what the server-side lease uses to tell "my retry" from
@@ -11,7 +11,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 
 /** Prefix DSH profile names carry; the requirements document fixes it. */
-export const PROFILE_PREFIX = 'graydovee-remote-workspace-'
+export const PROFILE_PREFIX = 'graydovee-remote-window-'
 
 /** v1 clientId: 12 lowercase hex characters (48 bits). */
 export const CLIENT_ID_LENGTH = 12
@@ -20,7 +20,7 @@ export const CLIENT_ID_LENGTH = 12
 export const CLIENT_ID_PATTERN = /^[a-z0-9]{12}$/u
 
 /** A DSH profile name built from this plugin's prefix and a clientId. */
-export const PROFILE_NAME_PATTERN = /^graydovee-remote-workspace-[a-z0-9]{12}$/u
+export const PROFILE_NAME_PATTERN = /^graydovee-remote-window-[a-z0-9]{12}$/u
 
 /** Random bytes seam, injectable so tests can pin a clientId. */
 export type RandomBytes = (size: number) => Uint8Array

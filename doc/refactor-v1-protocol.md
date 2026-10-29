@@ -1,4 +1,4 @@
-# dsh-remote-workspace v1 协议与接口契约
+# dsh-remote-window v1 协议与接口契约
 
 > 状态：**v1 可实现契约**（architect 产出；产品决定以 `doc/refactor-v1-requirements.md` 为准，
 > 两者冲突时产品决定优先）。本文档先于实现冻结，开发据它开工；变更必须同时更新
@@ -17,12 +17,12 @@
 
 | 术语 | 含义 |
 |---|---|
-| **client** | 本机 DSH + `dsh-remote-workspace` 插件；负责 SSH、部署、profile 生命周期、portal、客户端 UI。 |
-| **server** | SSH 目标机；运行普通 DSH + `dsh-remote-workspace-server` 插件（装在 per-client profile 里）。 |
-| **profile server** | 用 `graydovee-remote-workspace-<clientId>` profile 启动的 `dsh` web 进程；每 client 一个。 |
-| **server 插件** | profile server 进程里的 `dsh-remote-workspace-server` Cordis 插件；提供 RPC/SSE/mux/embed，并调用官方 host service。 |
-| **client 插件** | client 本机 DSH 里的 `dsh-remote-workspace` 插件；提供 client host 路由与浏览器 UI。 |
-| **portal** | client host 上的同源反向代理 `/dsh-remote-workspace/portal/<targetId>/`，把浏览器请求经 SSH `forwardOut` 转给 profile server。 |
+| **client** | 本机 DSH + `dsh-remote-window` 插件；负责 SSH、部署、profile 生命周期、portal、客户端 UI。 |
+| **server** | SSH 目标机；运行普通 DSH + `dsh-remote-window-server` 插件（装在 per-client profile 里）。 |
+| **profile server** | 用 `graydovee-remote-window-<clientId>` profile 启动的 `dsh` web 进程；每 client 一个。 |
+| **server 插件** | profile server 进程里的 `dsh-remote-window-server` Cordis 插件；提供 RPC/SSE/mux/embed，并调用官方 host service。 |
+| **client 插件** | client 本机 DSH 里的 `dsh-remote-window` 插件；提供 client host 路由与浏览器 UI。 |
+| **portal** | client host 上的同源反向代理 `/dsh-remote-window/portal/<targetId>/`，把浏览器请求经 SSH `forwardOut` 转给 profile server。 |
 | **官方 UI** | profile server 自己服务的 DSH Web GUI（v1 server 模式主区）。 |
 | **客户端 UI** | client 本机 DSH 的官方 Web GUI（v1 local 模式主区 + 全部 sidebar）。 |
 | **官方 cookie** | `dsh web` 的 `dsh-auth-<authorityHash>` 浏览器 cookie；authority 由请求 Host 决定。 |
@@ -48,9 +48,9 @@ v1 只用一条 SSH 连接，同时承载三类流量。**每 target 只启动�
 
 | 平面 | 发起方 | 路径 | 承载 |
 |---|---|---|---|
-| **P1 client host → server 插件 API** | client host（Node） | SSH `forwardOut` → `http://127.0.0.1:<profilePort>/dsh-remote-workspace-server/...` | 握手/租约、workspace/session/executor RPC、local 模式 persist RPC、SSE 事件、执行世界 mux WS |
-| **P2 浏览器 → portal → 官方 UI** | client 浏览器（同源 iframe / 资产） | client host `http://<clientOrigin>/dsh-remote-workspace/portal/<targetId>/...` → 剥前缀 → SSH `forwardOut` → `http://127.0.0.1:<profilePort>/...` | 官方 UI HTML/asset、`/api` HTTP、`/api/remote.mux` WS |
-| **P3 client host → client 浏览器** | client host（client 自己的 DSH host 路由） | `/dsh-remote-workspace/api/<name>`、`/dsh-remote-workspace/stream/state`（SSE） | sidebar 数据/动作、连接/部署进度、模式设置、portal 配置、错误 |
+| **P1 client host → server 插件 API** | client host（Node） | SSH `forwardOut` → `http://127.0.0.1:<profilePort>/dsh-remote-window-server/...` | 握手/租约、workspace/session/executor RPC、local 模式 persist RPC、SSE 事件、执行世界 mux WS |
+| **P2 浏览器 → portal → 官方 UI** | client 浏览器（同源 iframe / 资产） | client host `http://<clientOrigin>/dsh-remote-window/portal/<targetId>/...` → 剥前缀 → SSH `forwardOut` → `http://127.0.0.1:<profilePort>/...` | 官方 UI HTML/asset、`/api` HTTP、`/api/remote.mux` WS |
+| **P3 client host → client 浏览器** | client host（client 自己的 DSH host 路由） | `/dsh-remote-window/api/<name>`、`/dsh-remote-window/stream/state`（SSE） | sidebar 数据/动作、连接/部署进度、模式设置、portal 配置、错误 |
 
 P1/P3 都是 client 插件自己的 HTTP 面：两者都先过 client 侧 `trustedRequest`（loopback/trustedHost +
 `sec-fetch-site` + 同源 Origin），body ≤ 1 MiB。P1 的 server 侧再额外过官方 cookie 鉴权（§2.2）。
@@ -125,18 +125,18 @@ REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1
 ```sh
 DSH_HOME="<serverDshHome>" \
 PATH="<runtimeRoot>/node/bin:<runtimeRoot>/dsh/node_modules/.bin:$PATH" \
-exec "<runtimeDshLauncher>" --profile "graydovee-remote-workspace-<clientId>" \
+exec "<runtimeDshLauncher>" --profile "graydovee-remote-window-<clientId>" \
   --host 127.0.0.1 --port 0 --no-open
 ```
 
 - **CLI 顺序**：`--profile` 是 dsh 启动器参数，必须放在 app 参数前；**不是** `dsh web --profile`。
   实测 `dsh web --profile p` 报 `select a profile only once` / `too many arguments`。
 - `runtimeDshLauncher` 是独立 runtime 的 `.../node_modules/.bin/dsh`（或复用全局 `dsh`）。
-- `runtimeRoot`：独立 runtime `$DSH_HOME/remote-workspace/<clientId>/runtime`（固定）；全局运行时用 server
+- `runtimeRoot`：独立 runtime `$DSH_HOME/remote-window/<clientId>/runtime`（固定）；全局运行时用 server
   现有 dsh（`PATH` 前缀可省）。
 - 不以网络/包管理器安装 profile：专用 profile 由 client 离线写入 4 个文件 +
-  `node_modules/dsh-remote-workspace-server/**`（见架构 §12），再启动。
-- 进程形态：`setsid nohup ... > "$DSH_HOME/remote-workspace/profiles/<profile>/server.log" 2>&1 &`
+  `node_modules/dsh-remote-window-server/**`（见架构 §12），再启动。
+- 进程形态：`setsid nohup ... > "$DSH_HOME/remote-window/profiles/<profile>/server.log" 2>&1 &`
   （日志目录 0700、文件 0600）；写 `.pid`。client host 只持有 profile 名/端口/pid 的内存态。
 
 ### 3.2 stdout 解析与就绪
@@ -175,13 +175,13 @@ GET /?token=<token>
 ### 3.4 单 client 租约（profile lock）
 
 落点：`<profileDir>/.dsh-rw/lease.json`（profileDir =
-`$DSH_HOME/profiles/graydovee-remote-workspace-<clientId>`），由 **server 插件**写入（同一 profile server
+`$DSH_HOME/profiles/graydovee-remote-window-<clientId>`），由 **server 插件**写入（同一 profile server
 进程是唯一写者；原子 rename；0600）。
 
 ```ts
 interface ProfileLease {
   readonly version: 1
-  readonly profile: string              // graydovee-remote-workspace-<clientId>
+  readonly profile: string              // graydovee-remote-window-<clientId>
   readonly clientId: string
   readonly instanceId: string
   readonly pid: number                  // profile server 进程 pid
@@ -208,7 +208,7 @@ interface ProfileLease {
 
 ### 3.5 handshake
 
-`POST /dsh-remote-workspace-server/api/handshake`
+`POST /dsh-remote-window-server/api/handshake`
 
 请求：
 
@@ -279,12 +279,12 @@ interface HandshakeResponse {
 
 | 路由 | 方法 | 说明 |
 |---|---|---|
-| `/dsh-remote-workspace-server/api/handshake` | POST | 见 §3.5。 |
-| `/dsh-remote-workspace-server/api/rpc` | POST | body `{ protocol:1, method, params }`；统一信封。 |
-| `/dsh-remote-workspace-server/api/events` | GET (SSE) | `text/event-stream`；见 §6。 |
-| `/dsh-remote-workspace-server/api/mux` | GET upgrade | 执行世界 WS；见 §7。 |
-| `/dsh-remote-workspace-server/embed/bootstrap.js` | GET | embed 注入脚本（公开静态，无 secret）。 |
-| `/dsh-remote-workspace-server/embed/embed.css` | GET | embed 隐藏样式（可内联进注入脚本）。 |
+| `/dsh-remote-window-server/api/handshake` | POST | 见 §3.5。 |
+| `/dsh-remote-window-server/api/rpc` | POST | body `{ protocol:1, method, params }`；统一信封。 |
+| `/dsh-remote-window-server/api/events` | GET (SSE) | `text/event-stream`；见 §6。 |
+| `/dsh-remote-window-server/api/mux` | GET upgrade | 执行世界 WS；见 §7。 |
+| `/dsh-remote-window-server/embed/bootstrap.js` | GET | embed 注入脚本（公开静态，无 secret）。 |
+| `/dsh-remote-window-server/embed/embed.css` | GET | embed 隐藏样式（可内联进注入脚本）。 |
 
 `api/rpc` 请求头（除 cookie 外）：
 
@@ -445,7 +445,7 @@ interface SessionListValue {
 每个会话一个执行端记录，**存 server**（跨 client 共享）。落点：
 
 ```
-$DSH_HOME/remote-workspace/state/executors/<encode(sessionId)>.json
+$DSH_HOME/remote-window/state/executors/<encode(sessionId)>.json
 ```
 
 ```ts
@@ -525,7 +525,7 @@ interface ExecutorSwitchPlan {
 
 ## 6. SSE 事件流（P1）
 
-`GET /dsh-remote-workspace-server/api/events`
+`GET /dsh-remote-window-server/api/events`
 
 - 头：`content-type: text/event-stream`、`cache-control: no-store`、`x-accel-buffering: no`。
 - 第一帧 `event: hello`：`{ protocol:1, profile, instance, registry:{revision,epoch,initialized}, capabilities }`。
@@ -542,7 +542,7 @@ interface ExecutorSwitchPlan {
     （来自其他 profile/全局 DSH）；这一帧只表示“有外部变化”，**不自动 reload**（v1）；client 收到后
     把 sidebar 标为“需刷新”，用户刷新 → 重连/重启 profile server。
   - 官方 host 事件（`session/created|disposed|event`）→ `kind:'session'`（节流 250 ms）。
-- client host 把每个 target 的事件转发为 P3 SSE `/dsh-remote-workspace/stream/state` 帧：
+- client host 把每个 target 的事件转发为 P3 SSE `/dsh-remote-window/stream/state` 帧：
   `{ targetId, kind, revision?, workspaceId?, sessionId? }`。
 - 断开：SSE 连接随 SSH 通道关闭；client host 重连后重新订阅。
 
@@ -552,7 +552,7 @@ interface ExecutorSwitchPlan {
 
 ### 7.1 端点
 
-- 路由：`GET upgrade /dsh-remote-workspace-server/api/mux`（`ctx.webServer.registerUpgrade`，
+- 路由：`GET upgrade /dsh-remote-window-server/api/mux`（`ctx.webServer.registerUpgrade`，
   `ctx.connection.admit(req)` + lease 头校验）。
 - 一个 target 一个 WS 连接（client host 每个 target 复用一个 mux；浏览器不直连）。
 - 连接建立后 client 发送 `hello` JSON 帧（复用旧 `frame` 的 JSON frame 形状）：
@@ -585,9 +585,9 @@ Remote 方法与 `$events`，鉴权是浏览器 cookie；本场景是 **client h
 
 | 下游（浏览器，client origin） | 上游（profile server） |
 |---|---|
-| `/dsh-remote-workspace/portal/<targetId>/` | `/` |
-| `/dsh-remote-workspace/portal/<targetId>/<rest>?<query>` | `/<rest>?<query>`（只剥前缀，不重编码） |
-| `/dsh-remote-workspace/portal/<targetId>/api/remote.mux`（WS） | `/api/remote.mux`（WS） |
+| `/dsh-remote-window/portal/<targetId>/` | `/` |
+| `/dsh-remote-window/portal/<targetId>/<rest>?<query>` | `/<rest>?<query>`（只剥前缀，不重编码） |
+| `/dsh-remote-window/portal/<targetId>/api/remote.mux`（WS） | `/api/remote.mux`（WS） |
 
 - 只接受已连接 target；`targetId` 不存在/未连接 → `404 target-not-connected`（JSON 或空响应均可，
   不能返回另一个 target 的内容）。
@@ -657,7 +657,7 @@ ctx.webServer.tapIndex(html => // 在 <head> 后、所有 app bundle 之前插�
 在 iframe realm 内、app 启动前 patch `Storage.prototype`（`localStorage` 与 `sessionStorage` 同规则）：
 
 ```
-prefix = config.storagePrefix           // 例：dshrw:graydovee-remote-workspace-<clientId>:
+prefix = config.storagePrefix           // 例：dshrw:graydovee-remote-window-<clientId>:
 getItem(k)      → raw.getItem(prefix + k)
 setItem(k, v)   → raw.setItem(prefix + k, v)
 removeItem(k)   → raw.removeItem(prefix + k)
@@ -678,7 +678,7 @@ length          → 以 prefix 开头的键数量
 **URL**（iframe 首次 src，由 client main area 构造）：
 
 ```
-http://<clientOrigin>/dsh-remote-workspace/portal/<targetId>/?dshRwSession=<sessionId>&dshRwTheme=<light|dark|system>&dshRwLang=<zh-CN|en-US>
+http://<clientOrigin>/dsh-remote-window/portal/<targetId>/?dshRwSession=<sessionId>&dshRwTheme=<light|dark|system>&dshRwLang=<zh-CN|en-US>
 ```
 
 - `bootstrap.js` 在 app 启动前读取 query；若 `dshRwSession` 存在，则写
@@ -776,8 +776,8 @@ client 只在 **local 模式**用客户端官方 UI 显示远程会话，因此�
 
 ```
 workspaceFile   = $DSH_HOME/storages/workspace.json
-registryLock    = $DSH_HOME/remote-workspace/locks/registry.lock
-bootstrapLock   = $DSH_HOME/remote-workspace/locks/bootstrap.lock
+registryLock    = $DSH_HOME/remote-window/locks/registry.lock
+bootstrapLock   = $DSH_HOME/remote-window/locks/bootstrap.lock
 ```
 
 - `revision`：`sha256(file bytes)`（文件不存在 = `absent`）；在 server 插件进程启动载入后记
@@ -903,7 +903,7 @@ bootstrapLock   = $DSH_HOME/remote-workspace/locks/bootstrap.lock
 | `src/remote/plugin-client.ts` | dev-core | P1 RPC/SSE/mux 客户端（含 cookie、lease 头、错误映射） |
 | `src/ssh/forward.ts` | dev-core | ssh2 `forwardOut` 通道/agent（含 WSL 删除后的唯一传输） |
 | `src/runtime/**`（或复用 `provision/assets.ts`） | dev-core | 独立 runtime artifact 缓存/上传/下载校验/安装 |
-| `src/provision/profile.ts` | dev-core | 专用 profile 的 4 文件 + `node_modules/dsh-remote-workspace-server` 离线写入 |
+| `src/provision/profile.ts` | dev-core | 专用 profile 的 4 文件 + `node_modules/dsh-remote-window-server` 离线写入 |
 | `src/session-persistence/routing.ts`、`src/rsession/remote-persistence.ts` | dev-session | 路由到 P1 `persist/*`；header 重锚（stub↔server path） |
 | `src/preset/world.ts`、`src/connection/index.ts`、`src/session/open.ts` | dev-session | local 模式执行世界：改用 WS mux；fail-closed 守卫 |
 | `src/client/portal-main.tsx`（新） | dev-ui | server 模式 iframe 容器、postMessage、storage 事件选中同步、错误/加载态 |
@@ -923,12 +923,12 @@ bootstrapLock   = $DSH_HOME/remote-workspace/locks/bootstrap.lock
 
 | 项 | 契约 |
 |---|---|
-| 包名/版本 | `dsh-remote-workspace-server`，version **精确等于** client 插件发布版本；`engines.dsh`/peers 精确 `0.2.1-rc.3`。 |
-| 主来源 | client npm 包内置 `assets/server-plugin/dsh-remote-workspace-server-<version>.tgz`；专用 profile 离线解包，不访问 server 网络/pnpm。 |
+| 包名/版本 | `dsh-remote-window-server`，version **精确等于** client 插件发布版本；`engines.dsh`/peers 精确 `0.2.1-rc.3`。 |
+| 主来源 | client npm 包内置 `assets/server-plugin/dsh-remote-window-server-<version>.tgz`；专用 profile 离线解包，不访问 server 网络/pnpm。 |
 | 内容清单 | `package.json`、`lib/**`（host；可选 client half）、`cordis.patch.yml`、README/LICENSE（可选）；无 `node_modules`。 |
 | 兜底来源 | npm registry / release 下载同名同版本 tarball；用 client 包内 `assets/server-plugin/checksums.json` 的 sha256 校验；仅当内置缺失时使用。 |
 | 校验 | sha256 必须匹配；版本必须精确匹配；拒绝路径穿越/额外顶层文件；失败码 `server-plugin-integrity-failed` / `server-plugin-version-mismatch`。 |
-| 安装 | staging 解包（strip `package/`）→ 原子 rename 到 `<profileDir>/node_modules/dsh-remote-workspace-server/` → 写 profile 4 文件 → marker `{version,sha256,protocol,dshVersion}` → 重启 profile server。 |
+| 安装 | staging 解包（strip `package/`）→ 原子 rename 到 `<profileDir>/node_modules/dsh-remote-window-server/` → 写 profile 4 文件 → marker `{version,sha256,protocol,dshVersion}` → 重启 profile server。 |
 | 幂等/升级 | marker 版本+sha 匹配则跳过；不匹配（升级/降级/损坏）重装并重启专用 profile；其他 profile/全局必须按钮确认。 |
 | 握手校验 | server 插件返回 `pluginVersion`；与 client 期望不一致 → `plugin-version-mismatch`（重装/升级）；protocol 不一致 → `plugin-protocol-mismatch`（禁止降级）。 |
 | 失败回滚 | 安装后 handshake 失败 → 用内置 tarball 重装一次；仍失败 → `server-plugin-install-failed`，保留 scrub 后的 log，不回退本地执行。 |
@@ -998,11 +998,11 @@ bootstrapLock   = $DSH_HOME/remote-workspace/locks/bootstrap.lock
 
 | 端点 | 请求 | 响应/行为 |
 |---|---|---|
-| `POST /dsh-remote-workspace/api/state/refresh` | `{ targetId }` | 轻量刷新：client host 重拉 P1 `workspace/list`/`session/list`（含 title fold）；返回 `{ targets?, stale: boolean, registry:{revision,loadedRevision} }`。**不取消 turn、不重启进程。** |
-| `POST /dsh-remote-workspace/api/registry/refresh` | `{ targetId }` | 调 P1 `registry/refresh`（官方 workspace 行 disable→enable 重载，§16.4）。成功 `{ revision, serviceReplaced:true }`；失败 `registry-reload-failed`。**不取消 turn。** |
-| `POST /dsh-remote-workspace/api/profile/restart-preview` | `{ targetId }` | `{ activeTurns: ActiveTurn[], requiresConfirmation, previewRevision }`；取不到清单 → `profile-restart-preview-failed`（禁止执行）。 |
-| `POST /dsh-remote-workspace/api/profile/restart` | `{ targetId, confirmActiveTurns:true, previewRevision }` | 校验收据；cancel + whenIdle/flush（≤3 s）→ stop/start → handshake → `{ restarted, cancelledTurnIds, failedCancellations[] }`；有失败 → `mode-switch/cancel-failed`（保留 details）。SSE 进度事件。 |
-| `POST /dsh-remote-workspace/api/state`（现有） | — | 保持：返回树数据/配置；不承担重载语义。 |
+| `POST /dsh-remote-window/api/state/refresh` | `{ targetId }` | 轻量刷新：client host 重拉 P1 `workspace/list`/`session/list`（含 title fold）；返回 `{ targets?, stale: boolean, registry:{revision,loadedRevision} }`。**不取消 turn、不重启进程。** |
+| `POST /dsh-remote-window/api/registry/refresh` | `{ targetId }` | 调 P1 `registry/refresh`（官方 workspace 行 disable→enable 重载，§16.4）。成功 `{ revision, serviceReplaced:true }`；失败 `registry-reload-failed`。**不取消 turn。** |
+| `POST /dsh-remote-window/api/profile/restart-preview` | `{ targetId }` | `{ activeTurns: ActiveTurn[], requiresConfirmation, previewRevision }`；取不到清单 → `profile-restart-preview-failed`（禁止执行）。 |
+| `POST /dsh-remote-window/api/profile/restart` | `{ targetId, confirmActiveTurns:true, previewRevision }` | 校验收据；cancel + whenIdle/flush（≤3 s）→ stop/start → handshake → `{ restarted, cancelledTurnIds, failedCancellations[] }`；有失败 → `mode-switch/cancel-failed`（保留 details）。SSE 进度事件。 |
+| `POST /dsh-remote-window/api/state`（现有） | — | 保持：返回树数据/配置；不承担重载语义。 |
 
 - UI 规则：`state/refresh` 是默认“刷新”；发现 `stale` 时显示 banner：“server 端工作区有更新，
   点此加载”（→ `registry/refresh`）；`registry/refresh` 失败 → 显示“重启 profile 以加载（会取消运行中
@@ -1176,14 +1176,14 @@ interface RemoteMux {
 
 ```ts
 // preview: 不产生副作用
-POST /dsh-remote-workspace/api/mode/preview
+POST /dsh-remote-window/api/mode/preview
   { targetId, nextMode: 'server'|'local' }
 → { currentTurn?: { sessionId, running }, otherActiveTurns: [{sessionId, title?}],
     requiresConfirm: boolean, previewRevision: string }
   错误: mode-switch/preview-failed, target-not-connected, profile-locked
 
 // apply: 必须携带 previewRevision；requiresConfirm 时必须 cancelActiveTurns:true
-POST /dsh-remote-workspace/api/mode/apply
+POST /dsh-remote-window/api/mode/apply
   { targetId, nextMode, cancelActiveTurns: true, previewRevision }
 → { switched: boolean, cancelledTurnIds: string[], failedCancellations: [{sessionId,message}] }
   错误: mode-switch/other-turns-cancelled-required, mode-switch/preview-stale,

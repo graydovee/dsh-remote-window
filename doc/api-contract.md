@@ -56,7 +56,7 @@
 > **修订 v7（2026-10-18，P0 契约修订：join 改为 server 清单驱动）**：
 > ⑱ §15.1 `WorkspaceRef` 注释改为「自动登记，材料化前 `stubPath` 为空」；
 > ⑲ §15.2 `workspaceRefs` 语义改写 + **新不变量**「已连接 target 上 `workspaceRefs` 的
-> `remoteWorkspaceId` 集合 ⊇ `serverWorkspaces` 的 id 集合」+ `remote-workspaces` 路由降为内部/QA 用；
+> `remoteWorkspaceId` 集合 ⊇ `serverWorkspaces` 的 id 集合」+ `remote-windows` 路由降为内部/QA 用；
 > ⑳ §15.3 迁移**无收尾步骤**、并入自动登记流程；§12 客户端表：弹窗回单页签、删 `unaddedServerWorkspaces()`；
 > ㉑ §4.1 明确「移除 = 所有客户端都消失」。
 
@@ -66,8 +66,8 @@
 
 | 项 | 约定 |
 |---|---|
-| 前缀 | `/dsh-remote-workspace` |
-| 命令路由 | `POST /dsh-remote-workspace/api/<name>`，body 必须是 JSON 对象；`<name>` **允许含斜杠**（`connect/start`），不要加斜杠守卫 |
+| 前缀 | `/dsh-remote-window` |
+| 命令路由 | `POST /dsh-remote-window/api/<name>`，body 必须是 JSON 对象；`<name>` **允许含斜杠**（`connect/start`），不要加斜杠守卫 |
 | 成功信封 | `200 { "ok": true, "value": <T> }` |
 | 失败信封 | `<status> { "ok": false, "error": { "code": "<code>", "message": "<scrubbed text>" } }` |
 | 信任栅栏 | 每个请求先过 `trustedRequest(ctx, req)`（`src/index.ts:128`）；不通过 = `403 forbidden` |
@@ -75,7 +75,7 @@
 | 错误文本 | 一律 `scrubSecrets()`（`src/targets/types.ts:336`）；凭据只可能出现在两个 body 字段里：`secret`（`connect/start`、`dsh-scan`） |
 | 凭据 | `secret` 永不进 URL、永不进记录、永不进日志、永不回显（客户端提交后立即从快照里清空，见 `store.ts:992`） |
 | host-key | 未知指纹必须显式确认；**WSL 目标指纹恒为 `''`**，不确认、不存凭据 |
-| 进度 | 连接进度走 SSE `GET /dsh-remote-workspace/stream/connect?ticket=<id>`（帧形状本轮**不变**） |
+| 进度 | 连接进度走 SSE `GET /dsh-remote-window/stream/connect?ticket=<id>`（帧形状本轮**不变**） |
 | 可选字段 | wire 上沿用条件展开惯用法 `...(x === undefined ? {} : { x })`；缺省 ≠ null |
 
 ## 1. 路由清单
@@ -91,7 +91,7 @@
 | `connect` / `stop-target` | 不变 | 树里「连接 / 断开」 |
 | `list-dir` / `mkdir` | 不变 | 目录浏览 |
 | `open-workspace` / `open-session` | 不变 | 目录→工作区、续聊（内部改为先读/登记 server 清单） |
-| `remote-workspaces` | **变更（P0）** | 服务端权威清单 `reg.list`，项内补 `updatedAt?`（§14.1）；`/api/state` 也会带回同一份 |
+| `remote-windows` | **变更（P0）** | 服务端权威清单 `reg.list`，项内补 `updatedAt?`（§14.1）；`/api/state` 也会带回同一份 |
 | `sessions` | 不变 | 会话列表（含 `persist.titles`） |
 | `session-rename` / `session-flag` | 不变 | 会话重命名 / 置顶归档（视图状态） |
 | `workspace-rename` | **语义变更（P0）** | 改为 server `reg.rename`；body 变 `{ targetId, remoteWorkspaceId, title }`（§4） |
@@ -118,7 +118,7 @@
 
 ### 2.1 请求
 
-`POST /dsh-remote-workspace/api/dsh-scan`
+`POST /dsh-remote-window/api/dsh-scan`
 
 ```jsonc
 {
@@ -224,7 +224,7 @@
 | `candidates[].executable` | `--version` 是否 exit 0 且输出非空 |
 | `candidates[].nodePath` | 见下方「nodePath 判定顺序」（**实测有坑，不要简化**） |
 | `candidates[].selfContained` | `nodePath === undefined`：启动器不需要解释器（无 shebang 的原生二进制）；**或**是需要 node 但远端一个都没找到（此时 `planProvision` 会部署我们自己的 Node） |
-| `candidates[].profile` | 该 dsh 的 `DSH_HOME/profiles/<name>/node_modules/dsh-remote-workspace/package.json` 的 `version` + `.dsh-rw-plugin.json` 的 `sha256`；`upToDate` 由 host 用 `sha256OfFiles()` 比对。**profile 级、不是每个 launcher 一份** |
+| `candidates[].profile` | 该 dsh 的 `DSH_HOME/profiles/<name>/node_modules/dsh-remote-window/package.json` 的 `version` + `.dsh-rw-plugin.json` 的 `sha256`；`upToDate` 由 host 用 `sha256OfFiles()` 比对。**profile 级、不是每个 launcher 一份** |
 | `candidates[].origin` | `deployed` \| `nvm` \| `fnm` \| `volta` \| `bun` \| `user-local` \| `system` \| `other`。由 `candidateOrigin(path, dshHome)` 纯函数分类（v7）：`<dshHome>/server/dsh/…` 判 `deployed`，即**本插件上传/下载的运行时**；其余按 node 管理器 / 安装目录归类 |
 | `candidates[].originDetail` | 分类的补充细节：nvm/fnm 的 node 版本，或系统/其他安装的目录 |
 | `candidates[].reason` | 例如 `version 0.1.9 is older than the verified DSH runtime 0.2.1-rc.2`；`--version` 没输出时是 `the launcher did not report a version (exit 127)` |
@@ -346,7 +346,7 @@ data: {"type":"done","target":{ …PublicTarget… }}
 
 ### 4.1 `workspace-rename`（语义变更）与 `workspace-delete`（新增）
 
-**`POST /dsh-remote-workspace/api/workspace-rename`**
+**`POST /dsh-remote-window/api/workspace-rename`**
 
 ```jsonc
 // request
@@ -362,7 +362,7 @@ data: {"type":"done","target":{ …PublicTarget… }}
 - 未知 target = `404 not-found`；target 未连接 = `400 not-connected`；server 说没有该 id =
   `404 not-found`（把 RPC 的 `unknown remote workspace "<id>"` 映射成 404）。
 
-**`POST /dsh-remote-workspace/api/workspace-delete`（新增）**
+**`POST /dsh-remote-window/api/workspace-delete`（新增）**
 
 ```jsonc
 // request
@@ -384,14 +384,14 @@ data: {"type":"done","target":{ …PublicTarget… }}
 
 ### 4.2 `cleanup-shell-workspaces`（新增，P0）
 
-`POST /dsh-remote-workspace/api/cleanup-shell-workspaces`，body `{}`。
+`POST /dsh-remote-window/api/cleanup-shell-workspaces`，body `{}`。
 
 ```jsonc
 { "ok": true, "value": { "removed": ["ws-official-1", "ws-official-2"], "kept": ["ws-official-3"] } }
 ```
 
 - 清扫**共享** `~/.dsh/storages/workspace.json` 里本插件的残留：官方 registry 中 `path` 落在
-  `~/.dsh/remote-workspaces/`（stub 根）下的条目。
+  `~/.dsh/remote-windows/`（stub 根）下的条目。
 - **默认（Gate 0 分支 A）我们不写共享 registry**，所以这条路由的日常用途是**清历史遗留**
   （P0 之前版本留下的条目）；只有设了逃生口 `DSH_RW_FORCE_SHELL_WORKSPACES=1` 时才会清到
   「我们自己刚写的」。见 architecture §7.4。
@@ -708,7 +708,7 @@ for p in "$DSHHOME"/profiles/*; do
   [ -d "$p" ] || continue
   name=$(printf '%s' "$p" | sed -e 's|.*/profiles/||')
   pv=''; sha=''
-  manifest="$p/node_modules/dsh-remote-workspace/package.json"
+  manifest="$p/node_modules/dsh-remote-window/package.json"
   if [ -f "$manifest" ]; then
     pv=$(tr -d '\n' < "$manifest" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   fi
@@ -843,7 +843,7 @@ export function describeIncompatibility(text: string): string             // 给
   cordis.yml
   cordis.patch.yml
   pnpm-workspace.yaml
-  node_modules/dsh-remote-workspace/**           ← packageFiles()（package.json + cordis.patch.yml + lib/*.js|cjs|mjs）
+  node_modules/dsh-remote-window/**           ← packageFiles()（package.json + cordis.patch.yml + lib/*.js|cjs|mjs）
   .dsh-rw-plugin.json                            ← { "id":"plugin", "sha256":"…", "version":"0.1.0-alpha50", "profile":"dsh-remote-server" }
   .dsh-rw.lock/                                  ← 部署锁（mkdir 原子 test-and-set，语义同 deploy.acquireDeployLock）
 
@@ -890,7 +890,7 @@ DSH_HOME=<dshHome> PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> --profil
   （**仍然不是** `node <launcher>`）。
 - `hello.hash`（远端 server bundle 的 digest）仍由 `connection/index.ts:242-247` 比对，
   复用与打包两条路一致 —— 复用**不会**跳过这场校验（远端插件版本过旧会报
-  `install the same dsh-remote-workspace version on the remote host`）。
+  `install the same dsh-remote-window version on the remote host`）。
 
 ---
 
@@ -1303,7 +1303,7 @@ export const workspaceRefSchema = z.object({
   （写操作 `workspace-rename`/`workspace-delete`/`open-workspace`/`connect` 后失效；或 TTL ≤ 2 s），
   缓存只是同一权威的短期副本，**不得**落盘。
 
-> 旁注：`remote-workspaces` 路由（`reg.list` 直读）**保留**，但 UI 不再有入口（「远端已注册」页签已取消）；
+> 旁注：`remote-windows` 路由（`reg.list` 直读）**保留**，但 UI 不再有入口（「远端已注册」页签已取消）；
 > 它现在是 QA/排障与 host 内部取清单的实现细节。
 
 ### 15.3 迁移算法（旧 `RemoteWorkspaceRecord` → `WorkspaceRef`）

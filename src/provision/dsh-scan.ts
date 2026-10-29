@@ -186,7 +186,7 @@ export function scanDshScript(options: { dshHome?: string } = {}): string {
     '  [ -d "$p" ] || continue',
     "  name=$(printf '%s' \"$p\" | sed -e 's|.*/profiles/||')",
     "  pv=''; sha=''",
-    '  manifest="$p/node_modules/dsh-remote-workspace/package.json"',
+    '  manifest="$p/node_modules/dsh-remote-window/package.json"',
     '  if [ -f "$manifest" ]; then',
     "    pv=$(tr -d '\\n' < \"$manifest\" | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')",
     '  fi',

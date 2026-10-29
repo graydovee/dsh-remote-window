@@ -13,8 +13,8 @@ FROM node:${NODE_MAJOR}-bookworm-slim
 ARG NODE_MAJOR
 ARG DSH_VERSION=0.2.1-rc.3
 
-LABEL org.opencontainers.image.title="dsh-remote-workspace QA server target"
-LABEL org.opencontainers.image.description="Disposable Linux SSH target with Node and global DSH for remote-workspace QA"
+LABEL org.opencontainers.image.title="dsh-remote-window QA server target"
+LABEL org.opencontainers.image.description="Disposable Linux SSH target with Node and global DSH for remote-window QA"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8

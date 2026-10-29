@@ -810,7 +810,7 @@ function selectPanel(id: string | null): void {
     const layout = clientContext?.get('layout') as { selectPanel?(panelId: string | null): void } | undefined
     layout?.selectPanel?.(id)
   } catch (error) {
-    console.error('[dsh-remote-workspace] layout.selectPanel failed', error)
+    console.error('[dsh-remote-window] layout.selectPanel failed', error)
   }
 }
 
@@ -833,7 +833,7 @@ async function prepareServerSession(targetId: string, sessionId: string): Promis
   } catch (error) {
     const wire = describe(error)
     if (wire.code === 'agent-compose-failed') throw error
-    console.warn('[dsh-remote-workspace] session/prepare-server unavailable; opening the native main without a managed handle', wire)
+    console.warn('[dsh-remote-window] session/prepare-server unavailable; opening the native main without a managed handle', wire)
     return 'unavailable'
   }
 }
@@ -2397,7 +2397,7 @@ export async function applyDeployment(targetId: string, kind: 'runtime' | 'plugi
   } catch (error) {
     const wire = describe(error)
     notify('error', t('remote.deploy.failed', { message: describeFailure(error) }))
-    console.warn('[dsh-remote-workspace] deployment apply failed', wire.code)
+    console.warn('[dsh-remote-window] deployment apply failed', wire.code)
   } finally {
     commit({ pending: false })
   }
@@ -2522,7 +2522,7 @@ export async function retryPendingLocalReveal(): Promise<void> {
     commit({ pendingLocalReveal: undefined })
   } catch (error) {
     notify('error', t('remote.session.revealTimeout'))
-    console.warn('[dsh-remote-workspace] local reveal retry failed', describeFailure(error))
+    console.warn('[dsh-remote-window] local reveal retry failed', describeFailure(error))
   }
 }
 
@@ -2536,7 +2536,7 @@ function releaseLocalSelection(): void {
     const workspace = clientContext?.get('uiWorkspace') as { clearMain?(): void } | undefined
     if (typeof workspace?.clearMain === 'function') workspace.clearMain()
   } catch (error) {
-    console.error('[dsh-remote-workspace] clearMain failed; falling back to layout.selectPanel(null)', error)
+    console.error('[dsh-remote-window] clearMain failed; falling back to layout.selectPanel(null)', error)
     selectPanel(null)
   }
   revealedLocal.delete(selected.sessionId)
@@ -2564,11 +2564,11 @@ function startStateStream(): void {
     stopStateStream = openRemoteStateStream({
       onEvent: event => handleStateEvent(event),
       onTransportError: message => {
-        console.warn('[dsh-remote-workspace] state stream closed', message)
+        console.warn('[dsh-remote-window] state stream closed', message)
       },
     })
   } catch (error) {
-    console.error('[dsh-remote-workspace] state stream failed to open', error)
+    console.error('[dsh-remote-window] state stream failed to open', error)
   }
 }
 

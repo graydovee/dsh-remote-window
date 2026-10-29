@@ -327,7 +327,7 @@ host/client key、临时 HOME/DSH_HOME，只监听 loopback；未复制真实凭
    - workspace chip：`project · fixture`
    - mode seat：只读 `远程执行 · fixture`，DOM 是 `span`，没有 chevron/menu，没有官方 preset 按钮。
 4. 远程会话日志落在夹具的 `DSH_HOME/remote-server-sessions/...`；本地 stub 落在测试实例的
-   `DSH_HOME/remote-workspaces/<targetId>/...`，没有写入真实 `~/.dsh`。
+   `DSH_HOME/remote-windows/<targetId>/...`，没有写入真实 `~/.dsh`。
 5. 本地工作区的官方 picker 仍显示标准/PTC/极简/创造；**仍会显示已连接 target 的 `Remote: fixture`**。
    host guard 已拒绝「本地 cwd + remote preset」，但 UI 选项未隐藏——这是 §9 的已知缺口。
 6. 最终：`pnpm typecheck` 通过；相关测试 31 个通过；全量 `pnpm test` 389 通过、4 个既有
@@ -452,7 +452,7 @@ v2 server 模式不再使用 iframe/portal。目标是用官方组件拼装，�
   `InputBar` / `SessionInputShell`（composer）、`ConversationSessionHeader`（header/tabs/actions）、
   `UserMessageNodeView` / `UserContent` / `MessageIconActions` / `AssistantMarkdown`（thread）、
   `ApprovalPanel`（pending approval）、`ModelSelect`（模型选择）。
-- 官方 bundle 由 host 路由 `/dsh-remote-workspace/official-ui-*.js` 原样提供；wrapper 导出由
+- 官方 bundle 由 host 路由 `/dsh-remote-window/official-ui-*.js` 原样提供；wrapper 导出由
   `tests/official-ui-assets.test.ts` 守护。适配层只做 remote 数据 → 官方 props、locale、
   disclosure/hook、loading/error 边界。
 - **禁止只 vendor CSS、禁止照 DOM 手写近似组件、禁止用自定义样式覆盖官方视觉。**

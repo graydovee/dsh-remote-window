@@ -3,7 +3,7 @@
  * (architecture §9, protocol §5.4).
  *
  * The anchor is the session's local `cwd` but must never look like a workspace:
- * it lives under the plugin's own `remote-workspaces/<clientId>/...` tree, is
+ * it lives under the plugin's own `remote-windows/<clientId>/...` tree, is
  * created/removed only through these helpers, and a path outside the root can
  * never be created or removed (a malformed id must not widen the delete scope).
  */
@@ -41,15 +41,15 @@ describe('anchor root and path shape', () => {
   it('lives under DSH_HOME, not the real home directory', async () => {
     const { root, dshHome } = await tempRoot()
     expect(anchorDshHome({ DSH_HOME: dshHome })).toBe(dshHome)
-    expect(root).toBe(join(dshHome, 'remote-workspaces', 'client-abc123'))
+    expect(root).toBe(join(dshHome, 'remote-windows', 'client-abc123'))
   })
 
   it('distinguishes the private anchor tree from the legacy visible stub root', async () => {
     const { root, dshHome } = await tempRoot()
-    // The legacy stub root is $DSH_HOME/remote-workspaces/<targetId>; the v1
+    // The legacy stub root is $DSH_HOME/remote-windows/<targetId>; the v1
     // anchor adds the client id level, so an old stub can never be mistaken for
     // a private anchor by the retirement/cleanup code.
-    const legacyStub = join(dshHome, 'remote-workspaces', 'target-1')
+    const legacyStub = join(dshHome, 'remote-windows', 'target-1')
     expect(legacyStub.startsWith(root)).toBe(false)
     expect(root.split('/').at(-1)).toBe('client-abc123')
   })

@@ -1,4 +1,4 @@
-# dsh-remote-workspace v2 QA 报告（原生对话主区）
+# dsh-remote-window v2 QA 报告（原生对话主区）
 
 > 状态：**PREPARED / NOT RUN**（2026-10-23）。环境已就绪，等待 dev 可运行 client/server 包 sha；
 > 未运行任何 v2 验收前不填 PASS。v1 报告见 `doc/qa-v1-report.md`。
@@ -108,7 +108,7 @@
 ```bash
 # client host API（cookie 由 token URL 换取）
 J=/tmp/dsh-qa/clients/v2a/cookies.txt
-curl -sS -b "$J" -X POST http://127.0.0.1:26201/dsh-remote-workspace/api/state -H 'content-type: application/json' -d '{}'
+curl -sS -b "$J" -X POST http://127.0.0.1:26201/dsh-remote-window/api/state -H 'content-type: application/json' -d '{}'
 # timeline / prompt / cancel / approval（路径以最终包为准）
 curl -sS -b "$J" -X POST .../api/session/timeline -d '{"targetId":"...","sessionId":"...","beforeSeq":...}'
 curl -sS -b "$J" -X POST .../api/session/prompt -d '{"targetId":"...","sessionId":"...","text":"..."}'
@@ -195,7 +195,7 @@ PASS（API 级，证据 `/tmp/dsh-qa/v2/final-v2/api-evidence.txt`）：
 
 FAIL / BLOCKED：
 - **V2-D 审批 FAIL（M2o 仍未接上 pending/allow）**：v2f clientId `44e9fbd83993`，QA gate marker 已建
-  （`~/.dsh/remote-workspace/44e9fbd83993/qa-approval-tool`=bash），profile 已重启，prompt 后 JSONL 出现
+  （`~/.dsh/remote-window/44e9fbd83993/qa-approval-tool`=bash），profile 已重启，prompt 后 JSONL 出现
   `assistant/message(45) → tool/call(46) → approval/asked(47, id a9b8b7da-…)`、timeline approval asked 可见，
   但 `session/status.pendingApprovals` 始终 `[]`（带 SSE 订阅后仍 []），`session/approval allow` 无法执行。
   与 M2o 声称“marker 存在或 SSE 订阅时先建 pending”不符；需 dev-server 复核 marker 读取时机/pending registry。
@@ -218,7 +218,7 @@ PASS（API 级）：
 - `assistant/attempt`→error、status 404 在 M2o 已验证（M2p 未改该路径）。
 
 FAIL（V2-D）：
-- QA gate marker（clientId `9381d4cea293`，`~/.dsh/remote-workspace/…/qa-approval-tool`=bash）已建并
+- QA gate marker（clientId `9381d4cea293`，`~/.dsh/remote-window/…/qa-approval-tool`=bash）已建并
   `v1/stop→connect` 重启 profile；prompt 后 **approval asked 与 decided 同一毫秒自动 rejected**
   （`19:approval:asked` → `20:approval:decided outcome:"rejected"`），`session/status.pendingApprovals=[]`，
   没有机会调用 `session/approval allow`；tool-result = `Error: the user rejected tool "bash"`，无 marker 文件。
@@ -234,7 +234,7 @@ server profile mock env（sshd SetEnv DEEPSEEK_* + DSH_PERMISSION_MODE=danger-fu
 
 结果：
 - `session/status` **`approvalGate:"qa"`**（marker 已识别），server.log 有
-  `approval gate: qa(bash) marker=/home/tester/.dsh/remote-workspace/70169501db3c/qa-approval-tool`。
+  `approval gate: qa(bash) marker=/home/tester/.dsh/remote-window/70169501db3c/qa-approval-tool`。
 - prompt（mock bash）后 timeline/JSONL：`approval/asked seq19` → **同一毫秒 `approval/decided outcome:"rejected" seq20`**
   → `tool-result Error: the user rejected tool "bash"`；`session/status.pendingApprovals=[]`；无 marker 文件。
 - server.log **没有** `approval request ... preempt=... subscribers=... pending=...` 行（M2q 声称的诊断未出现）

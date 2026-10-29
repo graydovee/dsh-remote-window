@@ -1,7 +1,7 @@
 # QA Linux target (`scripts/qa/`)
 
 Disposable Docker + SSH box that plays the remote **server** side of
-`dsh-remote-workspace`. It runs an ordinary global `@deepseek-ai/dsh` (no plugin
+`dsh-remote-window`. It runs an ordinary global `@deepseek-ai/dsh` (no plugin
 required) so the "server is a normal DSH" baseline can be verified before the
 new server plugin exists.
 
@@ -50,19 +50,19 @@ scripts/qa/mock-start.sh --sequence success   # optional: override fixture behav
 
 # 4. server plugin install entry (D11 / per-client profile)
 scripts/qa/install-server-plugin.sh --check
-scripts/qa/install-server-plugin.sh --profile graydovee-remote-workspace-qa1 \
-  --tarball /path/to/dsh-remote-workspace-server-*.tgz
+scripts/qa/install-server-plugin.sh --profile graydovee-remote-window-qa1 \
+  --tarball /path/to/dsh-remote-window-server-*.tgz
 
 # 5. per-client profile + server plugin (offline install contract)
-scripts/qa/install-server-plugin.sh --profile graydovee-remote-workspace-qa1 \
-  --tarball /path/to/dsh-remote-workspace-server-0.1.0-alpha.3.tgz \
+scripts/qa/install-server-plugin.sh --profile graydovee-remote-window-qa1 \
+  --tarball /path/to/dsh-remote-window-server-0.1.0-alpha.3.tgz \
   --sha256 <sha256> --create-profile
-scripts/qa/profile-start.sh --profile graydovee-remote-workspace-qa1
-scripts/qa/profile-handshake.sh --profile graydovee-remote-workspace-qa1
-scripts/qa/profile-smoke.sh --profile graydovee-remote-workspace-qa1
+scripts/qa/profile-start.sh --profile graydovee-remote-window-qa1
+scripts/qa/profile-handshake.sh --profile graydovee-remote-window-qa1
+scripts/qa/profile-smoke.sh --profile graydovee-remote-window-qa1
 scripts/qa/session-log.sh --list
 scripts/qa/session-log.sh --events          # compact turn/tool/assistant summary
-scripts/qa/profile-stop.sh --profile graydovee-remote-workspace-qa1
+scripts/qa/profile-stop.sh --profile graydovee-remote-window-qa1
 
 # 6. stop / cleanup
 scripts/qa/web-stop.sh

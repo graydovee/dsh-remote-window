@@ -87,7 +87,7 @@ vi.mock('../src/client/api.ts', () => ({
 const PREPARED = {
   workspaceId: 'wr-1',
   remoteWorkspaceId: 'srv-1',
-  stubPath: '/home/tester/.dsh/remote-workspaces/rt-1/abcd1234',
+  stubPath: '/home/tester/.dsh/remote-windows/rt-1/abcd1234',
   officialWorkspaceId: 'official-1',
   targetId: 'rt-1',
 }
@@ -474,7 +474,7 @@ describe('currentDraft (the temporary 新会话 row)', () => {
       await store.store.startDraftSession(row())
       expect(shell.startSession).toHaveBeenCalledTimes(1)
       expect(errorLog).toHaveBeenCalledWith(
-        '[dsh-remote-workspace] subscribing to the shell selection failed',
+        '[dsh-remote-window] subscribing to the shell selection failed',
         expect.any(Error),
       )
     } finally {

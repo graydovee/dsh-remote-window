@@ -62,14 +62,14 @@ export async function writeFakeServerPluginPackage(root: string, options: { vers
   const pkg = join(root, 'package')
   await mkdir(join(pkg, 'lib'), { recursive: true })
   await writeFile(join(pkg, 'package.json'), `${JSON.stringify({
-    name: options.name ?? 'dsh-remote-workspace-server',
+    name: options.name ?? 'dsh-remote-window-server',
     version: options.version,
     type: 'module',
     main: 'lib/plugin.js',
     dsh: { bundle: { patch: './cordis.patch.yml' }, manifestVersion: 1 },
     engines: { dsh: '0.2.1-rc.3' },
   }, null, 2)}\n`)
-  await writeFile(join(pkg, 'cordis.patch.yml'), '- insert:\n    - id: dsh-remote-workspace-server\n      name: dsh-remote-workspace-server\n')
+  await writeFile(join(pkg, 'cordis.patch.yml'), '- insert:\n    - id: dsh-remote-window-server\n      name: dsh-remote-window-server\n')
   await writeFile(join(pkg, 'lib', 'plugin.js'), 'export function apply() {}\n')
 }
 

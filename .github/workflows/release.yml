@@ -2,7 +2,7 @@ name: release
 
 # Publishes the plugin tarball of one tagged version. The runtime packages the
 # remote world installs are a different artifact and are released from
-# dsh-remote-workspace-server.
+# dsh-remote-window-server.
 #
 # npm is deliberately not published here: the tag produces the GitHub Release,
 # and the npm upload is a separate, explicit step.

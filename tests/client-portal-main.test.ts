@@ -91,7 +91,7 @@ describe('full-screen official UI main area', () => {
     const frames = collect(panel, 'iframe')
     expect(frames).toHaveLength(1)
     const props = frames[0]?.props ?? {}
-    expect(String(props.src)).toContain('/dsh-remote-workspace/portal/t1/')
+    expect(String(props.src)).toContain('/dsh-remote-window/portal/t1/')
     expect(String(props.src)).toContain('dshRwFull=1')
     expect(String(props.src)).not.toContain('token')
     expect(props.sandbox).toBe('allow-scripts allow-same-origin allow-forms allow-popups allow-downloads')

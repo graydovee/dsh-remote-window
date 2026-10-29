@@ -63,12 +63,12 @@ export interface OfficialChatExports {
   [key: string]: unknown
 }
 
-const BUNDLE_URL = '/dsh-remote-workspace/official-ui.js'
-const CHAT_BUNDLE_URL = '/dsh-remote-workspace/official-ui-chat.js?v=2'
-const APPROVAL_BUNDLE_URL = '/dsh-remote-workspace/official-ui-approval.js'
-const MODEL_BUNDLE_URL = '/dsh-remote-workspace/official-ui-model.js'
-const TOOL_BUNDLE_URL = '/dsh-remote-workspace/official-ui-tool.js'
-const TRAJECTORY_BUNDLE_URL = '/dsh-remote-workspace/official-ui-trajectory.js'
+const BUNDLE_URL = '/dsh-remote-window/official-ui.js'
+const CHAT_BUNDLE_URL = '/dsh-remote-window/official-ui-chat.js?v=2'
+const APPROVAL_BUNDLE_URL = '/dsh-remote-window/official-ui-approval.js'
+const MODEL_BUNDLE_URL = '/dsh-remote-window/official-ui-model.js'
+const TOOL_BUNDLE_URL = '/dsh-remote-window/official-ui-tool.js'
+const TRAJECTORY_BUNDLE_URL = '/dsh-remote-window/official-ui-trajectory.js'
 let pending: Promise<OfficialUiExports> | undefined
 let chatPending: Promise<OfficialChatExports> | undefined
 let approvalPending: Promise<OfficialApprovalExports> | undefined

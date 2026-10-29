@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the remote-workspace server plugin into a per-client DSH profile on
+# Install the remote-window server plugin into a per-client DSH profile on
 # the QA target, following the offline install contract (no npm/pnpm/network):
 #
 #   1. create the profile from the shipped web template when missing
@@ -10,8 +10,8 @@
 #   4. verify the package imports and report the resulting profile layout
 #
 #   scripts/qa/install-server-plugin.sh [--name server] \
-#       --profile graydovee-remote-workspace-qa1 \
-#       --tarball /path/to/dsh-remote-workspace-server-0.1.0-alpha.3.tgz \
+#       --profile graydovee-remote-window-qa1 \
+#       --tarball /path/to/dsh-remote-window-server-0.1.0-alpha.3.tgz \
 #       [--sha256 <expected>] [--create-profile] [--template web]
 #
 #   scripts/qa/install-server-plugin.sh --check [--name server] [--profile <p>]
@@ -67,9 +67,9 @@ profile_summary() {
       '"'"' 2>/dev/null || echo "  (package.json unreadable)"
       echo "  node_modules:"
       ls -1 "$p/node_modules" 2>/dev/null | sed "s/^/    /" || echo "    (none)"
-      if [ -d "$p/node_modules/dsh-remote-workspace-server" ]; then
+      if [ -d "$p/node_modules/dsh-remote-window-server" ]; then
         echo "  installed plugin files:"
-        find "$p/node_modules/dsh-remote-workspace-server" -maxdepth 2 -type f | sed "s/^/    /"
+        find "$p/node_modules/dsh-remote-window-server" -maxdepth 2 -type f | sed "s/^/    /"
       fi
     '
 }
@@ -83,7 +83,7 @@ if [ "$MODE" = "check" ]; then
   exit 0
 fi
 
-[ -n "$PROFILE" ] || qa_die "--profile is required (e.g. graydovee-remote-workspace-qa1)"
+[ -n "$PROFILE" ] || qa_die "--profile is required (e.g. graydovee-remote-window-qa1)"
 [ -n "$TARBALL" ] || qa_die "--tarball is required"
 [ -f "$TARBALL" ] || qa_die "tarball not found: $TARBALL"
 
@@ -168,7 +168,7 @@ docker exec -i -u tester -e HOME=/home/tester -e DSH_HOME=/home/tester/.dsh \
 qa_log "checking plugin import resolution"
 if ! docker exec -i -u tester -e HOME=/home/tester -e DSH_HOME=/home/tester/.dsh \
       -e "PROFILE=$PROFILE" "$QA_CONTAINER" bash -lc '
-      cd "$DSH_HOME/profiles/$PROFILE" && node --input-type=module -e "await import(\"dsh-remote-workspace-server\"); console.log(\"import-ok\")"
+      cd "$DSH_HOME/profiles/$PROFILE" && node --input-type=module -e "await import(\"dsh-remote-window-server\"); console.log(\"import-ok\")"
     ' >/tmp/qa-plugin-import.log 2>&1; then
   qa_log "direct import failed; linking schemastery from the global DSH install"
   docker exec -i -u tester -e HOME=/home/tester -e DSH_HOME=/home/tester/.dsh \
@@ -180,7 +180,7 @@ if ! docker exec -i -u tester -e HOME=/home/tester -e DSH_HOME=/home/tester/.dsh
     mkdir -p "$nm/@deepseek-ai"
     ln -sfn "$g" "$nm/@deepseek-ai/schemastery"
     cd "$DSH_HOME/profiles/$PROFILE"
-    node --input-type=module -e "await import(\"dsh-remote-workspace-server\"); console.log(\"import-ok-after-link\")"
+    node --input-type=module -e "await import(\"dsh-remote-window-server\"); console.log(\"import-ok-after-link\")"
   '
 else
   cat /tmp/qa-plugin-import.log >&2

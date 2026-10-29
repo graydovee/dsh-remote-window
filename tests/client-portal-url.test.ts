@@ -39,7 +39,7 @@ import {
 import type { PortalFrameState } from '../src/client/portal-url.ts'
 
 const ORIGIN = 'http://127.0.0.1:60900'
-const PREFIX = 'dshrw:graydovee-remote-workspace-abc123:'
+const PREFIX = 'dshrw:graydovee-remote-window-abc123:'
 
 describe('portal URL', () => {
   it('builds one relative, trailing-slash portal path per target', () => {
@@ -102,7 +102,7 @@ describe('portal URL', () => {
   it('accepts only this target’s portal URL for storage events', () => {
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t1')}?${EMBED_SESSION_PARAM}=s`, 't1')).toBe(true)
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t1')}api/events`, 't1')).toBe(true)
-    expect(portalUrlMatches(`/dsh-remote-workspace/portal/t1/`, 't1')).toBe(true)
+    expect(portalUrlMatches(`/dsh-remote-window/portal/t1/`, 't1')).toBe(true)
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t10')}`, 't1')).toBe(false)
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t1').slice(0, -1)}`, 't1')).toBe(false)
     expect(portalUrlMatches(`${ORIGIN}/elsewhere`, 't1')).toBe(false)

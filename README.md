@@ -1,11 +1,11 @@
-# dsh-remote-workspace
+# dsh-remote-window
 
 English | [中文](README-zh.md)
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-brightgreen.svg)](package.json)
 [![dsh](https://img.shields.io/badge/dsh-0.2.1--rc.3-blue.svg)](#compatibility)
-[![npm](https://img.shields.io/npm/v/dsh-remote-workspace.svg)](https://www.npmjs.com/package/dsh-remote-workspace)
+[![npm](https://img.shields.io/npm/v/dsh-remote-window.svg)](https://www.npmjs.com/package/dsh-remote-window)
 
 Open an SSH host as a DeepSeek Harness workspace. **The server is an ordinary DSH that can work on its
 own; this plugin makes it your remote entry.** Workspaces, sessions, session logs and shared view state
@@ -32,7 +32,7 @@ a new session.
 
 ## Screenshots
 
-![The target rail with a live connection, and the server's official UI in the full-screen frame](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
+![The target rail with a live connection, and the server's official UI in the full-screen frame](https://raw.githubusercontent.com/graydovee/dsh-remote-window/main/assets/screenshots/01-remote-window.jpg)
 
 The client keeps exactly one remote surface: a floating **target rail** (collapsed by default, hover or
 `Alt+R` to expand) listing saved connections, their live phase and the connect/switch/forget actions. Drag
@@ -144,8 +144,8 @@ JSONL title fold. Rename, fork, pin, archive and drag reorder call the official 
 client-only, in-memory filter.
 
 **Per-client profile and runtime.** Each client generates a stable `clientId` and uses
-`graydovee-remote-workspace-<clientId>` on the server. The dedicated profile and its server plugin are
-installed offline from the client package's bundled `dsh-remote-workspace-server-<version>.tgz`; the
+`graydovee-remote-window-<clientId>` on the server. The dedicated profile and its server plugin are
+installed offline from the client package's bundled `dsh-remote-window-server-<version>.tgz`; the
 isolated Node + DSH runtime is installed/upgraded automatically (or a verified global DSH is reused
 read-only). A profile lease rejects a second driver for the same profile.
 
@@ -162,12 +162,12 @@ for old sessions but is no longer reachable from the main area.
 Install into the client `web` profile, from the **Plugins** page or the CLI:
 
 ```bash
-dsh plugin --profile web add dsh-remote-workspace
+dsh plugin --profile web add dsh-remote-window
 ```
 
 pnpm may refuse `ssh2`'s optional native build script; let the Plugins page install it or pass
 `--config.strict-dep-builds=false` on the first run. If it is already installed but not enabled, enable it
-on the Plugins page (or add `dsh-remote-workspace` to `dsh.profile.bundles` in
+on the Plugins page (or add `dsh-remote-window` to `dsh.profile.bundles` in
 `~/.dsh/profiles/web/package.json`). Restart the process that serves `dsh web` and reload the page.
 
 From a checkout:
@@ -175,7 +175,7 @@ From a checkout:
 ```bash
 pnpm install && pnpm typecheck && pnpm test && pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
-dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
+dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-window-<version>.tgz
 ```
 
 The package ships the server plugin tarball it needs, so the target does not need network access or a
@@ -233,7 +233,7 @@ If you intentionally run another DSH version locally, exempt the exact pair and 
 unsupported:
 
 ```bash
-dsh plugin --profile web allow-version dsh-remote-workspace@<installed version> \
+dsh plugin --profile web allow-version dsh-remote-window@<installed version> \
   --dsh-version <runtime version> --accept-risk
 ```
 
@@ -249,14 +249,14 @@ dedicated profile's isolated runtime and never modifies the server's global DSH 
 
 | Location | Contents |
 | --- | --- |
-| Client `~/.dsh/storages/dsh_remote_workspace.json` | Connection records (incl. model source), local-model endpoint/model/timeout, package policy, legacy workspace refs (cleaned up) |
+| Client `~/.dsh/storages/dsh_remote_window.json` | Connection records (incl. model source), local-model endpoint/model/timeout, package policy, legacy workspace refs (cleaned up) |
 | Client `~/.dsh/.credentials.yaml` | SSH credentials and the local-model API key (official store, mode `0600`) |
-| Client `~/.dsh/remote-workspaces/<clientId>/…` | Private anchors for local-mode sessions (non-authoritative) |
+| Client `~/.dsh/remote-windows/<clientId>/…` | Private anchors for local-mode sessions (non-authoritative) |
 | Client `~/.dsh/remote-assets/` | Local runtime/package cache |
 | Server `~/.dsh/sessions/**` | Authoritative session logs (both model sources) |
 | Server `~/.dsh/storages/workspace.json` | Authoritative workspace registry, pin/archive/order |
-| Server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | Dedicated profile, server plugin, lease, logs |
-| Server `~/.dsh/remote-workspace/<clientId>/runtime/` | Isolated Node/DSH runtime |
+| Server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | Dedicated profile, server plugin, lease, logs |
+| Server `~/.dsh/remote-window/<clientId>/runtime/` | Isolated Node/DSH runtime |
 | Server `~/.dsh/remote-server-sessions/**` (legacy) | Retained but not shown and not migrated |
 
 The local-model API key never reaches the server or the browser: it stays in the client's official
@@ -325,7 +325,7 @@ security invariants, release procedure). The current main-area and model-source 
 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md); wire contracts remain in
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) and
 [doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md). The server half lives in
-[dsh-remote-workspace-server](https://github.com/graydovee/dsh-remote-workspace-server).
+[dsh-remote-window-server](https://github.com/graydovee/dsh-remote-window-server).
 
 ## License
 

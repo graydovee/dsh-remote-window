@@ -62,20 +62,20 @@ beforeAll(async () => {
         res.end()
         return
       }
-      if (req.url === '/dsh-remote-workspace-server/api/handshake') {
+      if (req.url === '/dsh-remote-window-server/api/handshake') {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, value: {
           protocol: 1,
           pluginVersion: VERSION,
           dshVersion: DSH_VERSION,
-          profile: 'graydovee-remote-workspace-abcdef012345',
+          profile: 'graydovee-remote-window-abcdef012345',
           clientId: CLIENT_ID,
           lease: { instanceId: 'i', expiresAt: '2026-01-01T00:00:20.000Z' },
           capabilities: { workspaceApi: 1, eventsSse: 1, muxWs: 1, embed: { storagePrefix: 'dshrw:test:', mode: 'reload' } },
         } }))
         return
       }
-      if (req.url === '/dsh-remote-workspace-server/api/rpc') {
+      if (req.url === '/dsh-remote-window-server/api/rpc') {
         const request = JSON.parse(body) as { method: string }
         const params = (request as { params?: Record<string, unknown> }).params ?? {}
         const values: Record<string, unknown> = {
@@ -105,7 +105,7 @@ beforeAll(async () => {
 
   const root = await mkdtemp(join(tmpdir(), 'dsh-rw-svc-fixture-'))
   await writeFakeServerPluginPackage(root, { version: VERSION })
-  tarball = await packPackage(root, `dsh-remote-workspace-server-${VERSION}.tgz`)
+  tarball = await packPackage(root, `dsh-remote-window-server-${VERSION}.tgz`)
   store = fakeStore()
 })
 
@@ -291,7 +291,7 @@ describe('ProfileService M1 slice', () => {
     const existingRecord: RemoteTargetRecord = {
       id: 'rt-preset1', label: 'preset-existing', kind: 'ssh', host: '203.0.113.30', port: 22,
       username: 'tester', authKind: 'password', hostKeyFingerprint: 'SHA256:fixture',
-      remote: { nodePath: 'node', dshCommand: '/usr/local/bin/dsh', profile: 'graydovee-remote-workspace-abcdef012345', dshHome: '/home/tester/.dsh', plugins: [] },
+      remote: { nodePath: 'node', dshCommand: '/usr/local/bin/dsh', profile: 'graydovee-remote-window-abcdef012345', dshHome: '/home/tester/.dsh', plugins: [] },
       status: 'ready', createdAt: '2026-01-01T00:00:00.000Z',
     }
     await store.putTarget(existingRecord)
@@ -352,8 +352,8 @@ describe('ProfileService M1 slice', () => {
       hostKeyFingerprint: 'SHA256:fixture',
       modelSource: 'server',
     })
-    expect(result.target).toMatchObject({ label: 'fixture', profileName: 'graydovee-remote-workspace-abcdef012345', pluginVersion: VERSION, serverDshVersion: DSH_VERSION })
-    expect(result.state).toMatchObject({ phase: 'ready', profile: { name: 'graydovee-remote-workspace-abcdef012345', port: serverPort, pid: 4321 } })
+    expect(result.target).toMatchObject({ label: 'fixture', profileName: 'graydovee-remote-window-abcdef012345', pluginVersion: VERSION, serverDshVersion: DSH_VERSION })
+    expect(result.state).toMatchObject({ phase: 'ready', profile: { name: 'graydovee-remote-window-abcdef012345', port: serverPort, pid: 4321 } })
     expect(result.state.deployment?.plugin).toMatchObject({ dedicated: true, expectedVersion: VERSION, action: 'reuse' })
     expect(service.deploymentPreview(result.target.id).runtime.mode).toBe('confirm')
     await expect(service.deploymentApply(result.target.id, { kind: 'runtime', confirm: false })).rejects.toMatchObject({ code: 'runtime-confirmation-required' })
@@ -367,8 +367,8 @@ describe('ProfileService M1 slice', () => {
     expect(handshake?.headers['x-dsh-rw-instance']).toBeTruthy()
     expect(handshake?.headers.cookie).toContain('dsh-auth-test=v1')
     expect(remote.scripts.some(script => script.includes('setsid nohup'))).toBe(true)
-    expect(remote.writes.some(path => path.includes('dsh-remote-workspace-server-'))).toBe(true)
-    expect(remote.scripts.some(script => script.includes('/node_modules/dsh-remote-workspace-server'))).toBe(true)
+    expect(remote.writes.some(path => path.includes('dsh-remote-window-server-'))).toBe(true)
+    expect(remote.scripts.some(script => script.includes('/node_modules/dsh-remote-window-server'))).toBe(true)
     expect(await service.stop(result.target.id)).toBe(true)
     expect(service.connections()[result.target.id]?.phase).toBe('stopped')
   })

@@ -399,13 +399,13 @@ export const runCurl: CurlRunner = async (options) => {
  * GitHub coordinates of the release that carries the server packages.
  *
  * The **server** repository, not this one: these tarballs are a dsh runtime
- * world built by `dsh-remote-workspace-server`'s own CI
+ * world built by `dsh-remote-window-server`'s own CI
  * (`.github/workflows/server-release.yml`), and that is where they are
  * released. Publishing them from the client repository was wrong — it put the
  * server project's artifacts behind the plugin's release page.
  */
 const RELEASE_OWNER = 'graydovee'
-const RELEASE_REPO = 'dsh-remote-workspace-server'
+const RELEASE_REPO = 'dsh-remote-window-server'
 /** Browser-style release asset URL for one tag (the official, documented path). */
 const HTML_BASE = 'https://github.com'
 /** REST base: reachable even where `github.com:443` is blocked (measured). */

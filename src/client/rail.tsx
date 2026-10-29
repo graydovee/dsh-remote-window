@@ -26,7 +26,7 @@ import { RemoteDialogs } from './remote-dialogs.tsx'
 import { useServerMainRequest } from './portal-main.tsx'
 
 /** Marker attribute for the body-level rail host (idempotent mounting). */
-export const TARGET_RAIL_ATTR = 'data-dsh-remote-workspace-rail'
+export const TARGET_RAIL_ATTR = 'data-dsh-remote-window-rail'
 
 /** Keyboard shortcut that pins the rail open (`Alt+R`). */
 export const RAIL_SHORTCUT = 'r'
@@ -51,7 +51,7 @@ export const RAIL_COMPACT_SIZE = 44
 export const RAIL_SIDE_WIDTH = 280
 
 /** `localStorage` key that remembers the user's chosen dock across remounts. */
-export const RAIL_DOCK_STORAGE_KEY = 'dsh-remote-workspace.rail-dock'
+export const RAIL_DOCK_STORAGE_KEY = 'dsh-remote-window.rail-dock'
 
 /** Pointer travel that turns a press into a drag instead of a click. */
 const RAIL_DRAG_THRESHOLD = 4

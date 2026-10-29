@@ -3,8 +3,8 @@
  *
  * The browser only ever talks to the client's own origin:
  *
- *   /dsh-remote-workspace/portal/<targetId>/…        → 127.0.0.1:<profilePort>/…
- *   /dsh-remote-workspace/portal/<targetId>/api/remote.mux (WS, exact) → /api/remote.mux
+ *   /dsh-remote-window/portal/<targetId>/…        → 127.0.0.1:<profilePort>/…
+ *   /dsh-remote-window/portal/<targetId>/api/remote.mux (WS, exact) → /api/remote.mux
  *
  * The rules in protocol §8.2 are all load-bearing and live in pure helpers so
  * they can be asserted without a browser or an SSH server:
@@ -28,7 +28,7 @@ import { randomBytes } from 'node:crypto'
 import { scrubSecrets } from '../targets/types.ts'
 
 /** Portal route base (protocol §8.1). */
-export const PORTAL_BASE = '/dsh-remote-workspace/portal'
+export const PORTAL_BASE = '/dsh-remote-window/portal'
 
 /** Where the official UI's execution-world WebSocket lives, relative to a portal mount. */
 export const PORTAL_MUX_PATH = 'api/remote.mux'

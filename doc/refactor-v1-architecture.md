@@ -1,4 +1,4 @@
-# dsh-remote-workspace v1 架构
+# dsh-remote-window v1 架构
 
 > 状态：**v1 实现架构（可开工版）**，2026-10-22。产品/验收以
 > `doc/refactor-v1-requirements.md` 为准（含用户裁决 **D19/D20**）；协议逐字契约见
@@ -15,8 +15,8 @@
 ## 0. 一句话
 
 > **server 是一台能独立工作的普通 DSH；client 是它的远程入口。**
-> 每个 client 在 server 上拥有自己的 profile server（`dsh --profile graydovee-remote-workspace-<clientId>`
-> + `dsh-remote-workspace-server` 插件）。client 的两段式 sidebar 通过 P1 RPC 读取 server 官方
+> 每个 client 在 server 上拥有自己的 profile server（`dsh --profile graydovee-remote-window-<clientId>`
+> + `dsh-remote-window-server` 插件）。client 的两段式 sidebar 通过 P1 RPC 读取 server 官方
 > workspace/session 数据；server 模式主区 = 同源 portal 嵌入的 **profile 官方 UI**；local 模式 =
 > 客户端官方 UI + 插件执行世界；两种模式写同一份 server 会话日志。
 
@@ -28,21 +28,21 @@
 ┌───────────────────────────── client 机器 ─────────────────────────────┐
 │ client GUI (浏览器)                                                    │
 │   ├─ 官方本地 sidebar / 主区（local 模式 + 本地工作区）                 │
-│   ├─ dsh-remote-workspace client half：远程段 sidebar、面板、连接向导、  │
+│   ├─ dsh-remote-window client half：远程段 sidebar、面板、连接向导、  │
 │   │  执行端设置、server 模式 iframe 容器、错误/占用呈现                  │
-│   └─ iframe: /dsh-remote-workspace/portal/<targetId>/  (同源)          │
+│   └─ iframe: /dsh-remote-window/portal/<targetId>/  (同源)          │
 │                                                                        │
 │ client DSH host (Node)                                                 │
 │   ├─ 官方服务：workspaceRegistry(本地)、sessionPersistence(路由)、      │
 │   │  agents、agentPresets、credentials、webServer、client-connection    │
-│   ├─ dsh-remote-workspace host half：targets/SSH/部署/profile 生命周期、 │
+│   ├─ dsh-remote-window host half：targets/SSH/部署/profile 生命周期、 │
 │   │  portal 代理、P1 RPC/SSE/mux 客户端、local 模式 routing persistence │
 │   └─ 一条 SSH 连接（ssh2）─── forwardOut ───────────────┐               │
 └─────────────────────────────────────────────────────────│───────────────┘
                                                           ▼
 ┌───────────────────────── server 机器（SSH 目标） ──────────────────────┐
 │ profile server 进程（每 client 一个，127.0.0.1:<port>，token URL）      │
-│   └─ dsh-remote-workspace-server 插件（Cordis host row + client half 可选）│
+│   └─ dsh-remote-window-server 插件（Cordis host row + client half 可选）│
 │        ├─ P1 路由：handshake/lease/RPC/SSE/mux WS                      │
 │        ├─ 官方服务：workspaceRegistry、sessionPersistence、sessionController、│
 │        │  agents、sessionTitle、storage-domain                         │
@@ -77,7 +77,7 @@
 | pin/archive | 官方 registry global 集合 | 同上 | 同上 |
 | 会话清单/标题 | server 官方 JSONL + projection cache；插件补充 JSONL title fold | server `~/.dsh/sessions/**` | 每次 list 可重新扫盘；跨进程新会话刷新可见（title 由插件 fold 保证） |
 | 会话日志/turn | server（两种模式都写同一份） | server JSONL（官方 flock 单写者） | 官方语义；`session/writer-held` |
-| 执行端记录 | server 插件状态文件（跨 client 共享） | `~/.dsh/remote-workspace/state/executors/*.json` | 读写时即时可见 |
+| 执行端记录 | server 插件状态文件（跨 client 共享） | `~/.dsh/remote-window/state/executors/*.json` | 读写时即时可见 |
 | 模型凭据 | server 模式 server / local 模式 client | 各自 credential store | 不跨线 |
 | SSH 凭据 | client | client `ctx.credentials` | 权威，绝不过线 |
 | 连接设置（默认执行端） | client | client 插件存储域 | 权威 |
@@ -269,7 +269,7 @@ registry；不能只守 P1。v1 在 server 插件 `apply()` 里做**受版本守
 ### 4.4 首次 bootstrap 竞争
 
 空 `~/.dsh` 的两个 profile 同时初始化 default workspace 会整包覆盖。client host 启动 profile server 前
-取 `$DSH_HOME/remote-workspace/locks/bootstrap.lock`；handshake 返回 `registry.initialized` 后释放；
+取 `$DSH_HOME/remote-window/locks/bootstrap.lock`；handshake 返回 `registry.initialized` 后释放；
 第二个 client 等锁（≤30 s）再启动。全局 DSH 与 profile 同时首次启动不在 v1 保证范围（D19）。
 
 ---
@@ -305,12 +305,12 @@ connect(SSH + host key) → probe → runtime(独立/全局) → profile+plugin 
 → token/cookie → handshake(lease) → portal ready
 ```
 
-- 独立 runtime：`$DSH_HOME/remote-workspace/<clientId>/runtime`（固定），自动安装/升级（不需要确认）；
+- 独立 runtime：`$DSH_HOME/remote-window/<clientId>/runtime`（固定），自动安装/升级（不需要确认）；
   升级前停该 profile server，升级后重启；不影响其他 client。来源：client 缓存 artifact 上传优先，
   server 下载 release tarball + 同源 sha256 校验兜底。
 - 全局 runtime：只检测；安装/升级必须按钮确认（文案写明影响 server 上其他 profile）。
 - 专用 profile 插件：离线写 4 个文件（`package.json`/`cordis.yml`/`cordis.patch.yml`/
-  `pnpm-workspace.yaml`）+ `node_modules/dsh-remote-workspace-server/**`（不依赖 server 网络/pnpm）；
+  `pnpm-workspace.yaml`）+ `node_modules/dsh-remote-window-server/**`（不依赖 server 网络/pnpm）；
   marker 记录版本+sha；自动重装/升级并重启 profile server。
 - 其他 profile：安装/重启均按钮确认；不得静默写。
 - 运行时版本契约仍只有一个来源 `DSH_VERIFIED_RUNTIMES`（0.2.1-rc.3）。
@@ -318,7 +318,7 @@ connect(SSH + host key) → probe → runtime(独立/全局) → profile+plugin 
 ### 6.2 profile server（细节见 protocol §3）
 
 - 启动命令：`DSH_HOME=… PATH="<runtime>/node/bin:<runtime>/dsh/node_modules/.bin:$PATH" exec <dsh>
-  --profile graydovee-remote-workspace-<clientId> --host 127.0.0.1 --port 0 --no-open`
+  --profile graydovee-remote-window-<clientId> --host 127.0.0.1 --port 0 --no-open`
   （注意 `--profile` 在 app 参数前；`dsh web --profile` 会被 CLI 拒绝）。
 - detached + log(0600) + pid；stdout 单行正则取 port/token；15 s 就绪超时。
 - 单 client 租约：`<profileDir>/.dsh-rw/lease.json`（clientId/instanceId/pid/port/heartbeat/tokenFingerprint）；
@@ -402,7 +402,7 @@ flock 一直持有到进程退出。为了不重启就能切 local，v1 采用 *
   - header 传入协议带 `remoteCwd`（server 真实路径，必须等于某个官方 workspace path），插件用
     `remoteCwd` 创建官方 header；返回的 header 是 server 路径，client 侧重锚为 stub；
   - `persist/locate` 返回 `{remoteCwd, workspaceId?}`；`persist/list` 返回 raw snapshots（client 过滤/重锚）。
-- anchor/stub：插件私有目录（`DSH_HOME/remote-workspaces/<clientId>/<targetId>/<hash>`），**不写官方
+- anchor/stub：插件私有目录（`DSH_HOME/remote-windows/<clientId>/<targetId>/<hash>`），**不写官方
   workspace registry / 共享 workspace.json**；client 官方 UI 中远程会话不是本地工作区行。
 - 主区打开顺序（必须）：**host 先 create/resume（拿 handle、让 client catalog 有 summary）→
   浏览器再 `uiWorkspace.openSession(id)`**；等待 client `sessions` catalog 收录（≤4 s，轮询），否则
@@ -444,7 +444,7 @@ new session │ executor record = server       │
 
 ## 11. portal / embed（摘要，逐字见 protocol §8/§9）
 
-- portal 路由 `/dsh-remote-workspace/portal/<targetId>/`（HTTP prefix）+ `/api/remote.mux`（WS exact）；
+- portal 路由 `/dsh-remote-window/portal/<targetId>/`（HTTP prefix）+ `/api/remote.mux`（WS exact）；
   剥前缀 → SSH forwardOut → `127.0.0.1:<port>`；Host 重写、删 Origin、注入 cookie、丢弃 Set-Cookie；
   token 永不进浏览器；错误 503/502 可操作。
 - embed：server 插件 `tapIndex` 在 app bundle 前注入 inline config + `bootstrap.js`；storage shim
@@ -463,21 +463,21 @@ new session │ executor record = server       │
   `~/.dsh/remote-server-sessions/**` 保留不展示、不迁移。
 - **client 存储域 version 1**：`targets` 只加 optional 字段（clientId/executor/profileName/profilePort/
   runtimeKind/runtimeDir/pluginVersion/serverDshVersion）；旧 workspace refs 读出后清理；无迁移 bump。
-- **卸载/禁用**：client 本地不留可见远程行/stub（启动/卸载清扫 `remote-workspaces` 私有目录与旧 shell
+- **卸载/禁用**：client 本地不留可见远程行/stub（启动/卸载清扫 `remote-windows` 私有目录与旧 shell
   条目）；server 共享数据保留。
 - **清理旧 marker**：专用 profile marker（plugin version+sha）用于幂等重装；更换 DSH 版本时按
   `DSH_VERIFIED_RUNTIMES` 拒绝并提示。
 
 ### 12.1 server 插件 artifact 交付（v1 定稿）
 
-client 需要把 `dsh-remote-workspace-server` 自动装进 server 的专用 profile；artifact 来源必须确定：
+client 需要把 `dsh-remote-window-server` 自动装进 server 的专用 profile；artifact 来源必须确定：
 
 1. **内置 tarball（主路径）**：client npm 包在构建/发布时内置
-   `assets/server-plugin/dsh-remote-workspace-server-<version>.tgz`（与 client 插件版本精确一致，
+   `assets/server-plugin/dsh-remote-window-server-<version>.tgz`（与 client 插件版本精确一致，
    `version` = 仓库发布版本；`engines.dsh`/peers 仍钉 0.2.1-rc.3）。专用 profile 安装直接解包到
-   `<profileDir>/node_modules/dsh-remote-workspace-server/`（strip `package/`），**不依赖 server 网络/
+   `<profileDir>/node_modules/dsh-remote-window-server/`（strip `package/`），**不依赖 server 网络/
    pnpm/registry**。
-2. **tarball 内容清单（发布门禁）**：`package.json`（name=`dsh-remote-workspace-server`，version，
+2. **tarball 内容清单（发布门禁）**：`package.json`（name=`dsh-remote-window-server`，version，
    dsh peers）、`lib/`（host 入口；如含 client half 也在 `lib/`）、`cordis.patch.yml`（profile 行 insert）、
    `README.md`/`LICENSE`（可选）。不含 `node_modules`；运行时依赖由 profile 的 DSH 安装提供。
 3. **缺失时兜底**：开发/裁剪包可能没有内置 tarball → 从 npm registry 或 release 下载同名同版本 tarball，

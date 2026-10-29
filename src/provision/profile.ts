@@ -30,7 +30,7 @@ export type { RemoteFile }
 export const DEFAULT_SERVER_PROFILE = 'dsh-remote-server'
 
 /** Directory inside the profile that holds this plugin. */
-export const PROFILE_PACKAGE_DIR = 'node_modules/dsh-remote-workspace'
+export const PROFILE_PACKAGE_DIR = 'node_modules/dsh-remote-window'
 
 const ROOT_CONFIG = `# dsh profile root — an empty entry list. The tree is composed as patches:
 # each bundle in package.json's dsh.profile.bundles, then cordis.patch.yml, then any
@@ -67,8 +67,8 @@ function providerRows(options: { leaseMs: number; maxProcesses: number }): strin
         workspaceRoot: !!js process.cwd()
     - id: fs-sandbox
       name: '@deepseek-ai/dsh-fs-sandbox'
-    - id: remote-workspace-server
-      name: dsh-remote-workspace/server
+    - id: remote-window-server
+      name: dsh-remote-window/server
       config:
         workspace: !!js process.cwd()
         identityFile: !!js dshHomePath('remote-server/server-id')

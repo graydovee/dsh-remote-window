@@ -19,7 +19,7 @@ import {
   type SessionRoute,
 } from '../src/session-persistence/routing.ts'
 
-const STUB = '/Users/someone/.dsh/remote-workspaces/client-1/target-1/abc'
+const STUB = '/Users/someone/.dsh/remote-windows/client-1/target-1/abc'
 const REMOTE = '/srv/project'
 const WORKSPACE = '0123456789abcdef'
 

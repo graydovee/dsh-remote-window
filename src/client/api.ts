@@ -15,7 +15,7 @@
 import { t } from './locales.ts'
 
 /** Route prefix owned by the plugin's host half. */
-export const API_PREFIX = '/dsh-remote-workspace'
+export const API_PREFIX = '/dsh-remote-window'
 
 /** SSH authentication kind, as the host models it. */
 export type AuthKind = 'password' | 'privateKey' | 'agent'
@@ -233,7 +233,7 @@ export interface DshScanRequest {
   dshHome?: string
 }
 
-/** The remote `dsh-remote-workspace` profile found next to one dsh. */
+/** The remote `dsh-remote-window` profile found next to one dsh. */
 export interface ScannedDshProfile {
   name: string
   pluginVersion?: string
@@ -597,7 +597,7 @@ export const api = {
 
   /** The workspaces the remote dsh has registered (添加工作区 source). */
   remoteWorkspaces(targetId: string): Promise<{ workspaces: ServerWorkspace[] }> {
-    return call<{ workspaces: ServerWorkspace[] }>('remote-workspaces', { targetId })
+    return call<{ workspaces: ServerWorkspace[] }>('remote-windows', { targetId })
   },
 
   /** Sessions stored on the remote server for one local workspace record. */

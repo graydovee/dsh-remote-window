@@ -1,6 +1,6 @@
 /**
  * Fail-closed preset guard for v1 private anchors
- * (`<DSH_HOME>/remote-workspaces/<clientId>/<targetId>/<hash>`).
+ * (`<DSH_HOME>/remote-windows/<clientId>/<targetId>/<hash>`).
  *
  * The legacy visible-stub layout is retired; only the anchor layout is an
  * execution-world cwd. Any remote preset outside it, and any non-target preset
@@ -18,14 +18,14 @@ const TARGET = 'rt-abc'
 const ANCHOR = join(ROOT, CLIENT, TARGET, 'deadbeef')
 
 it('follows DSH_HOME for the anchor root', () => {
-  expect(remoteAnchorRoot({ DSH_HOME: '/tmp/custom-home' })).toBe(join('/tmp/custom-home', 'remote-workspaces'))
-  expect(remoteAnchorRoot({ DSH_HOME: '   ' })).toBe(join(homedir(), '.dsh', 'remote-workspaces'))
+  expect(remoteAnchorRoot({ DSH_HOME: '/tmp/custom-home' })).toBe(join('/tmp/custom-home', 'remote-windows'))
+  expect(remoteAnchorRoot({ DSH_HOME: '   ' })).toBe(join(homedir(), '.dsh', 'remote-windows'))
 })
 
 describe('remoteTargetIdForCwd', () => {
   it('reads the target from a v1 anchor cwd', () => {
     expect(remoteTargetIdForCwd(ANCHOR)).toBe(TARGET)
-    expect(remoteTargetIdForCwd(ANCHOR, { DSH_HOME: ROOT.replace(/\/remote-workspaces$/, '') })).toBe(TARGET)
+    expect(remoteTargetIdForCwd(ANCHOR, { DSH_HOME: ROOT.replace(/\/remote-windows$/, '') })).toBe(TARGET)
   })
 
   it('does not accept the retired visible-stub layout as an anchor', () => {

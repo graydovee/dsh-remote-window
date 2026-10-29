@@ -30,7 +30,7 @@ const VERSION = '0.2.1-rc.3'
 describe('runtime paths and plans', () => {
   it('uses the fixed per-client runtime layout and PATH prefixes', () => {
     const paths = runtimePaths('/home/user/.dsh', CLIENT_ID)
-    expect(paths.root).toBe('/home/user/.dsh/remote-workspace/abcdef012345/runtime')
+    expect(paths.root).toBe('/home/user/.dsh/remote-window/abcdef012345/runtime')
     expect(paths.launcher).toBe(`${paths.root}/dsh/node_modules/.bin/dsh`)
     expect(paths.nodeBin).toBe(`${paths.root}/node/bin/node`)
     expect(runtimePathPrefixes(paths)).toEqual([`${paths.root}/node/bin`, `${paths.root}/dsh/node_modules/.bin`])

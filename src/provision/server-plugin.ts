@@ -3,11 +3,11 @@
  *
  * Delivery contract (architecture §12.1 / protocol §14bis):
  *
- * - the client package ships `assets/server-plugin/dsh-remote-workspace-server-<version>.tgz`
+ * - the client package ships `assets/server-plugin/dsh-remote-window-server-<version>.tgz`
  *   where `<version>` is this client plugin's release version (not a DSH version),
  *   plus `checksums.json` (`{ "<tarball name>": "<sha256>" }`);
  * - a dedicated profile installs it by unpacking (strip `package/`) into
- *   `<profileDir>/node_modules/dsh-remote-workspace-server/`, writing the four
+ *   `<profileDir>/node_modules/dsh-remote-window-server/`, writing the four
  *   profile files and the marker `{version, sha256, protocol, dshVersion}`;
  *   no server-side network, pnpm or registry is involved;
  * - a trimmed/development package without the bundled tarball may download the
@@ -33,7 +33,7 @@ import {
 import { shellQuote } from './profile.ts'
 
 /** Package name the profile bundle list references. */
-export const SERVER_PLUGIN_PACKAGE = 'dsh-remote-workspace-server'
+export const SERVER_PLUGIN_PACKAGE = 'dsh-remote-window-server'
 
 /** Built-in tarball directory inside the client package. */
 export const SERVER_PLUGIN_ASSET_DIR = 'assets/server-plugin'

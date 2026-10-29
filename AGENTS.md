@@ -1,4 +1,4 @@
-# AGENTS.md — dsh-remote-workspace（v3）
+# AGENTS.md — dsh-remote-window（v3）
 
 本文件是维护者与代码 agent 的开发契约；用户文档见 README。v1 基线（profile/双模式/协议）以
 `doc/refactor-v1-requirements.md`、`doc/refactor-v1-architecture.md`、`doc/refactor-v1-protocol.md` 为准；
@@ -11,12 +11,12 @@ v3 的 server 主区是 **server profile 官方 DSH UI 的全屏同源 iframe**�
 ## 项目边界（v3）
 
 - **server 是一台能独立工作的普通 DSH；client 是它的远程入口。**
-- 本仓库是 **client 半边**：`dsh-remote-workspace` 插件（host 行 + browser client + local 模式执行世界）。
+- 本仓库是 **client 半边**：`dsh-remote-window` 插件（host 行 + browser client + local 模式执行世界）。
 - server 运行普通 `dsh web` + 每个 client 一个专用 profile
-  `graydovee-remote-workspace-<clientId>`，其中安装 server 插件 `dsh-remote-workspace-server`
+  `graydovee-remote-window-<clientId>`，其中安装 server 插件 `dsh-remote-window-server`
   （独立仓库发布；client 包内置精确同版本的 tarball）。
 - client 通过**一条 SSH 连接**访问 server；profile server 只绑 `127.0.0.1`，不监听公网端口。
-- 主区：client 的 main slot 只挂载一个同源 iframe（`/dsh-remote-workspace/portal/<targetId>/?dshRwFull=1`），
+- 主区：client 的 main slot 只挂载一个同源 iframe（`/dsh-remote-window/portal/<targetId>/?dshRwFull=1`），
   显示 server profile 的完整官方 DSH UI；client shell sidebar 在 iframe 挂载期间隐藏，浮动 target rail
   是唯一的 client chrome。官方 UI 的 sidebar/header/主区/rightbar/插件 UI 全部由 server 提供。
 - 模型来源（连接设置，非会话内热切换）：`local`（默认，agent/日志/工具仍在 server，模型请求经
@@ -69,7 +69,7 @@ P1 的逐字节契约只有三个文件：
 改动任一文件必须在两个 checkout 同一次变更中修改、构建、测试，并在提交前比较：
 
     for f in protocol.ts frame/codec.ts frame/mux.ts; do
-      cmp -s "src/$f" "../dsh-remote-workspace-server/src/$f" || echo "DIFF: $f"
+      cmp -s "src/$f" "../dsh-remote-window-server/src/$f" || echo "DIFF: $f"
     done
 
 旧 stdio server bundle 的 8 文件同步集（`src/server/**`、`src/frame/psk.ts` 等）已退出 v2 契约并删除；
@@ -126,8 +126,8 @@ tsdown targets：
   title fold 补齐（按 `(sessionId,sizeBytes)` 记忆化，尾部回刷 `session/title`；blank 判 `turn/start`）。
 - 会话日志读写：官方 `ctx.sessionPersistence`，单写者由官方 JSONL flock 裁决；不得自造锁/抢占。
   `SessionAlreadyOwnedError` 呈现为 `session/writer-held`；v1 用**显式错误**，不做只读/接管。
-- 存储域 `dsh_remote_workspace` 版本恒为 1；只能加 optional 字段。旧 workspace refs 清理，不做 bump。
-- local 模式 anchor 是插件私有材料（`<DSH_HOME>/remote-workspaces/<clientId>/<targetId>/<hash>`），
+- 存储域 `dsh_remote_window` 版本恒为 1；只能加 optional 字段。旧 workspace refs 清理，不做 bump。
+- local 模式 anchor 是插件私有材料（`<DSH_HOME>/remote-windows/<clientId>/<targetId>/<hash>`），
   绝不注册进官方 workspace registry、不出现在本地工作区列表；随插件/连接清理。
 - 搜索是 client 瞬时过滤，不落盘、不发 P1。
 - 删除会话：官方无能力，v1 不做。
@@ -184,7 +184,7 @@ tsdown targets：
   `server.log`（0600）和 host 内存。
 - 单 client profile lease（clientId/instanceId/pid/port/heartbeat，TTL 20 s）在 server 插件；第二实例
   `profile-in-use`、异 client `profile-foreign-client`、stale 才可接管。
-- 专用 profile：离线解包内置 `dsh-remote-workspace-server-<client-version>.tgz` + 写 4 个 profile 文件
+- 专用 profile：离线解包内置 `dsh-remote-window-server-<client-version>.tgz` + 写 4 个 profile 文件
   + marker；不依赖 server 网络/pnpm。marker 不匹配才重装；失败 `server-plugin-*` 错误，不静默回退。
 - 独立 runtime 自动安装/升级；全局 runtime 只检测复用，v1 拒绝修改共享全局 runtime/非专用 profile
   插件，返回 `runtime-global-unsupported` / `plugin-profile-not-managed`，不得静默写。目标版本没有缓存
@@ -212,7 +212,7 @@ tsdown targets：
 - rail 可拖拽并吸附到屏幕四边（`src/client/rail.tsx` 的 `snapRailPlacement`/`clampRailPlacement`）：
   收起时跟随吸附边（左右为 44px 竖排图标条，上下为 44px 横排图标条）；**展开后无论哪条边都渲染
   同一个 280px 竖向列表**（按视口限高、列表纵向滚动），上下吸附展开时列表贴在上/下边缘、水平位置
-  夹在视口内（`railBoxStyle`）。位置存 `localStorage['dsh-remote-workspace.rail-dock']`，未手动拖动
+  夹在视口内（`railBoxStyle`）。位置存 `localStorage['dsh-remote-window.rail-dock']`，未手动拖动
   前 portal 打开时自动靠右；展开/收起使用 200ms 过渡，`prefers-reduced-motion` 下关闭动画。
 - rail 收起态在连接数 > 1 时末尾多一个折叠按钮（左右吸附在最后一个图标下方，上下吸附在图标条右端），
   点击最小化为单个 `+N` 图标（N = 连接数），最小化期间 hover 不展开；再点 `+N` 直接一步进入展开态
@@ -244,15 +244,15 @@ tsdown targets：
 
 | 位置 | 内容 |
 |---|---|
-| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录（含 `modelSource`）、`localLlm` 模式（auto/manual 兼容）/本地模型选择 `localSelection`/超时、全局包策略、旧 workspace refs（待清理） |
+| client `~/.dsh/storages/dsh_remote_window.json` | target 记录（含 `modelSource`）、`localLlm` 模式（auto/manual 兼容）/本地模型选择 `localSelection`/超时、全局包策略、旧 workspace refs（待清理） |
 | client `~/.dsh/.credentials.yaml` | SSH/凭据引用与 manual 模式的本地模型 API key（旧 API 兼容，官方 store，0600）；auto 模式不存 key |
-| client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
+| client `~/.dsh/remote-windows/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
 | client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
 | server `~/.dsh/sessions/**` | 官方会话日志（两种模式共用；权威） |
 | server `~/.dsh/storages/workspace.json` | 官方 workspace registry（权威，single layout） |
-| server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile + 插件 + lease/log/pid |
-| server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 runtime（固定目录） |
-| server `~/.dsh/remote-workspace/state/`、`locks/` | executor 记录、registry/bootstrap 锁 |
+| server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | 专用 profile + 插件 + lease/log/pid |
+| server `~/.dsh/remote-window/<clientId>/runtime/` | 独立 runtime（固定目录） |
+| server `~/.dsh/remote-window/state/`、`locks/` | executor 记录、registry/bootstrap 锁 |
 | server `~/.dsh/remote-server-sessions/**`（旧） | 保留、不展示、不迁移 |
 
 - 卸载/禁用：清 client 本地锚点、旧 shell 条目与本地缓存；不删 server 官方 sessions/workspace/凭据，
@@ -269,14 +269,14 @@ tsdown targets：
     export DSH_HOME="$tmp/home"
     <dsh> --profile web --dump-config >/dev/null          # 生成出厂 profile
     pnpm build && pnpm pack --pack-destination "$tmp"
-    <dsh> plugin --profile web add "$tmp"/dsh-remote-workspace-*.tgz
+    <dsh> plugin --profile web add "$tmp"/dsh-remote-window-*.tgz
     # pnpm 11 报 ERR_PNPM_IGNORED_BUILDS 并非 0 退出时：依赖已装好，手工把
-    # dsh-remote-workspace 追加进 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles。
+    # dsh-remote-window 追加进 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles。
     mkdir -p "$tmp/work" && cd "$tmp/work"
     DSH_HOME="$tmp/home" <dsh> web --host 127.0.0.1 --port <port> --no-open   # 后台任务
 
 把打印的 token URL 给用户。改代码后：重打包，解到
-`$DSH_HOME/profiles/web/node_modules/dsh-remote-workspace`（`--strip-components=1`），重启实例。
+`$DSH_HOME/profiles/web/node_modules/dsh-remote-window`（`--strip-components=1`），重启实例。
 
 清理：`job_kill <job>` → `pgrep -fl "<tmp>"` 应为空 → `curl` 端口失败 → `realpath "<tmp>"` → 删除；
 仅在装插件生成过时删 `/private/tmp/.pnpm-store`。
@@ -289,7 +289,7 @@ tsdown targets：
 - 提交前至少：`pnpm typecheck`、`pnpm test`、`pnpm build`；两仓共享文件 `cmp`。
 - 改动涉及 portal/embed/registry guard/executor/mode switch 时补对应集成测试；QA 以
   `doc/refactor-v1-requirements.md` §7 A–J 验收，证据可引用 `/tmp/dsh-qa`（不写 secret/真实路径）。
-- 发布：两仓同版本；server 仓库产出 `dsh-remote-workspace-server-<version>.tgz` + `.sha256` +
+- 发布：两仓同版本；server 仓库产出 `dsh-remote-window-server-<version>.tgz` + `.sha256` +
   `.manifest.json`；client 仓库用 `scripts/bundle-server-plugin.mjs` 内置并写 `checksums.json`，
   `pnpm pack` 必须带 `assets/server-plugin/`。
 - runtime 包（node+dsh）仍只在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、

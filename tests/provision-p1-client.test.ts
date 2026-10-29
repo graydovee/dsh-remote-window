@@ -46,7 +46,7 @@ const HANDSHAKE = {
   protocol: 1,
   pluginVersion: '0.1.0-alpha.3',
   dshVersion: '0.2.1-rc.3',
-  profile: 'graydovee-remote-workspace-abcdef012345',
+  profile: 'graydovee-remote-window-abcdef012345',
   clientId: 'abcdef012345',
   lease: { instanceId: 'instance-1', expiresAt: '2026-01-01T00:00:20.000Z' },
   capabilities: { workspaceApi: 1, eventsSse: 1, muxWs: 1, embed: { storagePrefix: 'dshrw:test:', mode: 'reload' as const } },

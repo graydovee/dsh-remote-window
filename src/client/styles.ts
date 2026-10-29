@@ -3,7 +3,7 @@
  *
  * The repository's `tsdown.config.mjs` does not process CSS for this plugin
  * (no CSS modules, no `?inline` loader), so the browser half ships ONE CSS
- * string injected as a single `<style data-plugin="dsh-remote-workspace">`
+ * string injected as a single `<style data-plugin="dsh-remote-window">`
  * element from `apply` — the simplest correct approach under that build, and
  * an effect so hot reload disposes the tag with the rest of the contribution.
  *
@@ -22,7 +22,7 @@ const GLOBE_MASK = `url("data:image/svg+xml;utf8,${encodeURIComponent(
 )}")`
 
 /** Marker attribute value for the injected `<style>` element. */
-export const STYLE_PLUGIN_ID = 'dsh-remote-workspace'
+export const STYLE_PLUGIN_ID = 'dsh-remote-window'
 
 /** The complete stylesheet. */
 import { ROW_STYLES } from './vendor/workspace-rows/generated/row-styles.ts'
@@ -3412,7 +3412,7 @@ export function ensureStyles(): () => void {
  * module classes are hashed, but that attribute and the icon-first child
  * order are stable), so the swap is done per-row from the client.
  */
-const ICONS_STYLE_ID = 'dsh-remote-workspace-icons'
+const ICONS_STYLE_ID = 'dsh-remote-window-icons'
 
 /**
  * Keep the shell's own 工作区 section free of this plugin's rows.

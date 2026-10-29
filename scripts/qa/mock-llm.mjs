@@ -39,7 +39,7 @@ const toolName = process.env.QA_MOCK_TOOL_NAME ?? 'bash'
 const toolArguments = process.env.QA_MOCK_TOOL_ARGUMENTS
   || JSON.stringify({
     description: 'Write QA marker file',
-    command: "printf '%s\\n' 'dsh-remote-workspace QA server baseline' > qa-marker.txt && pwd && cat qa-marker.txt",
+    command: "printf '%s\\n' 'dsh-remote-window QA server baseline' > qa-marker.txt && pwd && cat qa-marker.txt",
   })
 
 mkdirSync(dir, { recursive: true })

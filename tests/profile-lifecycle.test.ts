@@ -75,9 +75,9 @@ describe('clientId and profile names', () => {
     expect(isClientId(clientId)).toBe(true)
     expect(isClientId('ABCDEF012345')).toBe(false)
     expect(isClientId('short')).toBe(false)
-    expect(profileNameFor(CLIENT_ID)).toBe('graydovee-remote-workspace-0123456789ab')
-    expect(isProfileName('graydovee-remote-workspace-0123456789ab')).toBe(true)
-    expect(isProfileName('graydovee-remote-workspace-0123456789AB')).toBe(false)
+    expect(profileNameFor(CLIENT_ID)).toBe('graydovee-remote-window-0123456789ab')
+    expect(isProfileName('graydovee-remote-window-0123456789ab')).toBe(true)
+    expect(isProfileName('graydovee-remote-window-0123456789AB')).toBe(false)
     expect(generateInstanceId(() => 'instance-1')).toBe('instance-1')
   })
 })
@@ -85,13 +85,13 @@ describe('clientId and profile names', () => {
 describe('profile path layout (protocol §3.1)', () => {
   it('keeps the profile, log/pid state and lease in their fixed places', () => {
     const paths = profilePaths('/home/user/.dsh', CLIENT_ID)
-    expect(paths.profile).toBe('graydovee-remote-workspace-0123456789ab')
-    expect(paths.profileDir).toBe('/home/user/.dsh/profiles/graydovee-remote-workspace-0123456789ab')
-    expect(paths.stateDir).toBe('/home/user/.dsh/remote-workspace/profiles/graydovee-remote-workspace-0123456789ab')
+    expect(paths.profile).toBe('graydovee-remote-window-0123456789ab')
+    expect(paths.profileDir).toBe('/home/user/.dsh/profiles/graydovee-remote-window-0123456789ab')
+    expect(paths.stateDir).toBe('/home/user/.dsh/remote-window/profiles/graydovee-remote-window-0123456789ab')
     expect(paths.logPath).toBe(`${paths.stateDir}/server.log`)
     expect(paths.pidPath).toBe(`${paths.stateDir}/server.pid`)
     expect(paths.leasePath).toBe(`${paths.profileDir}/.dsh-rw/lease.json`)
-    expect(paths.pluginDir).toBe(`${paths.profileDir}/node_modules/dsh-remote-workspace-server`)
+    expect(paths.pluginDir).toBe(`${paths.profileDir}/node_modules/dsh-remote-window-server`)
     expect(() => profilePaths('relative/home', CLIENT_ID)).toThrow(/absolute/u)
     expect(() => profilePaths('/home/user/.dsh', 'nope')).toThrow(/clientId/u)
   })
@@ -121,15 +121,15 @@ describe('start and stop shell bodies', () => {
   it('starts detached with dsh launcher flags before app args, LF only', () => {
     const paths = profilePaths('/home/user/.dsh', CLIENT_ID)
     const script = profileStartScript(paths, {
-      launcher: '/home/user/.dsh/remote-workspace/0123456789ab/runtime/dsh/node_modules/.bin/dsh',
+      launcher: '/home/user/.dsh/remote-window/0123456789ab/runtime/dsh/node_modules/.bin/dsh',
       pathPrefixes: [
-        '/home/user/.dsh/remote-workspace/0123456789ab/runtime/node/bin',
-        '/home/user/.dsh/remote-workspace/0123456789ab/runtime/dsh/node_modules/.bin',
+        '/home/user/.dsh/remote-window/0123456789ab/runtime/node/bin',
+        '/home/user/.dsh/remote-window/0123456789ab/runtime/dsh/node_modules/.bin',
       ],
     })
     expect(script).not.toContain('\r')
     expect(script).toContain('setsid nohup env DSH_HOME=')
-    expect(script).toContain(`--profile 'graydovee-remote-workspace-0123456789ab'`)
+    expect(script).toContain(`--profile 'graydovee-remote-window-0123456789ab'`)
     expect(script.indexOf('--profile')).toBeLessThan(script.indexOf('--host'))
     expect(script).toContain('--host 127.0.0.1 --port 0 --no-open')
     expect(script).toContain(paths.logPath)
@@ -157,14 +157,14 @@ describe('profileStartupFiles and marker', () => {
     const files = profileStartupFiles({ profile: paths.profile })
     expect([...files.keys()]).toEqual(['package.json', 'cordis.yml', 'cordis.patch.yml', 'pnpm-workspace.yaml'])
     const pkg = JSON.parse(files.get('package.json') ?? '{}') as { dsh: { profile: { bundles: string[] } } }
-    expect(pkg.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-remote-workspace-server'])
+    expect(pkg.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-remote-window-server'])
     expect(files.get('cordis.yml')).toBe('[]\n')
     expect(files.get('cordis.patch.yml')).toBe('[]\n')
   })
 
   it('produces a full absolute file set and stable digest', async () => {
     const paths = profilePaths('/home/user/.dsh', CLIENT_ID)
-    const plugin = [{ path: 'package.json', content: Buffer.from('{"name":"dsh-remote-workspace-server"}') }]
+    const plugin = [{ path: 'package.json', content: Buffer.from('{"name":"dsh-remote-window-server"}') }]
     const files = buildProfileFileSet(paths, plugin)
     expect(files.map(file => file.path)).toContain(`${paths.pluginDir}/package.json`)
     const digest = await profileFileSetDigest(files)
@@ -180,7 +180,7 @@ describe('startProfileServer / stopProfileServer', () => {
     remote.log = 'booting\n'
     const probeCalls: number[] = []
     const handlePromise = startProfileServer(remote, paths, {
-      launcher: '/home/user/.dsh/remote-workspace/0123456789ab/runtime/dsh/node_modules/.bin/dsh',
+      launcher: '/home/user/.dsh/remote-window/0123456789ab/runtime/dsh/node_modules/.bin/dsh',
       timeoutMs: 2_000,
       sleep: async () => { remote.log += 'dsh web: http://127.0.0.1:45678/?token=tok_123\n' },
       probe: async startup => { probeCalls.push(startup.port); return true },
@@ -243,7 +243,7 @@ describe('profile marker and lease classification', () => {
   it('classifies leases per protocol §3.4', () => {
     const lease = parseProfileLease(JSON.stringify({
       version: 1,
-      profile: 'graydovee-remote-workspace-0123456789ab',
+      profile: 'graydovee-remote-window-0123456789ab',
       clientId: CLIENT_ID,
       instanceId: 'other-instance',
       pid: 1,

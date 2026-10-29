@@ -143,13 +143,13 @@ describe('release page transport', () => {
     const asset = await downloadServerPackage(request({}, runner))
     const artifactCalls = calls.filter(call => call.url.includes(ARTIFACT) && !call.url.includes('.sha256'))
     expect(artifactCalls.map(call => call.url)).toEqual([
-      `https://github.com/graydovee/dsh-remote-workspace-server/releases/download/server-v${VERSION}/${ARTIFACT}`,
-      `https://github.com/graydovee/dsh-remote-workspace-server/releases/download/v${PLUGIN}/${ARTIFACT}`,
+      `https://github.com/graydovee/dsh-remote-window-server/releases/download/server-v${VERSION}/${ARTIFACT}`,
+      `https://github.com/graydovee/dsh-remote-window-server/releases/download/v${PLUGIN}/${ARTIFACT}`,
     ])
     // `.sha256` comes from the same tag that served the artifact.
     const shaCalls = calls.filter(call => call.url.endsWith('.sha256'))
     expect(shaCalls.map(call => call.url)).toEqual([
-      `https://github.com/graydovee/dsh-remote-workspace-server/releases/download/v${PLUGIN}/${ARTIFACT}.sha256`,
+      `https://github.com/graydovee/dsh-remote-window-server/releases/download/v${PLUGIN}/${ARTIFACT}.sha256`,
     ])
     expect(asset.sha256).toBe(digest())
     expect((await readdir(cacheDir)).filter(name => name.includes('.dsh-sha'))).toEqual([])
@@ -159,7 +159,7 @@ describe('release page transport', () => {
     const { runner, calls } = network({ pages: new Set([`server-v${VERSION}`]) })
     await downloadServerPackage(request({ mirror: 'https://mirror.example.com/' }, runner))
     expect(calls.every(call => call.url.startsWith('https://mirror.example.com/'))).toBe(true)
-    expect(calls[0]?.url).toBe(`https://mirror.example.com/graydovee/dsh-remote-workspace-server/releases/download/server-v${VERSION}/${ARTIFACT}`)
+    expect(calls[0]?.url).toBe(`https://mirror.example.com/graydovee/dsh-remote-window-server/releases/download/server-v${VERSION}/${ARTIFACT}`)
   })
 })
 
@@ -170,9 +170,9 @@ describe('GitHub API transport', () => {
     const { runner, calls } = network({ api: new Map([[`server-v${VERSION}`, assets]]) })
     const asset = await downloadServerPackage(request({}, runner))
     const urls = calls.map(call => call.url)
-    expect(urls).toContain(`https://api.github.com/repos/graydovee/dsh-remote-workspace-server/releases/tags/server-v${VERSION}`)
-    expect(urls).toContain('https://api.github.com/repos/graydovee/dsh-remote-workspace-server/releases/assets/654349545')
-    expect(urls).toContain('https://api.github.com/repos/graydovee/dsh-remote-workspace-server/releases/assets/654349546')
+    expect(urls).toContain(`https://api.github.com/repos/graydovee/dsh-remote-window-server/releases/tags/server-v${VERSION}`)
+    expect(urls).toContain('https://api.github.com/repos/graydovee/dsh-remote-window-server/releases/assets/654349545')
+    expect(urls).toContain('https://api.github.com/repos/graydovee/dsh-remote-window-server/releases/assets/654349546')
     // Both asset fetches ask for the bytes explicitly.
     expect(calls
       .filter(call => call.url.includes('/releases/assets/'))

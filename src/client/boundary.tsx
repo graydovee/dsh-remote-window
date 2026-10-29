@@ -25,7 +25,7 @@ export class RemoteTreeBoundary extends Component<{ children: ReactNode }, Bound
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error('[dsh-remote-workspace] panel crashed', error, info.componentStack)
+    console.error('[dsh-remote-window] panel crashed', error, info.componentStack)
   }
 
   render(): ReactNode {

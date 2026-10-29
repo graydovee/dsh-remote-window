@@ -790,7 +790,7 @@ function clearShellSelection(): void {
     const workspace = shellWorkspace()
     if (workspace !== undefined && typeof workspace.clearMain === 'function') workspace.clearMain()
   } catch (error) {
-    console.error('[dsh-remote-workspace] clearing the shell selection failed', error)
+    console.error('[dsh-remote-window] clearing the shell selection failed', error)
   }
 }
 
@@ -877,7 +877,7 @@ async function revealSession(sessionId: string, targetId?: string): Promise<void
     // Never swallow: a failed reveal leaves the main column on
     // 选择一个工作区开始 with no explanation anywhere (the plugin's error banner
     // lives in a panel that is not showing) — exactly the silent dead click.
-    console.error('[dsh-remote-workspace] revealSession failed', error)
+    console.error('[dsh-remote-window] revealSession failed', error)
     notifyError(t('tree.session.revealFailed', { message: error instanceof Error ? error.message : String(error) }))
   }
 }
@@ -1244,7 +1244,7 @@ function startShellSessionWatch(): void {
       stopShellSessionWatch = list.subscribe(() => { onShellSessionsChanged(read()) })
     } catch (error) {
       stopShellSessionWatch = undefined
-      console.error('[dsh-remote-workspace] subscribing to the shell session list failed', error)
+      console.error('[dsh-remote-window] subscribing to the shell session list failed', error)
     }
   }
   const selection = shellWorkspace()?.selection
@@ -1257,7 +1257,7 @@ function startShellSessionWatch(): void {
       stopShellSelectionWatch = selection.subscribe(() => { refreshDraftFromShell() })
     } catch (error) {
       stopShellSelectionWatch = undefined
-      console.error('[dsh-remote-workspace] subscribing to the shell selection failed', error)
+      console.error('[dsh-remote-window] subscribing to the shell selection failed', error)
     }
   }
   if (stopShellSessionWatch === undefined && stopShellSelectionWatch === undefined) return
@@ -1364,7 +1364,7 @@ async function enterDraft(targetId: string, path: string, title: string | undefi
   let visible = await waitForShellWorkspace(prepared.officialWorkspaceId)
   if (visible === false) {
     // The hook was swept between registrations (`cleanup-shell-workspaces` deletes
-    // every row under `~/.dsh/remote-workspaces/**`); preparing again rebuilds it.
+    // every row under `~/.dsh/remote-windows/**`); preparing again rebuilds it.
     prepared = await api.prepareWorkspace(targetId, path, title)
     await refreshState()
     visible = await waitForShellWorkspace(prepared.officialWorkspaceId)
@@ -1737,7 +1737,7 @@ async function cleanupShellWorkspaces(): Promise<void> {
     if (result.removed.length === 0) return
     commit({ notice: { kind: 'success', text: t('tree.cleanup.removed', { count: result.removed.length }) } })
   } catch (error) {
-    console.warn('[dsh-remote-workspace] cleanup-shell-workspaces failed', error)
+    console.warn('[dsh-remote-window] cleanup-shell-workspaces failed', error)
   }
 }
 
@@ -1777,7 +1777,7 @@ function openConnectionWizard(panelId: string): void {
     const layout = clientContext?.get('layout') as { selectPanel?(id: string): void } | undefined
     layout?.selectPanel?.(panelId)
   } catch (error) {
-    console.error('[dsh-remote-workspace] selectPanel failed', error)
+    console.error('[dsh-remote-window] selectPanel failed', error)
   }
   newConnection()
 }
@@ -3053,7 +3053,7 @@ export function dispose(): void {
     try {
       stopShellSessionWatch()
     } catch (error) {
-      console.error('[dsh-remote-workspace] unsubscribing from the shell session list failed', error)
+      console.error('[dsh-remote-window] unsubscribing from the shell session list failed', error)
     }
     stopShellSessionWatch = undefined
   }
@@ -3061,7 +3061,7 @@ export function dispose(): void {
     try {
       stopShellSelectionWatch()
     } catch (error) {
-      console.error('[dsh-remote-workspace] unsubscribing from the shell selection failed', error)
+      console.error('[dsh-remote-window] unsubscribing from the shell selection failed', error)
     }
     stopShellSelectionWatch = undefined
   }

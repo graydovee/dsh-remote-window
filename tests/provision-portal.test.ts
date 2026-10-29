@@ -105,11 +105,11 @@ function call(port: number, path: string, options: { method?: string; headers?: 
 
 describe('portal header/route helpers', () => {
   it('strips exactly one mount prefix and keeps the query untouched', () => {
-    expect(stripPortalPrefix('/dsh-remote-workspace/portal/t1', 't1')).toBe('/')
-    expect(stripPortalPrefix('/dsh-remote-workspace/portal/t1/', 't1')).toBe('/')
-    expect(stripPortalPrefix('/dsh-remote-workspace/portal/t1/api/x?q=1', 't1')).toBe('/api/x?q=1')
-    expect(stripPortalPrefix('/dsh-remote-workspace/portal/t2/', 't1')).toBeUndefined()
-    expect(portalMuxPath('t1')).toBe('/dsh-remote-workspace/portal/t1/api/remote.mux')
+    expect(stripPortalPrefix('/dsh-remote-window/portal/t1', 't1')).toBe('/')
+    expect(stripPortalPrefix('/dsh-remote-window/portal/t1/', 't1')).toBe('/')
+    expect(stripPortalPrefix('/dsh-remote-window/portal/t1/api/x?q=1', 't1')).toBe('/api/x?q=1')
+    expect(stripPortalPrefix('/dsh-remote-window/portal/t2/', 't1')).toBeUndefined()
+    expect(portalMuxPath('t1')).toBe('/dsh-remote-window/portal/t1/api/remote.mux')
   })
 
   it('rewrites Host, drops Origin/Referer and browser cookies, injects the official cookie', () => {

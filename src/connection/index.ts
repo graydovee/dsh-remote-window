@@ -108,7 +108,7 @@ export default class RemoteConnection extends Service {
   get ptcLaunch(): { kind: 'embedded'; executable: string } | { kind: 'node-script'; executable: string; bootstrapPath: string } {
     // v1 keeps the official PTC bootstrap unsupported: nothing in this world
     // provisions it, and no installed provider reads this member.
-    throw new Error('remote PTC is not supported by dsh-remote-workspace v1')
+    throw new Error('remote PTC is not supported by dsh-remote-window v1')
   }
 
   /** The verified remote handshake, connecting on first access. */

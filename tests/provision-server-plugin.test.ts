@@ -43,15 +43,15 @@ async function fakeTarball(options: { version?: string; name?: string } = {}): P
 
 describe('server plugin tarball identity', () => {
   it('parses names and checksums without trusting arbitrary JSON', () => {
-    expect(serverPluginTarballName(VERSION)).toBe('dsh-remote-workspace-server-0.1.0-alpha.3.tgz')
+    expect(serverPluginTarballName(VERSION)).toBe('dsh-remote-window-server-0.1.0-alpha.3.tgz')
     expect(versionFromServerPluginTarball(serverPluginTarballName(VERSION))).toBe(VERSION)
     expect(versionFromServerPluginTarball('other.tgz')).toBeUndefined()
     const checksums = parseServerPluginChecksums(JSON.stringify({
-      'dsh-remote-workspace-server-0.1.0-alpha.3.tgz': 'a'.repeat(64),
+      'dsh-remote-window-server-0.1.0-alpha.3.tgz': 'a'.repeat(64),
       'bad.tgz': 'not-a-digest',
       files: { 'nested.tgz': 'b'.repeat(64) },
     }))
-    expect(checksums['dsh-remote-workspace-server-0.1.0-alpha.3.tgz']).toBe('a'.repeat(64))
+    expect(checksums['dsh-remote-window-server-0.1.0-alpha.3.tgz']).toBe('a'.repeat(64))
     expect(checksums['nested.tgz']).toBe('b'.repeat(64))
     expect(checksums['bad.tgz']).toBeUndefined()
   })
@@ -144,9 +144,9 @@ describe('installServerPlugin against a real local shell', () => {
     expect(first.installed).toBe(true)
     expect(first.marker.version).toBe(VERSION)
     const installedManifest = JSON.parse(await readFile(join(paths.pluginDir, 'package.json'), 'utf8')) as { name: string; version: string }
-    expect(installedManifest.name).toBe('dsh-remote-workspace-server')
+    expect(installedManifest.name).toBe('dsh-remote-window-server')
     expect(installedManifest.version).toBe(VERSION)
-    expect(await readFile(join(paths.profileDir, 'package.json'), 'utf8')).toContain('dsh-remote-workspace-server')
+    expect(await readFile(join(paths.profileDir, 'package.json'), 'utf8')).toContain('dsh-remote-window-server')
     expect(await readFile(join(paths.profileDir, 'cordis.patch.yml'), 'utf8')).toBe('[]\n')
     const marker = await readServerPluginMarker(remote, paths)
     expect(marker).toMatchObject({ version: VERSION, protocol: 1, dshVersion: DSH_VERSION })
@@ -173,10 +173,10 @@ describe('installServerPlugin against a real local shell', () => {
     const installed = await installServerPlugin({ remote, paths, tarball: verified, dshVersion: DSH_VERSION })
     expect(installed.installed).toBe(true)
     const manifest = JSON.parse(await readFile(join(paths.pluginDir, 'package.json'), 'utf8')) as { name: string; version: string }
-    expect(manifest.name).toBe('dsh-remote-workspace-server')
+    expect(manifest.name).toBe('dsh-remote-window-server')
     expect(manifest.version).toBe(VERSION)
     // The server package's own bundle patch is not overwritten by the client.
-    expect(await readFile(join(paths.pluginDir, 'cordis.patch.yml'), 'utf8')).toContain('dsh-remote-workspace-server')
+    expect(await readFile(join(paths.pluginDir, 'cordis.patch.yml'), 'utf8')).toContain('dsh-remote-window-server')
   })
 })
 

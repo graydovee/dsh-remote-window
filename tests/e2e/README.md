@@ -1,6 +1,6 @@
 # tests/e2e
 
-QA browser/E2E assets for `dsh-remote-workspace` v1.
+QA browser/E2E assets for `dsh-remote-window` v1.
 
 - `qa-target-smoke.sh` — repeatable baseline for the disposable Docker+SSH
   server target (`scripts/qa/`). Verifies loopback-only SSH, isolated

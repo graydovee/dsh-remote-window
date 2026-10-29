@@ -1,4 +1,4 @@
-# dsh-remote-workspace v1 QA 计划与证据口径
+# dsh-remote-window v1 QA 计划与证据口径
 
 > 状态：QA 环境已建立（2026-10-22），新架构/新插件尚未实现；本文件先固定
 > **环境、步骤、命令、期望结果和证据口径**。实现落地后按此逐条执行并写
@@ -152,14 +152,14 @@ cat /tmp/dsh-qa/server/mock/requests.jsonl     # 请求/结果事件
 CLIENT_HOME=/tmp/dsh-qa/clients/client-a
 DSH_HOME="$CLIENT_HOME/home" <dsh> --profile web --dump-config >/dev/null
 pnpm build && pnpm pack --pack-destination "$CLIENT_HOME"
-DSH_HOME="$CLIENT_HOME/home" <dsh> plugin --profile web add "$CLIENT_HOME"/dsh-remote-workspace-*.tgz
+DSH_HOME="$CLIENT_HOME/home" <dsh> plugin --profile web add "$CLIENT_HOME"/dsh-remote-window-*.tgz
 mkdir -p "$CLIENT_HOME/work" && cd "$CLIENT_HOME/work"
 DSH_HOME="$CLIENT_HOME/home" <dsh> web --host 127.0.0.1 --port 25022 --no-open
 # client B 同理：DSH_HOME=/tmp/dsh-qa/clients/client-b，端口 25023，可用另一份 tarball/版本
 ```
 
 期望：两个 client 各自的插件存储生成不同 `clientId`；server 上出现两个
-`graydovee-remote-workspace-<clientId>` profile；一个 profile 只被一个 client 驱动。
+`graydovee-remote-window-<clientId>` profile；一个 profile 只被一个 client 驱动。
 
 证据：两个 client 的 `DSH_HOME`/profile 目录、`clientId` 脱敏值、server
 `~/.dsh/profiles` 列表、两个 `dsh web` 进程/端口、浏览器截图。
@@ -183,8 +183,8 @@ DSH_HOME="$CLIENT_HOME/home" <dsh> web --host 127.0.0.1 --port 25022 --no-open
 
 | ID | 步骤 | 期望 | 证据 |
 |---|---|---|---|
-| B1 | client A 首次连接 server；检查 client 存储与 server `~/.dsh/profiles` | 稳定 clientId（重启 client 不变，且只含安全字符）；server 只出现 `graydovee-remote-workspace-<clientId>` 一个 profile | client 存储文件（脱敏）；server profiles 列表两次采样；重启 client 后 clientId 不变 |
-| B2 | 全新 client 连全新 server，观察是否需要确认 | 自动安装/升级独立运行时 + 专用 profile 插件，无按钮确认 | client 网络/部署日志；server `~/remote-workspace/<clientId>/runtime` 内容；插件安装记录；浏览器无确认弹窗截图 |
+| B1 | client A 首次连接 server；检查 client 存储与 server `~/.dsh/profiles` | 稳定 clientId（重启 client 不变，且只含安全字符）；server 只出现 `graydovee-remote-window-<clientId>` 一个 profile | client 存储文件（脱敏）；server profiles 列表两次采样；重启 client 后 clientId 不变 |
+| B2 | 全新 client 连全新 server，观察是否需要确认 | 自动安装/升级独立运行时 + 专用 profile 插件，无按钮确认 | client 网络/部署日志；server `~/remote-window/<clientId>/runtime` 内容；插件安装记录；浏览器无确认弹窗截图 |
 | B3 | 让全局运行时缺失/版本不兼容，再连接 | 出现按钮确认；未确认前全局目录不写入 | 确认弹窗截图/DOM；确认前后 `which dsh`/全局目录 mtime；取消后无写入 |
 | B4 | 连接成功后检查端口与 handshake | client↔server 走 SSH 隧道 + token + plugin handshake；server 无公网监听 | 宿主 `lsof -iTCP -sTCP:LISTEN`（只有 client 本地端口）；server `ss -ltnp`（只有 127.0.0.1/profile 端口或无公网）；handshake 日志 |
 | B5 | 断开 → 检查进程/端口 → 重连 | profile server 停止、隧道关闭、当前 turn 取消；重连恢复工作区/会话、无孤儿进程/端口 | 断开前后 `pgrep -af dsh`、`ss -ltnp`、`docker exec ps`；重连后 sidebar 截图；会话历史仍在 |
@@ -374,7 +374,7 @@ ls -la ~/.dsh | head                          # 与清理前一致
 | Docker + SSH 目标（node 22/24、全局 DSH、隔离 `~/.dsh`、127.0.0.1 端口） | 进行中 | 见 `scripts/qa/`；构建/启动/清理脚本已就绪，正在跑首次验证 |
 | server 全局 DSH 独立启动 | 进行中 | `dsh --version` / `dsh web` / mock 夹具验证中 |
 | A1/A2（server 独立建工作区/会话/对话、日志位置） | 进行中 | 完成浏览器操作后补截图/DOM 与日志证据 |
-| 插件安装入口 | 已执行（离线契约） | `install-server-plugin.sh` 装 0.1.0-alpha.3 到 `graydovee-remote-workspace-qa1`；profile smoke 27 项 |
+| 插件安装入口 | 已执行（离线契约） | `install-server-plugin.sh` 装 0.1.0-alpha.3 到 `graydovee-remote-window-qa1`；profile smoke 27 项 |
 | server 插件 P1 烟测（handshake/lease/embed/index/RPC 骨架） | 基本 PASS（26–27/27） | 证据见 §12.1；唯一历史失败为 QA 断言未跟随 P0 的“相对路径 embed” |
 | M1 连接→树→portal | **PASS（独立 QA 复跑）** | 409 指纹→200；state 2 workspaces/3 sessions；portal 官方对话区渲染，见 §12.2 |
 | M2 server 模式（M2d） | **PARTIAL PASS** | server 侧 fs/list、blank managed、prepare-server、persist/stat、handshake 已验；client M2 pair connect/state/portal PASS；M2 UI 动作/搜索/拖拽/冷 prepare 未跑，见 §12.2b |
@@ -387,13 +387,13 @@ ls -la ~/.dsh | head                          # 与清理前一致
 
 ### 12.1 server 插件安装与 P1 烟测（QA 环境）
 
-- 安装：离线契约（解包 `package/` → `<profile>/node_modules/dsh-remote-workspace-server`，
+- 安装：离线契约（解包 `package/` → `<profile>/node_modules/dsh-remote-window-server`，
   profile `dsh.profile.bundles` 追加），**不使用 npm/pnpm/网络**；
-  `install-server-plugin.sh --profile graydovee-remote-workspace-qa1 --tarball ... --sha256 ...`。
+  `install-server-plugin.sh --profile graydovee-remote-window-qa1 --tarball ... --sha256 ...`。
 - 依赖：插件 `lib/plugin.js` 按名 import `@deepseek-ai/schemastery`；离线 profile 没有该包，
   安装脚本会从全局 DSH 安装软链一份（QA 侧兜底）。client 自动部署路径目前没有这一步，
   是 dev-core/server 侧需修复的部署缺口（见 §12.2）。
-- profile 启动：`dsh --profile graydovee-remote-workspace-qa1 --host 127.0.0.1 --port 0 --no-open`
+- profile 启动：`dsh --profile graydovee-remote-window-qa1 --host 127.0.0.1 --port 0 --no-open`
   （容器内；宿主经 SSH local forward 访问，容器不发布 web 端口）。
 - 烟测结果（`profile-smoke.sh`）：
   - handshake 200：protocol=1 / pluginVersion=0.1.0-alpha.3 / dshVersion=0.2.1-rc.2 /
@@ -416,8 +416,8 @@ client 实例：`DSH_HOME=/tmp/dsh-qa/clients/client-a/home`，`dsh web --host 1
 已通过：
 
 - client 启动、插件 UI 的「远程工作区」区渲染（刷新/新建连接/搜索）；
-- `/dsh-remote-workspace/api/state`：
-  `{ok:true, clientId:"33cc71b9e138", protocol:1, portalBase:"/dsh-remote-workspace/portal",
+- `/dsh-remote-window/api/state`：
+  `{ok:true, clientId:"33cc71b9e138", protocol:1, portalBase:"/dsh-remote-window/portal",
     connections:{}, pluginVersion:"0.1.0-alpha.3", verifiedRuntimes:["0.2.1-rc.2"]}`；
 - connect 第一跳 409 `host-key-unknown` + SHA-256 指纹（`SHA256:0W/OIxB7…`）；
   失败路径不写 target（state 中 connections/targets 仍为空）。
@@ -430,7 +430,7 @@ client 实例：`DSH_HOME=/tmp/dsh-qa/clients/client-a/home`，`dsh web --host 1
    插件 `sendForwardedHttp` 仅按 content-length 判断响应结束 → 超时 → probe false。
 2. client 自动部署的 profile 缺 `@deepseek-ai/schemastery`（`ERR_MODULE_NOT_FOUND`），
    需 client 部署随包提供运行期依赖或 server 插件 inline。
-3. 「+ / 新建连接」按钮点击无 dialog；console 见 `[dsh-remote-workspace] state stream closed`
+3. 「+ / 新建连接」按钮点击无 dialog；console 见 `[dsh-remote-window] state stream closed`
    与官方 `SlotAssemblyError: scope 'session-maybe' rendered without an installed adapter`
    等错误（dev-ui 排查中）。
 
@@ -439,7 +439,7 @@ M1 判定：**PASS（独立 QA 复跑，2026-10-22）**。
 - 产物：client `babd70fb…`、server `51d48f8f…`（Lead 冻结组）；全新 `DSH_HOME=/tmp/dsh-qa/clients/client-qa-m1/home`，
   client web `127.0.0.1:26022`，server 目标 `127.0.0.1:22022`。
 - 首次 connect 409 `host-key-unknown` → 带指纹重试 200；target `rt-6cb70fd4`，profile
-  `graydovee-remote-workspace-0c3ff2957086`，port 45467，phase ready，plugin 0.1.0-alpha.3，
+  `graydovee-remote-window-0c3ff2957086`，port 45467，phase ready，plugin 0.1.0-alpha.3，
   capabilities `registryWriteGuard:prototype` / `registryReload:loader-disable-enable`。
 - `/api/state`：workspaces 2（`QA smoke renamed` / `work`）、sessions 3（含 blank 与
   projection title），与 server 官方数据一致。
@@ -453,7 +453,7 @@ M1 判定：**PASS（独立 QA 复跑，2026-10-22）**。
 
 - 产物：client `7bd5aaaf…`（dev-core）、server `053eec29…`（M2d，manifest phase=M2d）。
 - 独立 client 实例（`/tmp/dsh-qa/clients/client-m2d/home`，port 26025）已 PASS：
-  409 指纹 → 带指纹 200；target `rt-f4a5a7b4`，profile `graydovee-remote-workspace-795a19316403`，
+  409 指纹 → 带指纹 200；target `rt-f4a5a7b4`，profile `graydovee-remote-window-795a19316403`，
   phase ready，capabilities 含 `muxWs:1`；`/api/state` 返回 2 workspaces / 6 sessions；
   portal 深链渲染 server 官方对话区（无双导航）。
 - server profile RPC（qa1 + M2d）已 PASS：handshake、`fs/list`（home/path/parent/entries，
@@ -501,7 +501,7 @@ M1 判定：**PASS（独立 QA 复跑，2026-10-22）**。
 
 产物：client `9bb7501f…`（最终 local client，gate=true）+ server M2f `3ce97ed7…`。
 实例：`/tmp/dsh-qa/clients/client-local/home`，client web 26028，target `rt-0b889cf0`，
-profile `graydovee-remote-workspace-a7620da6c3e6`；客户端模型用宿主 mock `127.0.0.1:28082`（QA fixture）。
+profile `graydovee-remote-window-a7620da6c3e6`；客户端模型用宿主 mock `127.0.0.1:28082`（QA fixture）。
 
 已 PASS：
 - connect 409 指纹→200；`state.connections.registry` 非 null（revision/epoch/stale）。
@@ -509,7 +509,7 @@ profile `graydovee-remote-workspace-a7620da6c3e6`；客户端模型用宿主 moc
   `~/.dsh/sessions/--home-tester-work--/session-…/session.v4.jsonl.zstd`
   （header cwd=/home/tester/work、agentPreset=`remote:rt-0b889cf0` + permission/sandbox/approval 事件）。
 - client 隔离：`home/sessions` 不存在（无远程会话 JSONL）；官方 `storages/workspace.json` = `{}`
-  （无远程 stub）；仅 plugin 私有 `home/remote-workspaces/<clientId>/<targetId>/…`（架构允许，退出清理）。
+  （无远程 stub）；仅 plugin 私有 `home/remote-windows/<clientId>/<targetId>/…`（架构允许，退出清理）。
 - `mode/preview`（server/local，previewRevision=idle）+ `mode/apply` server→local→server 均 200，
   同 session id，cancelledTurnIds/openSessionId 正常。
 
@@ -522,12 +522,12 @@ profile `graydovee-remote-workspace-a7620da6c3e6`；客户端模型用宿主 moc
   - **server 会话 JSONL 增长**；client 官方 `home/sessions` 仅客户端自己的本地工作区目录（无远程会话 JSONL）；
   - **工具执行失败（P1，mux）**：UI 显示 `失败运行命令Error: remote mux request "process.done"`
     failed on "rt-0b889cf0": spawn ba…`；server marker `qa-marker.txt` 未被写（mtime 未变）；
-    server profile log 尾部有 `[dsh-remote-workspace] no sandbox backend inside the remote world;
+    server profile log 尾部有 `[dsh-remote-window] no sandbox backend inside the remote world;
     running workspace-write commands unconfined there` 与 node fd 警告。
   - 结论：local 模式「模型/agent loop 在 client」已验；「工具在 server 经 mux 执行」被 mux
     spawn/process.done 阻塞。
   - **根因（已复现）**：local 模式 process.prepare 的 cwd 是 client 私有 anchor
-    `/tmp/dsh-qa/clients/client-local/home/remote-workspaces/<clientId>/<targetId>/<hash>`，
+    `/tmp/dsh-qa/clients/client-local/home/remote-windows/<clientId>/<targetId>/<hash>`，
     该路径只存在于 client 本机；server 容器不存在该路径。`spawnSync('bash', …, {cwd: anchor})`
     复现 `ENOENT spawnSync bash ENOENT`（容器 bash 存在且 PATH 正常，换成 `/home/tester/work`
     则 status 0）。即 cwd 未做 client anchor → server 工作区路径的翻译。修复方向：process.prepare
@@ -538,7 +538,7 @@ profile `graydovee-remote-workspace-a7620da6c3e6`；客户端模型用宿主 moc
 - **local E2E PASS（2026-10-22 最终 pair）**：client `d9db2bab…` + server M2h `8b6efa16…`。
   - create/open → executor `local`（executorSource `record`、recordedExecutor `local`）。
   - UI 本地模式发消息：client mock 28082 收到请求（模型/agent loop 在 client）；server 端
-    `tool/result` = `/home/tester/work\ndsh-remote-workspace QA server baseline`（bash 在 server 执行，
+    `tool/result` = `/home/tester/work\ndsh-remote-window QA server baseline`（bash 在 server 执行，
     cwd 已从 client anchor 翻译为 `/home/tester/work`）；server `qa-marker.txt` mtime 10:21→12:14；
     server session JSONL 有 tool/call + 成功 tool/result；client `home/sessions` 无该远程会话文件。
   - `mode/preview` + `mode/apply` server→local→server 均 200，同 session id/历史；

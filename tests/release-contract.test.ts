@@ -81,7 +81,7 @@ describe('package manifest', () => {
 
   it('ships the built-in server plugin of exactly this client version', () => {
     const checksums = JSON.parse(read('assets/server-plugin/checksums.json')) as Record<string, string>
-    const name = `dsh-remote-workspace-server-${manifest.version}.tgz`
+    const name = `dsh-remote-window-server-${manifest.version}.tgz`
     const sha = checksums[name]
     expect(sha, name).toMatch(/^[0-9a-f]{64}$/u)
     expect(statSync(new URL(`../assets/server-plugin/${name}`, import.meta.url)).size).toBeGreaterThan(1024)

@@ -25,7 +25,7 @@ client DSH
 ├─ 连接对话框（沿用 v1：SSH/host-key/运行时/profile）
 ├─ 浮动 target rail（唯一 client chrome，默认折叠）
 │   └─ target 状态、切换、连接/断开/忘记
-└─ main slot：<iframe src="/dsh-remote-workspace/portal/<targetId>/?dshRwFull=1">
+└─ main slot：<iframe src="/dsh-remote-window/portal/<targetId>/?dshRwFull=1">
       └─ server profile 官方 DSH UI（sidebar/header/主区/rightbar/插件 UI）
 ```
 
@@ -73,7 +73,7 @@ server profile agent
   `local-llm-providers-unavailable`，目录为空时 `local-llm-no-models`。
 - 选择过滤：高级选项保存的 `localSelection: [{providerId, models[]}]` 决定 profile 生成哪些 route
   （按目录顺序、未知项静默丢弃）；未保存选择 = 全量代理，过滤后为空 → `local-llm-no-models`（400）。
-  选择存在 client 存储域 `dsh_remote_workspace` 的 global `localLlm`（可选字段，域版本仍为 1）。
+  选择存在 client 存储域 `dsh_remote_window` 的 global `localLlm`（可选字段，域版本仍为 1）。
 - manual 模式仅为旧 API/测试保留（对话框不再提供）：endpoint/模型/超时存同上 `localLlm`，API key
   只存官方 `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`。
 - bridge 必须把 adapter 的 error/aborted 终止 chunk 转成显式错误：首个 chunk 前 → HTTP 502 JSON
@@ -157,9 +157,9 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   `pnpm build` 通过（`lib/client.js` 473.18 kB）。
 - server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
-- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,047,853 B，sha256
+- client 包 `dsh-remote-window-0.1.0-alpha.3.tgz` 1,047,853 B，sha256
   `024d2bd9cb97043fd04c842954e163ede04d71183857295648c0c8ddc6508f89`。
-- 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
+- 内置 tarball `dsh-remote-window-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
   `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
   一致。
 - server 插件在干净 `DSH_HOME` 下 rc.3 隔离冒烟：`/?dshRwFull=1` 与 `/` 字节一致（38,122 B），bootstrap
@@ -194,7 +194,7 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 - 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`、
   `cdp-rail-vertical.mjs`）：收起时跟随吸附边——左侧竖排 44×352 @ (10,96)；上下为 44px 横排图标条
   （9 targets + 折叠按钮槽 → 352×44，chip 32×32；`railBarWidth(9)=318` 只算 chip 条）；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
-  `localStorage['dsh-remote-workspace.rail-dock']`；刷新后保持 top（折叠宽 352 = `railBarWidth(10)`，含折叠按钮槽）；
+  `localStorage['dsh-remote-window.rail-dock']`；刷新后保持 top（折叠宽 352 = `railBarWidth(10)`，含折叠按钮槽）；
   拖回左缘 → y=278。**展开后不管哪条边都是同一个 280px 竖向列表**（`railBoxStyle` 负责贴边/限高/
   水平夹取）：上缘展开 y=10、高 427、chips 268×41 纵向排列；下缘展开贴底（y+h=803=813-10）；
   水平偏移夹在 [10, 视口-10-280]。截图 `/tmp/dsh-e2e/rail-top-vertical.jpg`、

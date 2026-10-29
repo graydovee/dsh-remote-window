@@ -1,4 +1,4 @@
-# dsh-remote-workspace 架构（v1 背景文档）
+# dsh-remote-window 架构（v1 背景文档）
 
 > **v1 权威文档是 `doc/refactor-v1-architecture.md` 与 `doc/refactor-v1-protocol.md`。**
 > 本文件是 v1 之前的架构历史（stdio 分帧 RPC、远程 execution world、P0 server 权威），
@@ -12,10 +12,10 @@
 > |---|---|
 > | server `~/.dsh/sessions/**` | 官方会话日志（两种执行端共用，权威） |
 > | server `~/.dsh/storages/workspace.json` | 官方 workspace registry（权威，single layout） |
-> | server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile + server 插件 + lease/log |
-> | server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 Node/DSH runtime |
-> | client `~/.dsh/storages/dsh_remote_workspace.json` | 连接记录、包策略（旧 workspace refs 会清理） |
-> | client `~/.dsh/remote-workspaces/<clientId>/…` | local 模式私有 anchors（非权威） |
+> | server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | 专用 profile + server 插件 + lease/log |
+> | server `~/.dsh/remote-window/<clientId>/runtime/` | 独立 Node/DSH runtime |
+> | client `~/.dsh/storages/dsh_remote_window.json` | 连接记录、包策略（旧 workspace refs 会清理） |
+> | client `~/.dsh/remote-windows/<clientId>/…` | local 模式私有 anchors（非权威） |
 >
 > 下文 §1–§7 中的 stdio server bundle、`remote-server-sessions`、WSL、stub/WorkspaceRef 等描述是
 > 旧架构记录；v1 不再使用。
@@ -141,8 +141,8 @@ vitest 里零 I/O 单测的纯模块（与 `deploy.parseProbeOutput` 的既有�
 
 ```
 浏览器
-  │ POST /dsh-remote-workspace/api/connect/start → {ticket}
-  │ GET  /dsh-remote-workspace/stream/connect?ticket=… （SSE 进度 + host-key + done/error）
+  │ POST /dsh-remote-window/api/connect/start → {ticket}
+  │ GET  /dsh-remote-window/stream/connect?ticket=… （SSE 进度 + host-key + done/error）
   ▼
 index.ts dispatchApi ──► RemoteWorkspaces.runConnect
                             │  provisionTarget()
@@ -180,7 +180,7 @@ index.ts dispatchApi ──► RemoteWorkspaces.runConnect
 
 ### 2.5 记录存储
 
-- `TargetStore`（`src/targets/store.ts`）开一个存储域 `dsh_remote_workspace`，**`version: 1` 恒定**
+- `TargetStore`（`src/targets/store.ts`）开一个存储域 `dsh_remote_window`，**`version: 1` 恒定**
   （`store.ts:35`），两张表 `targets` / `workspaces` + 一个 global（包来源策略）。
 - 单文件布局**没有迁移**：bump 版本即砖。**新字段只能是 additive optional**，旧文档必须在当前
   schema 下原样通过（`pinnedSessions` / `archivedSessions` 就是这么加的）。
@@ -188,7 +188,7 @@ index.ts dispatchApi ──► RemoteWorkspaces.runConnect
   `hasStoredSecret: boolean`（`service.ts:1244`）。任何错误/日志一律过 `scrubSecrets`
   （`targets/types.ts:336`）。
 - 远端工作区在**本地 shell 的工作区树**里靠一个 stub 目录占位
-  （`service.ts:1062-1092`：`~/.dsh/remote-workspaces/<targetId>/<sha1(targetId,path)>`），
+  （`service.ts:1062-1092`：`~/.dsh/remote-windows/<targetId>/<sha1(targetId,path)>`），
   官方 workspace 只认 `realpath(cwd) === workspace.path`；在当前“复用官方草稿页”的路线下，这是远端路径能进 shell 树的唯一办法。
 
 > 官方 UI/功能复用边界、vendored 行的改动和自实现清单见 `doc/official-workspace-reuse.md`；
@@ -203,7 +203,7 @@ index.ts dispatchApi ──► RemoteWorkspaces.runConnect
 
 ### 2.7 HTTP 面
 
-- 前缀 `/dsh-remote-workspace`；命令一律 `POST /api/<name>`（名字**允许含斜杠**，如 `connect/start`），
+- 前缀 `/dsh-remote-window`；命令一律 `POST /api/<name>`（名字**允许含斜杠**，如 `connect/start`），
   响应信封 `{ ok: true, value }` / `{ ok: false, error: { code, message } }`。
 - 每个请求先过 `trustedRequest`（`index.ts:128`：loopback/trustedHosts + `sec-fetch-site` +
   origin 同源），body ≤ 1 MiB（`index.ts:63`），错误消息过 `scrubSecrets`。
@@ -277,7 +277,7 @@ start    ── reuse 用 `PATH="<nodeDir>:<launcherDir>:$PATH" exec <launcher> 
    （它可能是另一台机器/旧版本留下的）。
 3. **reuse 也需要 install 插件**：`upload` 阶段把 `<DSH_HOME>/profiles/<profile>/` 写成
    `package.json` + `cordis.yml` + `cordis.patch.yml` + `pnpm-workspace.yaml` +
-   `node_modules/dsh-remote-workspace/**`（`profile.remoteProfileFiles` + `profile.packageFiles`，
+   `node_modules/dsh-remote-window/**`（`profile.remoteProfileFiles` + `profile.packageFiles`，
    现有函数原样复用）。这就是需求里的「自动安装插件」——**全程不访问远端包管理器、不需要远端网络**，
    字节来自本机缓存/本机构建。marker 写 `<profileDir>/.dsh-rw-plugin.json`（见 §3.7）。
 
@@ -587,7 +587,7 @@ QA 取证仍按 `doc/acceptance-gap.md` B 节与 E 节；两条传输路径（WS
 | 连接目标 / 认证方式 | **本地** | plugin 存储域 `targets` | 权威 |
 | SSH 密码 / 私钥口令 / 模型 key | **本地** | `ctx.credentials`（记录里只有 `credentialKey` 引用） | 权威，**绝不过线** |
 | 包来源策略 / 平台探测 / 复用启动器 | **本地** | `targets` 记录（`packageSource`/`platformProbe`/`reuseDsh`/`serverPackage`） | 权威（本机事实） |
-| stub 目录 | **本地临时材料** | `~/.dsh/remote-workspaces/<targetId>/<sha1>` | **非权威**，可随时删除重建 |
+| stub 目录 | **本地临时材料** | `~/.dsh/remote-windows/<targetId>/<sha1>` | **非权威**，可随时删除重建 |
 | **官方 shell 工作区条目** | **本地 shell**（`workspaceRegistry`，落在共享 `~/.dsh/storages/workspace.json`） | 共享存储（所有 profile/客户端共用） | **默认零写入**（Gate 0 分支 A，A39）；逃生口下才写；历史遗留由清扫无条件收掉（§7.4） |
 | 置顶 / 归档 | **每客户端视图** | plugin 存储域 `workspaceRefs`（按 `remoteWorkspaceId` 存） | 视图状态，不上 server（A40） |
 | 本地 ref（`stubPath`/`officialWorkspaceId`/`sessionId`/`lastOpenedAt`） | **本地** | plugin 存储域 `workspaceRefs` | 材料化 + UI 状态；**不决定「有没有这一行」**（见下） |
@@ -710,7 +710,7 @@ Gate 0 = 判定**我们到底需不需要这条官方行**。三个分支：
   2. **生命周期回收**：注册过的话，最后一个本地会话关闭（`session/disposed`）或 target 断开/删除时，
      删掉官方条目与 stub 目录；`dispose()`（插件卸载）清扫本进程造出的全部条目。
   3. **启动 + 手动清扫（两条入口）**：
-     - 启动时扫官方 registry，删掉 `path` 落在 `~/.dsh/remote-workspaces/` 下、且**没有活跃会话**的条目；
+     - 启动时扫官方 registry，删掉 `path` 落在 `~/.dsh/remote-windows/` 下、且**没有活跃会话**的条目；
      - `POST /api/cleanup-shell-workspaces`：手动触发同一次清扫，响应列出删掉/保留的 id
        （保留 = 有活跃会话）。这是 QA 证明「desktop 零污染」的操作入口。
 

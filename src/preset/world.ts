@@ -62,7 +62,7 @@ export function remotePresetDefinition(target: RemotePresetTarget): PresetDefini
         config: [
           {
             id: 'connection',
-            name: 'dsh-remote-workspace/connection',
+            name: 'dsh-remote-window/connection',
             config: { targetId: target.id, label: target.label },
           },
           // Official providers, unmodified: they only talk to `ctx.ssh`.

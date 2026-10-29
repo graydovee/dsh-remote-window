@@ -35,7 +35,7 @@ import {
 } from './portal-url.ts'
 
 /** Main-slot key for the full-screen official UI area. */
-export const SERVER_MAIN_ID = 'dsh-remote-workspace-server'
+export const SERVER_MAIN_ID = 'dsh-remote-window-server'
 
 /** Attribute placed on `<html>` while a portal frame is mounted. */
 export const PORTAL_ACTIVE_ATTR = 'data-dsh-rw-portal'
@@ -144,7 +144,7 @@ function selectConversationPanel(): void {
     const layout = clientContext?.get('layout') as { selectPanel?(id: string | null): void } | undefined
     layout?.selectPanel?.(null)
   } catch (error) {
-    console.error('[dsh-remote-workspace] returning to the conversation panel failed', error)
+    console.error('[dsh-remote-window] returning to the conversation panel failed', error)
   }
 }
 

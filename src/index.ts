@@ -1,5 +1,5 @@
 /**
- * `dsh-remote-workspace` host row (v1).
+ * `dsh-remote-window` host row (v1).
  *
  * It owns the target store, the per-client profile/runtime lifecycle, the P1
  * client/portal and the browser-facing API. The browser UI lives in `./client`;
@@ -33,10 +33,10 @@ import { dispatchLocalLlmApi, parseModelSource } from './local-llm/routes.ts'
 import type { NativeLlmRuntime } from './local-llm/native.ts'
 
 /** Route prefix for the plugin's own API and SSE channel. */
-export const ROUTE_PREFIX = '/dsh-remote-workspace'
+export const ROUTE_PREFIX = '/dsh-remote-window'
 
 /** Plugin row name. */
-export const name = 'dsh-remote-workspace'
+export const name = 'dsh-remote-window'
 
 /** Host-plane services this row needs before it can register anything. */
 export const inject = ['agentPresets', 'storageDomain', 'credentials', 'agents', 'webServer']
@@ -820,23 +820,23 @@ export function apply(ctx: Context, config: Config): void {
     remotePathForWorkspace: workspaceId => profiles.remotePathForWorkspace(workspaceId),
   }
   createRoutingPersistence(ctx, { root: sessionRoot }, routingFacade)
-  ctx.logger.debug(`dsh-remote-workspace: local session root=${sessionRoot}`)
+  ctx.logger.debug(`dsh-remote-window: local session root=${sessionRoot}`)
   ctx.on('session/created', (session) => { assertRemoteSessionPreset(session.header) }, { global: true })
-  ctx.effect(() => () => { void store.close() }, 'dsh-remote-workspace: storage')
-  ctx.effect(() => registerRoutes(ctx, profiles), 'dsh-remote-workspace: routes')
-  ctx.effect(() => () => { void profiles.dispose() }, 'dsh-remote-workspace: v1 profiles')
+  ctx.effect(() => () => { void store.close() }, 'dsh-remote-window: storage')
+  ctx.effect(() => registerRoutes(ctx, profiles), 'dsh-remote-window: routes')
+  ctx.effect(() => () => { void profiles.dispose() }, 'dsh-remote-window: v1 profiles')
 
   storageReady = store.open().then(async () => {
     await store.ensureClientId()
     const persistence = ctx.get('sessionPersistence') as { routingMarker?: symbol } | undefined
-    if (persistence?.routingMarker !== Symbol.for('dsh-remote-workspace.routing-persistence')) {
-      ctx.logger.error('dsh-remote-workspace: the `session-persistence-jsonl` row override did not apply; remote sessions would be stored locally (see cordis.patch.yml deviation d13)')
+    if (persistence?.routingMarker !== Symbol.for('dsh-remote-window.routing-persistence')) {
+      ctx.logger.error('dsh-remote-window: the `session-persistence-jsonl` row override did not apply; remote sessions would be stored locally (see cordis.patch.yml deviation d13)')
     }
   }).catch((error: unknown) => {
     storageFailure = scrubSecrets(error instanceof Error ? error.message : String(error))
-    ctx.logger.error(`dsh-remote-workspace: startup failed: ${storageFailure}`)
+    ctx.logger.error(`dsh-remote-window: startup failed: ${storageFailure}`)
   })
   void storageReady.then(() => {
-    ctx.logger.debug(`dsh-remote-workspace: home=${homedir()} routes=${join(ROUTE_PREFIX, 'api')}`)
+    ctx.logger.debug(`dsh-remote-window: home=${homedir()} routes=${join(ROUTE_PREFIX, 'api')}`)
   })
 }

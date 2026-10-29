@@ -16,7 +16,7 @@ import {
 import { RemoteTree } from './tree.tsx'
 
 /** Attribute carrying our section element, for idempotent remounting. */
-export const SIDEBAR_SECTION_ATTR = 'data-dsh-remote-workspace-section'
+export const SIDEBAR_SECTION_ATTR = 'data-dsh-remote-window-section'
 
 /** The shell's sidebar browsing seat. */
 const WORKSPACES_SLOT = '[data-slot="sidebar.workspaces"]'
@@ -26,7 +26,7 @@ export function SidebarSection(): ReactElement | null {
   const state = useRemoteAppState()
   const busy = state.loading || state.pending
   return (
-    <section className="dsh-rw-side" aria-label={t('tree.sidebar.title')} data-plugin="dsh-remote-workspace">
+    <section className="dsh-rw-side" aria-label={t('tree.sidebar.title')} data-plugin="dsh-remote-window">
       <header className="dsh-rw-side-head">
         <span className="dsh-rw-side-title">{t('tree.sidebar.title')}</span>
         <span className="dsh-rw-side-actions">

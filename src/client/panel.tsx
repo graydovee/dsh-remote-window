@@ -21,7 +21,7 @@ import type { RemoteConnectionView } from './remote-store.ts'
 import { NativeSessionMain } from './session-main.tsx'
 
 /** The panel id in the layout's main registry (`main` slot key). */
-export const PANEL_ID = 'dsh-remote-workspace'
+export const PANEL_ID = 'dsh-remote-window'
 
 /** Native server conversation main area (registered under NATIVE_MAIN_ID). */
 export function NativeSessionPanel(): ReactElement | null {

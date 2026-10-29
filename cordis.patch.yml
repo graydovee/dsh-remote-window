@@ -1,19 +1,19 @@
-# dsh-remote-workspace bundle layer.
+# dsh-remote-window bundle layer.
 #
 # The host row: owns the target store, the per-target agent presets and the
-# wizard routes served from /dsh-remote-workspace. It injects the services it
+# wizard routes served from /dsh-remote-window. It injects the services it
 # needs, so its activation order is resolved by the loader rather than by the
 # row position. Most remote capability is registered as a new row (this layer)
 # or a new agent-preset row (src/preset/world.ts).
 - insert:
-    - id: dsh-remote-workspace
-      name: dsh-remote-workspace
+    - id: dsh-remote-window
+      name: dsh-remote-window
 
 # ── session persistence routing (documented deviation d13) ──────────────────
 # Overrides the base persistence row so the
 # agent-loop's host-plane persistence resolves to a cwd-router: local cwds
 # delegate to the official JSONL backend with the same root (local sessions
-# behave exactly as before), remote-workspace stub cwds go to the authoritative
+# behave exactly as before), remote-window stub cwds go to the authoritative
 # store on the remote server. A later layer wins per row and replaces the whole
 # config, so every base key is restated. The plugin self-checks this override
 # at activation and warns loudly if a future dsh renames the row.

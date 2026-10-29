@@ -57,7 +57,7 @@
 | 2a.1 扫描远端已安装的 dsh 实例 | **不存在**。`src/provision/channel.ts` 全文无扫描；`src/provision/assets.ts:330-334` `sourceOrder` 只有 cache/download/build；`grep reuse` 无实现命中 | 无扫描脚本、无解析器、无路由、无 UI 列表 | 新增 `src/provision/dsh-scan.ts`（`scanDshScript()` + `parseDshScanOutput()` + `DshCandidate`）；新增路由 `dsh-scan`；`RemoteWorkspaces.scanDsh()` 用 throwaway transport 执行（照 `service.ts:629-647` `runCommand` 的写法） | `provision/dsh-scan.ts`(新)、`provision/service.ts`、`index.ts`、`client/api.ts`、`client/store.ts`、`client/wizard.tsx` | 高。扫描脚本必须是**只读**的，且 WSL 侧必须走 stdin（硬约束 8）；候选枚举面（PATH/nvm/fnm/volta/pnpm/`~/.dsh/server`）容易漏 |
 | 2a.2 列出让用户选 | 无 | 无候选 UI | 第 3 步渲染候选列表（路径 / 版本 / 兼容徽标 / 是否已有 server 插件），选中项进 `config.reuseLauncherPath` | `client/wizard.tsx` | 中。`state.config` 里新增字段，注意 `patchConfig` 会清 `pendingSecret`（`store.ts:823-834`），选中候选不得走 `patchConfig` |
 | 2a.3 判定版本兼容（`DSH_VERIFIED_RUNTIMES` 成员判定，只含 `0.2.1-rc.2`） | 区间只存在于 `package.json:84` 等 peer 声明；host 侧没有任何版本比较代码 | 无预发布感知的版本比较 | 新增 `src/provision/version-range.ts`：`parseDshVersion` / `compareVersions` / `isCompatibleDsh`（硬编码下限 `0.2.1-rc.2`、上限 `0.3.0` 开区间）；不新增依赖 | `provision/version-range.ts`(新)、`provision/dsh-scan.ts`、`provision/plan.ts` | 中。预发布语义（`rc.2` vs `rc.10` 数值比较、release > prerelease）必须有单测 |
-| 2a.4 判定「缺 server 插件」 | 部署侧只有插件文件集的 sha256 marker：`channel.ts:379-391`（`decidePlugin`）、`deploy.ts:173-175`。复用路径下**没有** profile 目录 marker | 无「该 dsh 的 profile 里有没有我们的插件/是否最新」判定 | 扫描返回每个候选的 `profile.pluginVersion/pluginSha256/upToDate`（读 `<DSH_HOME>/profiles/<profile>/node_modules/dsh-remote-workspace/package.json` 与 `.dsh-rw-plugin.json`）；部署侧用 `sha256OfFiles` 比对 | `provision/dsh-scan.ts`、`provision/plan.ts`、`provision/channel.ts` | 中。`<DSH_HOME>` 可能与 `~/.dsh` 不同（`remote.dshHome` 可配），扫描需按用户配置的 dshHome 展开 |
+| 2a.4 判定「缺 server 插件」 | 部署侧只有插件文件集的 sha256 marker：`channel.ts:379-391`（`decidePlugin`）、`deploy.ts:173-175`。复用路径下**没有** profile 目录 marker | 无「该 dsh 的 profile 里有没有我们的插件/是否最新」判定 | 扫描返回每个候选的 `profile.pluginVersion/pluginSha256/upToDate`（读 `<DSH_HOME>/profiles/<profile>/node_modules/dsh-remote-window/package.json` 与 `.dsh-rw-plugin.json`）；部署侧用 `sha256OfFiles` 比对 | `provision/dsh-scan.ts`、`provision/plan.ts`、`provision/channel.ts` | 中。`<DSH_HOME>` 可能与 `~/.dsh` 不同（`remote.dshHome` 可配），扫描需按用户配置的 dshHome 展开 |
 | 2a.5 自动安装插件 | 插件安装逻辑已在打包路径里：`channel.ts:369-392`（`packageFiles` + `writeFiles` + marker），但目标目录固定为 `~/.dsh/profiles/<p>` 下的部署树 | 没有「装进复用 dsh 的 profile」分支；没有复用模式的 marker/部署锁 | `channel.ts` 拆两段：`uploadProfileAndPlugin({ profileDir, markerPath })`；复用模式 `profileDir = <DSH_HOME>/profiles/<profile>`，锁 = `<profileDir>/.dsh-rw.lock` | `provision/channel.ts`、`provision/deploy.ts`（新增 `profilePluginScript`/锁脚本）、`provision/profile.ts` | 中。两条路径共用 marker 语义，注意别让打包路径的旧 marker 失效（probe 要读两处） |
 | 2a.6 远端没网时的失败提示 | **本来就不需要远端网络**：插件字节来自本机（`profile.packageFiles`）+ 本机缓存 | 无差距，但**文案**要讲清楚 | 第 3 步复用卡片文案 + 连接日志文案：复用模式「不需要远端网络」；失败时错误码 `dsh-incompatible` / `reuse-launcher-missing` / `reuse-node-missing` / `reuse-boot-failed`，并给**「改用上传 server 包并重试」按钮**（Leader 裁决 4：用户点了才切换，绝不自动回退） | `client/locales.ts`、`client/wizard.tsx`、`provision/channel.ts` | 低 |
 | 2a.7 与五步流水线合并 | `channel.ts:208-419` `provisionOver`：probe→runtime→upload→start；`channel.ts:350-367` 无条件准备 dsh 包 | 无「跳过 runtime + dsh 包」分支 | 新增 `provision/plan.ts::planProvision`；`channel.ts` 按 plan 跳过 runtime（emit `ok` + 消息）与 dsh 包上传；start 用 `reuseServerCommand` | `provision/plan.ts`(新)、`provision/channel.ts`、`provision/profile.ts` | 高。这是最容易被写歪的地方：**不允许** reuse 失败后静默改走上传（A11） |
@@ -140,7 +140,7 @@
    `grep -r "<sessionId>"` 必须**无命中**（本地不得出现该会话）。
 2. **工具在远端执行**：在会话里让模型跑
    `pwd; hostname; uname -s; cat /proc/sys/kernel/ostype; touch .dsh-rw-remote-proof`
-   - 输出里的 `pwd` 必须是**远端工作区路径**（不是 stub `C:\…\.dsh\remote-workspaces\…`，也不是本机的 cwd）；
+   - 输出里的 `pwd` 必须是**远端工作区路径**（不是 stub `C:\…\.dsh\remote-windows\…`，也不是本机的 cwd）；
    - `hostname`/`uname` 必须是远端（WSL 场景 = 发行版；ssh 场景 = 远端主机）；
    - `.dsh-rw-remote-proof` 必须**只在远端**存在（`ssh`/`wsl` 里 `ls` 得到），本机对应路径不存在。
 3. **一次工具调用只发生一次**：远端 `ls` 只看到 1 个 proof 文件，本机同名文件 0 个（防止「两边都跑了」）。
@@ -243,16 +243,16 @@
 
 ### F.2 desktop 零污染（共享 registry 不再出现我们的 stub）
 
-1. 记录基线：`cat ~/.dsh/storages/workspace.json`（或该存储域文件）里 `~/.dsh/remote-workspaces/` 出现次数。
+1. 记录基线：`cat ~/.dsh/storages/workspace.json`（或该存储域文件）里 `~/.dsh/remote-windows/` 出现次数。
 2. 走一遍完整流程（连接 → 添加工作区 → 开一个会话 → 断开）。
 3. 调用 `POST /api/cleanup-shell-workspaces`，期望 `{ removed: [...], kept: [] }`（`kept` 非空 = 仍有活跃会话）。
-4. 再 `cat` 同一文件：**`~/.dsh/remote-workspaces/` 出现次数为 0**（贴出 grep 计数前后对比：
-   `grep -c "remote-workspaces" <file>`）。
+4. 再 `cat` 同一文件：**`~/.dsh/remote-windows/` 出现次数为 0**（贴出 grep 计数前后对比：
+   `grep -c "remote-windows" <file>`）。
 5. **未装插件的 desktop**：在 desktop profile 里启动（**不**装本插件），左栏**不出现**任何远程工作区行；
    文件里也没有我们的 stub 条目（第 4 步已证）。
 
 > **默认分支是 A（零写入）**（Leader 裁决 v8）：不设 `DSH_RW_FORCE_SHELL_WORKSPACES=1` 时，
-> 第 2 步走完文件里就**不应新增任何** `~/.dsh/remote-workspaces/` 条目——**第 3 步的清扫是为了
+> 第 2 步走完文件里就**不应新增任何** `~/.dsh/remote-windows/` 条目——**第 3 步的清扫是为了
 > 清历史遗留**（老版本写进去的行），不是清我们刚刚写的。因此：
 > - 若第 2 步后计数**增加** → 判失败（默认 A 失效）；
 > - 若第 2 步后计数不变、但第 3 步清出了旧行（`removed` 非空）→ **符合预期**；

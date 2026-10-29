@@ -111,7 +111,7 @@ export async function openRemoteSession(ctx: Context, options: OpenRemoteSession
   // The path here is the **local stub** the session is anchored on (the realm's
   // stub→remote alias translates it at the tool boundary), so it must be
   // absolute *for this host*: `startsWith('/')` rejected every Windows stub
-  // (`C:\Users\…\.dsh\remote-workspaces\…`) even though it was perfectly valid.
+  // (`C:\Users\…\.dsh\remote-windows\…`) even though it was perfectly valid.
   if (!isAbsolute(options.path)) throw new Error(`remote working directory must be absolute, received "${options.path}"`)
   const presets = ctx.agentPresets
   const presetId = options.agentPreset ?? remotePresetId(options.targetId)

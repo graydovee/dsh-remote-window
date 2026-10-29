@@ -36,7 +36,7 @@ export const PROFILE_STOP_TIMEOUT_MS = 5_000
 export const PROFILE_LEASE_TTL_MS = 20_000
 
 /** The server plugin package installed into the per-client profile. */
-export const PROFILE_SERVER_PLUGIN = 'dsh-remote-workspace-server'
+export const PROFILE_SERVER_PLUGIN = 'dsh-remote-window-server'
 
 /** Plugin marker written into the profile after the file set is on disk. */
 export const PROFILE_PLUGIN_MARKER = '.dsh-rw-plugin.json'
@@ -67,7 +67,7 @@ export interface ProfilePaths {
   readonly profile: string
   /** `$DSH_HOME/profiles/<profile>` (DSH's own profile directory). */
   readonly profileDir: string
-  /** `$DSH_HOME/remote-workspace/profiles/<profile>` (our log/pid state). */
+  /** `$DSH_HOME/remote-window/profiles/<profile>` (our log/pid state). */
   readonly stateDir: string
   readonly logPath: string
   readonly pidPath: string
@@ -94,7 +94,7 @@ export function profilePaths(dshHome: string, clientId: string): ProfilePaths {
   if (!isClientId(clientId)) throw new Error(`invalid clientId ${JSON.stringify(clientId)}`)
   const profile = profileNameFor(clientId)
   const profileDir = `${home}/profiles/${profile}`
-  const stateDir = `${home}/remote-workspace/profiles/${profile}`
+  const stateDir = `${home}/remote-window/profiles/${profile}`
   return {
     dshHome: home,
     clientId,

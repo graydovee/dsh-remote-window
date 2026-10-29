@@ -1,5 +1,5 @@
 /**
- * Localization for the remote-workspace browser half.
+ * Localization for the remote-window browser half.
  *
  * The official `@deepseek-ai/dsh-client-locale` package is injectable but
  * NOT required for v1: this plugin owns a small `zh`/`en` dictionary and a

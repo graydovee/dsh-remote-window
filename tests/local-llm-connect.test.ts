@@ -60,13 +60,13 @@ beforeAll(async () => {
         res.end()
         return
       }
-      if (req.url === '/dsh-remote-workspace-server/api/handshake') {
+      if (req.url === '/dsh-remote-window-server/api/handshake') {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, value: {
           protocol: 1,
           pluginVersion: VERSION,
           dshVersion: DSH_VERSION,
-          profile: 'graydovee-remote-workspace-abcdef012345',
+          profile: 'graydovee-remote-window-abcdef012345',
           clientId: CLIENT_ID,
           lease: { instanceId: 'i', expiresAt: '2026-01-01T00:00:20.000Z' },
           capabilities: { workspaceApi: 1, eventsSse: 1, muxWs: 1, embed: { storagePrefix: 'dshrw:test:', mode: 'reload' } },
@@ -93,7 +93,7 @@ beforeAll(async () => {
 
   const root = await mkdtemp(join(tmpdir(), 'dsh-rw-local-connect-'))
   await writeFakeServerPluginPackage(root, { version: VERSION })
-  tarball = await packPackage(root, `dsh-remote-workspace-server-${VERSION}.tgz`)
+  tarball = await packPackage(root, `dsh-remote-window-server-${VERSION}.tgz`)
   process.env['DSH_RW_SERVER_PLUGIN_TARBALL'] = tarball
 })
 
@@ -413,7 +413,7 @@ describe('ProfileService local model source', () => {
       remote: {
         nodePath: '/usr/local/bin/node',
         dshCommand: '/usr/local/bin/dsh',
-        profile: 'graydovee-remote-workspace-abcdef012345',
+        profile: 'graydovee-remote-window-abcdef012345',
         dshHome: '/home/user/.dsh',
         plugins: [],
       },

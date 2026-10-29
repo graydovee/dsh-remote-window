@@ -17,7 +17,7 @@ describe('remote execution-world context', () => {
     expect(calls).toHaveLength(2)
     expect(calls[0]).toMatchObject({ name: 'working-directory:current', required: true, interpolate: false })
     expect(calls[0]?.text).toBe('Current working directory: "/srv/project".')
-    expect(calls[1]).toMatchObject({ name: 'remote-workspace/execution-host', interpolate: false })
+    expect(calls[1]).toMatchObject({ name: 'remote-window/execution-host', interpolate: false })
     expect(calls[1]?.text).toBe('Execution host: buildbox (tester@203.0.113.10:22).')
   })
 })

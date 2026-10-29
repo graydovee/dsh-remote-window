@@ -7,11 +7,11 @@
  * constructed — see AGENTS.md "会话持久层的路由接线"). Routing exists because
  * the agent loop resolves `sessionPersistence` on the HOST plane — a
  * preset-realm provide never reaches it (measured against dsh 0.2.0-rc.1,
- * 2026-10-15) — so the only way a remote-workspace session can persist to the
+ * 2026-10-15) — so the only way a remote-window session can persist to the
  * remote server is for the host-level service itself to route.
  *
  * Routing rule, evaluated per call:
- * - `create(header)`: the header cwd of a remote-workspace session is its
+ * - `create(header)`: the header cwd of a remote-window session is its
  *   private local anchor; a registered anchor routes to that workspace's
  *   profile server (P1 `persist/create`). Any other cwd delegates to the
  *   embedded official JSONL backend with the same root — local sessions are
@@ -28,7 +28,7 @@
  * with the ownership error), so no client-side locking is added.
  *
  * v1: a remote session's cwd is a plugin-private anchor
- * (`<DSH_HOME>/remote-workspaces/<clientId>/<targetId>/<hash>`), and the
+ * (`<DSH_HOME>/remote-windows/<clientId>/<targetId>/<hash>`), and the
  * facade resolves it to the server workspace / `remoteCwd`. The retired
  * stdio plane is gone; `list` remains local-only so the server-owned rows never
  * leak into the client shell's global session list.
@@ -189,7 +189,7 @@ class RemoteLiveWriter {
       } catch (error) {
         this.buffer = [...batch, ...this.buffer]
         this.warn(
-          `dsh-remote-workspace: background write for session "${String(this.handle.id)}" failed `
+          `dsh-remote-window: background write for session "${String(this.handle.id)}" failed `
           + `(buffered events retained): ${String(error)}`,
         )
       }
@@ -261,7 +261,7 @@ class DrainedHandle implements SessionHandle {
   readonly [Symbol.asyncDispose] = async (): Promise<void> => { await this.close() }
 }
 
-const ROUTING_MARKER = Symbol.for('dsh-remote-workspace.routing-persistence')
+const ROUTING_MARKER = Symbol.for('dsh-remote-window.routing-persistence')
 
 /**
  * Scope label for the embedded local backend's service registration.
@@ -270,7 +270,7 @@ const ROUTING_MARKER = Symbol.for('dsh-remote-workspace.routing-persistence')
  * instances in one process share one local backend instead of racing to register
  * a second one.
  */
-const LOCAL_SCOPE = Symbol.for('dsh-remote-workspace.local-persistence')
+const LOCAL_SCOPE = Symbol.for('dsh-remote-window.local-persistence')
 
 export default class RoutingSessionPersistence extends SessionPersistence {
   /**

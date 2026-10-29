@@ -14,7 +14,7 @@ import { remotePresetId } from '../src/preset/world.ts'
 import { RW_METHODS } from '../src/protocol.ts'
 
 const TARGET = 'rt-abc'
-const ANCHOR = '/Users/someone/.dsh/remote-workspaces/aaaaaaaaaaaa/rt-abc/1234abcd'
+const ANCHOR = '/Users/someone/.dsh/remote-windows/aaaaaaaaaaaa/rt-abc/1234abcd'
 const REMOTE_PATH = '/home/user/project'
 const WORKSPACE_ID = '3f9a1c0b7e2d4a68'
 
@@ -206,6 +206,6 @@ describe('routing session persistence (v1)', () => {
 
   it('exposes the activation self-check marker', () => {
     const persistence = new RoutingSessionPersistence(makeCtx(), { root: join(tmpdir(), 'rw-routing5-') })
-    expect((persistence as unknown as { routingMarker: symbol }).routingMarker).toBe(Symbol.for('dsh-remote-workspace.routing-persistence'))
+    expect((persistence as unknown as { routingMarker: symbol }).routingMarker).toBe(Symbol.for('dsh-remote-window.routing-persistence'))
   })
 })

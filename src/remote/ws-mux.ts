@@ -26,7 +26,7 @@ import type { RemoteMuxBackend, RemoteMuxStream } from './mux-client.ts'
 import { WebSocketFrameDuplex } from './ws-framing.ts'
 
 /** Path of the server plugin's mux upgrade (protocol §4.1). */
-export const MUX_UPGRADE_PATH = '/dsh-remote-workspace-server/api/mux'
+export const MUX_UPGRADE_PATH = '/dsh-remote-window-server/api/mux'
 
 /** Capabilities sent in the outer hello. */
 export const MUX_CAPABILITIES = ['fs', 'subprocess', 'sandbox', 'terminal', 'process'] as const

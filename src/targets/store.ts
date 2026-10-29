@@ -21,9 +21,9 @@ import {
 import { generateClientId, isClientId } from './client-id.ts'
 
 /** Smallest credential scope/id segments `ctx.credentials` accepts. */
-const CREDENTIAL_SCOPE = 'remote-workspace'
+const CREDENTIAL_SCOPE = 'remote-window'
 /** Storage domains reject hyphens; the plugin name cannot be reused here. */
-export const REMOTE_DOMAIN_NAME = 'dsh_remote_workspace'
+export const REMOTE_DOMAIN_NAME = 'dsh_remote_window'
 /**
  * Credential id for the client-local model endpoint's API key.
  *
@@ -32,7 +32,7 @@ export const REMOTE_DOMAIN_NAME = 'dsh_remote_workspace'
  */
 export const LOCAL_LLM_CREDENTIAL_ID = 'client-local-llm'
 
-/** The credential key (`remote-workspace/client-local-llm`) of the local model key. */
+/** The credential key (`remote-window/client-local-llm`) of the local model key. */
 export function localLlmCredentialKey(): CredentialKey {
   return credentialKey(CREDENTIAL_SCOPE, LOCAL_LLM_CREDENTIAL_ID)
 }

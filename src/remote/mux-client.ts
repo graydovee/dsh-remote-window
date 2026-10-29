@@ -2,7 +2,7 @@
  * Execution-world mux client seam (protocol §16.9).
  *
  * The server plugin exposes one WebSocket per target
- * (`/dsh-remote-workspace-server/api/mux`); the bytes inside it are the existing
+ * (`/dsh-remote-window-server/api/mux`); the bytes inside it are the existing
  * `FrameMux` frames (one WS message = one complete frame, §7). This module is the
  * **client-facing seam** dev-session adapts `src/connection/index.ts` to:
  *

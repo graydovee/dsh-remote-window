@@ -17,7 +17,7 @@ import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import { describe, expect, it } from 'vitest'
 import { RemotePersistence } from '../src/rsession/remote-persistence.ts'
 
-const STUB = '/Users/someone/.dsh/remote-workspaces/client-1/target-1/abc'
+const STUB = '/Users/someone/.dsh/remote-windows/client-1/target-1/abc'
 const REMOTE = '/srv/project'
 
 /** A stored header as the server would return it (server cwd). */

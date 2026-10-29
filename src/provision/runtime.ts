@@ -9,8 +9,8 @@
  * so one client's isolated runtime is a fixed directory with two components, a
  * Node distribution and a dsh install:
  *
- *   $DSH_HOME/remote-workspace/<clientId>/runtime/node/bin/node
- *   $DSH_HOME/remote-workspace/<clientId>/runtime/dsh/node_modules/.bin/dsh
+ *   $DSH_HOME/remote-window/<clientId>/runtime/node/bin/node
+ *   $DSH_HOME/remote-window/<clientId>/runtime/dsh/node_modules/.bin/dsh
  *
  * The artifact (client cache upload first, server download only as a fallback)
  * is a tarball carrying `node/` and `dsh/` at its root. The remote script below
@@ -81,12 +81,12 @@ export class RuntimeError extends Error {
   }
 }
 
-/** `$DSH_HOME/remote-workspace/<clientId>/runtime` for one client. */
+/** `$DSH_HOME/remote-window/<clientId>/runtime` for one client. */
 export function runtimePaths(dshHome: string, clientId: string): RuntimePaths {
   if (!dshHome.startsWith('/')) throw new Error(`DSH_HOME must be an absolute server path, got ${JSON.stringify(dshHome)}`)
   if (!isClientId(clientId)) throw new Error(`invalid clientId ${JSON.stringify(clientId)}`)
   const home = dshHome.replace(/\/+$/u, '')
-  const stateDir = `${home}/remote-workspace/${clientId}`
+  const stateDir = `${home}/remote-window/${clientId}`
   const root = `${stateDir}/runtime`
   return {
     dshHome: home,

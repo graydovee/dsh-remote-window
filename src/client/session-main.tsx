@@ -54,7 +54,7 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
 }
 
 /** Main-slot key for the native server conversation (task-15 registers it). */
-export const NATIVE_MAIN_ID = 'dsh-remote-workspace-native'
+export const NATIVE_MAIN_ID = 'dsh-remote-window-native'
 
 /** Minimal selection request; timeline/SSE data is owned by the integration. */
 export interface NativeSessionRequest {

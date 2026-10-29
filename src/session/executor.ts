@@ -2,7 +2,7 @@
  * Client-side view of the per-session executor (server / local) state.
  *
  * The authoritative record is owned by the server plugin (protocol §5.4: one
- * `ExecutorRecord` per session, stored under `$DSH_HOME/remote-workspace/state/
+ * `ExecutorRecord` per session, stored under `$DSH_HOME/remote-window/state/
  * executors/*.json`). This module only orchestrates the **client half** of a
  * switch against that record through P1 `executor/*` RPCs, and keeps the
  * ordering that makes the hand-off safe:

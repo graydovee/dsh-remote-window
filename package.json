@@ -1,5 +1,5 @@
 {
-  "name": "dsh-remote-workspace",
+  "name": "dsh-remote-window",
   "version": "0.1.0-alpha.3",
   "description": "Remote entry for DeepSeek Harness: launch DSH on an SSH host and reproduce its official web UI full-screen inside the client, with an optional local model bridge.",
   "type": "module",
@@ -41,7 +41,7 @@
     "dsh-plugin",
     "deepseek-harness",
     "dsh",
-    "remote-workspace",
+    "remote-window",
     "ssh",
     "client-plugin",
     "remote-ui",
@@ -53,7 +53,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/graydovee/dsh-remote-workspace"
+    "url": "https://github.com/graydovee/dsh-remote-window"
   },
   "publishConfig": {
     "access": "public"
