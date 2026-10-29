@@ -2622,17 +2622,20 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   cursor: grabbing;
 }
 
-.dsh-rw-rail[data-dock="left"][data-expanded="true"],
-.dsh-rw-rail[data-dock="right"][data-expanded="true"],
 .dsh-rw-rail[data-dock="left"]:focus-within,
 .dsh-rw-rail[data-dock="right"]:focus-within {
   width: 280px;
 }
 
-/* Top/bottom docks are horizontal bars: collapsed shows a row of glyph chips,
-   expanded widens the bar in place so labels/actions read left-to-right. */
-.dsh-rw-rail[data-dock="top"],
-.dsh-rw-rail[data-dock="bottom"] {
+/* Every expanded dock renders the same vertical list; only the collapsed
+   strip follows its edge orientation. */
+.dsh-rw-rail[data-expanded="true"] {
+  width: 280px;
+}
+
+/* Collapsed top/bottom docks are horizontal bars: one glyph chip per target. */
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]),
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) {
   flex-direction: row;
   align-items: stretch;
   height: 44px;
@@ -2640,15 +2643,15 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   padding: 6px;
 }
 
-.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-head,
-.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-head {
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-head,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-head {
   flex: none;
   padding: 0 6px 0 0;
   align-items: center;
 }
 
-.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-list,
-.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-list {
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-list,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-list {
   flex: none;
   flex-direction: row;
   min-height: 0;
@@ -2656,39 +2659,34 @@ html[data-dsh-rw-portal] [data-slot="root"] > div > div {
   overflow-y: hidden;
 }
 
-.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-target,
-.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-target,
-.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-empty,
-.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-empty {
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-target,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-target,
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-empty,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-empty {
   flex: none;
   max-width: 200px;
 }
 
-.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-target .dsh-rw-rail-main,
-.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-target .dsh-rw-rail-main {
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-target .dsh-rw-rail-main,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-target .dsh-rw-rail-main {
   padding: 4px;
   text-align: left;
 }
 
-.dsh-rw-rail[data-dock="top"] .dsh-rw-rail-status,
-.dsh-rw-rail[data-dock="bottom"] .dsh-rw-rail-status {
+.dsh-rw-rail[data-dock="top"]:not([data-expanded="true"]) .dsh-rw-rail-status,
+.dsh-rw-rail[data-dock="bottom"]:not([data-expanded="true"]) .dsh-rw-rail-status {
   flex: none;
   margin: 0 4px;
   white-space: nowrap;
 }
 
-/* Expanded horizontal docks keep each chip's label on a single line, so the
-   bar reads left-to-right instead of stacking name over endpoint. */
-.dsh-rw-rail[data-dock="top"][data-expanded="true"] .dsh-rw-rail-label,
-.dsh-rw-rail[data-dock="bottom"][data-expanded="true"] .dsh-rw-rail-label {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-}
-
-.dsh-rw-rail[data-dock="top"][data-expanded="true"] .dsh-rw-rail-target,
-.dsh-rw-rail[data-dock="bottom"][data-expanded="true"] .dsh-rw-rail-target {
-  max-width: 260px;
+/* Expanded top/bottom docks keep the vertical list anchored to their edge and
+   scroll inside the viewport instead of growing past it. */
+.dsh-rw-rail[data-dock="top"][data-expanded="true"],
+.dsh-rw-rail[data-dock="bottom"][data-expanded="true"] {
+  flex-direction: column;
+  height: auto;
+  overflow-y: auto;
 }
 
 @media (prefers-reduced-motion: reduce) {

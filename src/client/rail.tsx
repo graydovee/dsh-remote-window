@@ -66,12 +66,6 @@ interface RailPointerDown {
 /** Collapsed width of one bar chip, used to size the horizontal rail. */
 const RAIL_BAR_CHIP_WIDTH = 34
 
-/** Width reserved for the bar's head (title + icon buttons). */
-const RAIL_BAR_HEAD_WIDTH = 120
-
-/** Width of one expanded bar chip (inline label + actions). */
-const RAIL_BAR_EXPANDED_CHIP_WIDTH = 210
-
 const RAIL_DOCKS: readonly RailDock[] = ['left', 'right', 'top', 'bottom']
 
 /** Clamp a value into `[min, max]` (max may fall below min on tiny viewports). */
@@ -80,26 +74,51 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /** Width of a collapsed horizontal rail: one 34px chip per target plus padding. */
-function collapsedBarWidthOf(targetCount: number): number {
+export function railBarWidth(targetCount: number): number {
   return Math.max(RAIL_COMPACT_SIZE, targetCount * RAIL_BAR_CHIP_WIDTH + 12)
 }
 
+/** Position/size overrides the rail needs for its current dock and state. */
+export interface RailBoxStyle {
+  [property: string]: number | undefined
+  left?: number
+  top?: number
+  right?: number
+  bottom?: number
+  width?: number
+  maxHeight?: number
+}
+
 /**
- * Width of a horizontal (top/bottom docked) rail.
+ * Inline box style for the rail at a dock.
  *
- * Collapsed shows one compact glyph per target; expanded lines the chips up on
- * a single row with inline labels, so it grows with the target count and is
- * bounded by the viewport (the list scrolls when it overflows).
+ * Collapsed: a compact strip along the docked edge (top/bottom bars are wide
+ * enough for one glyph per target). Expanded: always the same vertical list
+ * (CSS sets the 280px width), anchored to the same edge and limited to the
+ * viewport height so the list scrolls instead of running off screen.
  */
-export function railBarWidth(
+export function railBoxStyle(
+  placement: RailPlacement,
   expanded: boolean,
   targetCount: number,
   viewport: { readonly width: number; readonly height: number },
-): number {
-  const collapsed = collapsedBarWidthOf(targetCount)
-  if (!expanded) return collapsed
-  const wanted = Math.max(RAIL_COMPACT_SIZE, RAIL_BAR_HEAD_WIDTH + targetCount * RAIL_BAR_EXPANDED_CHIP_WIDTH)
-  return Math.max(collapsed, Math.min(viewport.width - RAIL_MARGIN * 2, wanted))
+): RailBoxStyle {
+  if (placement.dock === 'left') return { left: RAIL_MARGIN, top: placement.offset }
+  if (placement.dock === 'right') return { right: RAIL_MARGIN, top: placement.offset }
+
+  if (expanded) {
+    const left = clamp(placement.offset, RAIL_MARGIN, viewport.width - RAIL_MARGIN - RAIL_SIDE_WIDTH)
+    const maxHeight = Math.max(RAIL_COMPACT_SIZE, viewport.height - RAIL_MARGIN * 2)
+    return placement.dock === 'top'
+      ? { top: RAIL_MARGIN, left, maxHeight }
+      : { bottom: RAIL_MARGIN, left, maxHeight }
+  }
+
+  const width = railBarWidth(targetCount)
+  const left = clamp(placement.offset, RAIL_MARGIN, viewport.width - RAIL_MARGIN - width)
+  return placement.dock === 'top'
+    ? { top: RAIL_MARGIN, left, width }
+    : { bottom: RAIL_MARGIN, left, width }
 }
 
 /** Pick the screen edge closest to the pointer. */
@@ -432,35 +451,12 @@ export function TargetRail(): ReactElement {
     .map(targetId => state.connections[targetId])
     .filter((view): view is RemoteConnectionView => view !== undefined)
 
-  // Horizontal bars cannot use an auto width with a CSS transition, so the
-  // component sizes them (collapsed: one chip per target; expanded: one inline
-  // row bounded by the viewport).
-  const barWidth = railBarWidth(expanded, views.length, viewport)
-  const railStyle: CSSProperties = {}
-  if (drag !== null) {
-    railStyle.left = drag.x
-    railStyle.top = drag.y
-  } else if (placement.dock === 'left') {
-    railStyle.left = RAIL_MARGIN
-    railStyle.top = placement.offset
-  } else if (placement.dock === 'right') {
-    railStyle.right = RAIL_MARGIN
-    railStyle.top = placement.offset
-  } else {
-    // Top/bottom bars grow to the right, so their left edge also honors the
-    // expanded width to stay inside the viewport.
-    const barLeft = Math.min(
-      placement.offset,
-      Math.max(RAIL_MARGIN, viewport.width - RAIL_MARGIN - barWidth),
-    )
-    if (placement.dock === 'top') {
-      railStyle.top = RAIL_MARGIN
-    } else {
-      railStyle.bottom = RAIL_MARGIN
-    }
-    railStyle.left = barLeft
-    railStyle.width = barWidth
-  }
+  // Collapsed horizontal bars cannot use an auto width with a CSS transition,
+  // so the component sizes them; expanded docks always render the same
+  // vertical list and keep their box inside the viewport via railBoxStyle.
+  const railStyle: CSSProperties = drag !== null
+    ? { left: drag.x, top: drag.y }
+    : railBoxStyle(placement, expanded, views.length, viewport)
 
   return (
     <div

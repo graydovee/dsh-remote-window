@@ -36,9 +36,10 @@ a new session.
 
 The client keeps exactly one remote surface: a floating **target rail** (collapsed by default, hover or
 `Alt+R` to expand) listing saved connections, their live phase and the connect/switch/forget actions. Drag
-the rail to any screen edge: it snaps to left/right as a compact column (280px when expanded) or to
-top/bottom as a horizontal bar whose expanded row grows with the target count (overflow scrolls), and
-remembers that dock across reloads. Once connected, the server's own
+the rail to any screen edge and it snaps there: collapsed it follows the edge (a compact column on
+the left/right, a strip of glyph chips on the top/bottom), and expanding it always opens the same
+vertical 280px list, limited by the viewport height and scrolling inside. The dock is remembered
+across reloads. Once connected, the server's own
 sidebar and conversation are the navigation; the client shell sidebar hides while the iframe is mounted.
 
 ## Why this exists

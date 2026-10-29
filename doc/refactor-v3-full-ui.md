@@ -153,12 +153,12 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 
 本分支实测证据（本地运行，2026-10）：
 
-- client：`pnpm typecheck` 通过；`pnpm test` **624 passed / 1 skipped**（67 通过 + 1 跳过，68 文件）；
+- client：`pnpm typecheck` 通过；`pnpm test` **626 passed / 1 skipped**（67 通过 + 1 跳过，68 文件）；
   `pnpm build` 通过（`lib/client.js` 473.18 kB）。
 - server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
-- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,047,869 B，sha256
-  `859915aa2d2b9dddece7c025797eac8d5c00df7add94dff4bfdd093294ffdaf2`。
+- client 包 `dsh-remote-workspace-0.1.0-alpha.3.tgz` 1,047,853 B，sha256
+  `024d2bd9cb97043fd04c842954e163ede04d71183857295648c0c8ddc6508f89`。
 - 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
   `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
   一致。
@@ -191,14 +191,15 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 - 重连回归：`v1/connect {targetId}` 重连后 patch 仍写在保存的 `DSH_HOME`
   （`/tmp/dsh-e2e/server-dsh-home/...`，mtime 刷新、隧道端口更新），不再落到远端默认 home；
   回归测试 `tests/targets-reconnect.test.ts`。
-- 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`）：初始左侧
-  竖排 44×316 @ (10,96)；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
-  `localStorage['dsh-remote-workspace.rail-dock']`；hover 展开宽 280；拖到上缘 → `data-dock="top"`、
-  top=10、高 44，chips 同一行（y=16）；展开时按 target 数铺开（9 targets → 宽 1420 = 视口-20，
-  单 chip 247–260 px、标签与操作内联一行）；刷新后保持 top（折叠宽 318 = 9 targets × 34 + 12）；
-  拖回左缘 → y=278。上缘靠近右缘时展开仍收在视口内（x=710、right=1430 = viewport-10）。截图
-  `/tmp/dsh-e2e/rail-top-dock.jpg`、`/tmp/dsh-e2e/rail-left-dock.jpg`。回归测试
-  `tests/client-target-rail.test.ts`（吸附/夹取/默认 dock）。
+- 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`、
+  `cdp-rail-vertical.mjs`）：收起时跟随吸附边——左侧竖排 44×316 @ (10,96)；上下为 44px 横排图标条
+  （9 targets → 318×44，chip 32×32）；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
+  `localStorage['dsh-remote-workspace.rail-dock']`；刷新后保持 top（折叠宽 318 = 9 targets × 34 + 12）；
+  拖回左缘 → y=278。**展开后不管哪条边都是同一个 280px 竖向列表**（`railBoxStyle` 负责贴边/限高/
+  水平夹取）：上缘展开 y=10、高 427、chips 268×41 纵向排列；下缘展开贴底（y+h=803=813-10）；
+  水平偏移夹在 [10, 视口-10-280]。截图 `/tmp/dsh-e2e/rail-top-vertical.jpg`、
+  `/tmp/dsh-e2e/rail-bottom-vertical.jpg`。回归测试 `tests/client-target-rail.test.ts`
+  （吸附/夹取/默认 dock/railBarWidth/railBoxStyle）。
 - 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
   `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
   `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。

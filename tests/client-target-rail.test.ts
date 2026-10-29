@@ -197,18 +197,50 @@ describe('target rail', () => {
     expect(module.clampRailPlacement({ dock: 'right', offset: 40 }, { width: 0, height: 0 })).toEqual({ dock: 'right', offset: 40 })
   })
 
-  it('sizes horizontal bars from the target count and viewport', async () => {
+  it('sizes a collapsed horizontal bar from the target count', async () => {
     const module = await import('../src/client/rail.tsx')
-    // Collapsed bars show one compact glyph chip per target.
-    expect(module.railBarWidth(false, 0, { width: 1440, height: 900 })).toBe(44)
-    expect(module.railBarWidth(false, 9, { width: 1440, height: 900 })).toBe(318)
-    // Expanded bars line chips up on one row, grow with the target count and
-    // stay inside the viewport.
-    expect(module.railBarWidth(true, 1, { width: 1440, height: 900 })).toBe(330)
-    expect(module.railBarWidth(true, 9, { width: 1440, height: 900 })).toBe(1420)
-    expect(module.railBarWidth(true, 9, { width: 400, height: 900 })).toBe(380)
-    // A zero-sized viewport (SSR / before layout) keeps the collapsed width.
-    expect(module.railBarWidth(true, 3, { width: 0, height: 0 })).toBe(114)
+    // One compact glyph chip per target plus padding, never below 44px.
+    expect(module.railBarWidth(0)).toBe(44)
+    expect(module.railBarWidth(9)).toBe(318)
+    expect(module.railBarWidth(1)).toBe(46)
+  })
+
+  it('anchors an expanded dock as a vertical list inside the viewport', async () => {
+    const module = await import('../src/client/rail.tsx')
+    const viewport = { width: 1440, height: 900 }
+    // Expanded docks are always the vertical 280px list, so only the anchor
+    // (top/bottom) and the horizontal offset differ between edges.
+    expect(module.railBoxStyle({ dock: 'top', offset: 678 }, true, 9, viewport)).toEqual({
+      top: 10,
+      left: 678,
+      maxHeight: 880,
+    })
+    expect(module.railBoxStyle({ dock: 'bottom', offset: 678 }, true, 9, viewport)).toEqual({
+      bottom: 10,
+      left: 678,
+      maxHeight: 880,
+    })
+    // The expanded list clamps its left edge so the 280px box stays on screen.
+    expect(module.railBoxStyle({ dock: 'top', offset: 1400 }, true, 9, viewport)).toEqual({
+      top: 10,
+      left: 1150,
+      maxHeight: 880,
+    })
+    // Collapsed bars reserve the full strip width and stay on screen too.
+    expect(module.railBoxStyle({ dock: 'top', offset: 1400 }, false, 9, viewport)).toEqual({
+      top: 10,
+      left: 1112,
+      width: 318,
+    })
+    // A zero-sized viewport (SSR / before layout) still yields finite values.
+    expect(module.railBoxStyle({ dock: 'bottom', offset: 40 }, true, 3, { width: 0, height: 0 })).toEqual({
+      bottom: 10,
+      left: 10,
+      maxHeight: 44,
+    })
+    // Side docks only carry their vertical offset.
+    expect(module.railBoxStyle({ dock: 'left', offset: 96 }, true, 9, viewport)).toEqual({ left: 10, top: 96 })
+    expect(module.railBoxStyle({ dock: 'right', offset: 398 }, false, 9, viewport)).toEqual({ right: 10, top: 398 })
   })
 
   it('renders the rail at its default left dock with a position style', async () => {
