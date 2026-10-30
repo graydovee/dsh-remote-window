@@ -31,7 +31,8 @@ import {
 } from '../src/provision/server-plugin.ts'
 import { LocalShellRemote, makeProfilePaths, makeTempDshHome, packPackage, writeFakeServerPluginPackage } from './helpers/local-remote.ts'
 
-const VERSION = '0.1.0-alpha.3'
+// Derive from package.json so a release version bump does not need a test edit.
+const VERSION: string = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version
 const DSH_VERSION = '0.2.1-rc.3'
 
 async function fakeTarball(options: { version?: string; name?: string } = {}): Promise<{ root: string; tarball: string }> {
@@ -43,15 +44,15 @@ async function fakeTarball(options: { version?: string; name?: string } = {}): P
 
 describe('server plugin tarball identity', () => {
   it('parses names and checksums without trusting arbitrary JSON', () => {
-    expect(serverPluginTarballName(VERSION)).toBe('dsh-remote-window-server-0.1.0-alpha.3.tgz')
+    expect(serverPluginTarballName(VERSION)).toBe(`dsh-remote-window-server-${VERSION}.tgz`)
     expect(versionFromServerPluginTarball(serverPluginTarballName(VERSION))).toBe(VERSION)
     expect(versionFromServerPluginTarball('other.tgz')).toBeUndefined()
     const checksums = parseServerPluginChecksums(JSON.stringify({
-      'dsh-remote-window-server-0.1.0-alpha.3.tgz': 'a'.repeat(64),
+      [`dsh-remote-window-server-${VERSION}.tgz`]: 'a'.repeat(64),
       'bad.tgz': 'not-a-digest',
       files: { 'nested.tgz': 'b'.repeat(64) },
     }))
-    expect(checksums['dsh-remote-window-server-0.1.0-alpha.3.tgz']).toBe('a'.repeat(64))
+    expect(checksums[`dsh-remote-window-server-${VERSION}.tgz`]).toBe('a'.repeat(64))
     expect(checksums['nested.tgz']).toBe('b'.repeat(64))
     expect(checksums['bad.tgz']).toBeUndefined()
   })
@@ -61,7 +62,7 @@ describe('server plugin tarball identity', () => {
     const verified = await verifyServerPluginTarball(tarball, VERSION)
     expect(verified.version).toBe(VERSION)
     expect(verified.sha256).toMatch(/^[0-9a-f]{64}$/u)
-    await expect(verifyServerPluginTarball(tarball, '0.1.0-alpha.4')).rejects.toMatchObject({ code: 'server-plugin-version-mismatch' })
+    await expect(verifyServerPluginTarball(tarball, '0.1.0-alpha.999')).rejects.toMatchObject({ code: 'server-plugin-version-mismatch' })
   })
 
   it('refuses a bad checksum and a missing bundled file is undefined', async () => {
@@ -125,7 +126,7 @@ describe('serverPluginInstallScript', () => {
   it('decides idempotency on version, digest, protocol and dsh version', () => {
     const marker = { version: VERSION, sha256: 'a'.repeat(64), protocol: SERVER_PLUGIN_PROTOCOL, dshVersion: DSH_VERSION }
     expect(decideServerPluginInstall(marker, { version: VERSION, sha256: 'a'.repeat(64), protocol: 1, dshVersion: DSH_VERSION })).toBe('skip')
-    expect(decideServerPluginInstall(marker, { version: '0.1.0-alpha.4', sha256: 'a'.repeat(64) })).toBe('install')
+    expect(decideServerPluginInstall(marker, { version: '0.1.0-alpha.999', sha256: 'a'.repeat(64) })).toBe('install')
     expect(decideServerPluginInstall(marker, { version: VERSION, sha256: 'b'.repeat(64) })).toBe('install')
     expect(decideServerPluginInstall(marker, { version: VERSION, sha256: 'a'.repeat(64), dshVersion: '0.2.1' })).toBe('install')
     expect(decideServerPluginInstall(undefined, { version: VERSION, sha256: 'a'.repeat(64) })).toBe('install')

@@ -188,6 +188,7 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 | 插件 | 已验证 DSH 运行时 | 状态 |
 | --- | --- | --- |
 | 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
+| 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
 <!-- verified-runtimes -->
 
 本版本针对 DSH `0.2.1-rc.3` 构建、打包并测试；`0.2.1-rc.2` 已不在已验证集合内，默认会被精确版本

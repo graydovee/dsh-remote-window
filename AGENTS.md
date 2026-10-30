@@ -200,7 +200,7 @@ tsdown targets：
   `engines.node` 保持 `^22.19.0 || >=24.0.0`。
 - `@deepseek-ai/dsh-ssh`、`dsh-fs-ssh`、`dsh-subprocess-ssh`、`dsh-sandbox-ssh` 是精确版本
   **dependencies**（harness 安装里没有；local 模式按值 import/按名挂载）。
-- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.3`）；内置 server 插件 tarball 版本必须与它精确一致。
+- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.4`）；内置 server 插件 tarball 版本必须与它精确一致。
   本机调试可用修订后缀，但部署后 `git checkout -- package.json`，修订号永不提交/发布。
 
 **官方 UI（iframe，硬约束）**

@@ -217,6 +217,7 @@ Verified against exactly this runtime:
 | Plugin | Verified DSH runtime | Status |
 | --- | --- | --- |
 | 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
+| 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
 <!-- verified-runtimes -->
 
 This release is built, packed and tested against DSH `0.2.1-rc.3`. `0.2.1-rc.2` is no longer in the
