@@ -27,12 +27,17 @@ import type { ProfileExecResult, ProfileRemote } from './profile-lifecycle.ts'
 import { scrubSecrets } from '../targets/types.ts'
 import { pathAssignment, shellQuote } from './profile.ts'
 import { isClientId } from '../targets/client-id.ts'
+import { remoteJoin, remoteIsAbsolute, remoteTrimTrailing, type RemoteKind } from './remote-dialect.ts'
+import { execOp, opText, shellOp, windowsOp, type RemoteOp } from './remote-op.ts'
+import { windowsMkdirScript, windowsNodeEvalScript, windowsRuntimeInstallScript } from './windows-shell.ts'
 
 /** Which runtime a connection uses. */
 export type RuntimeKind = 'isolated' | 'global'
 
 /** The two-component isolated runtime layout. */
 export interface RuntimePaths {
+  /** Command dialect of the server; drives every path below. */
+  readonly kind: RemoteKind
   readonly dshHome: string
   readonly clientId: string
   readonly root: string
@@ -81,24 +86,36 @@ export class RuntimeError extends Error {
   }
 }
 
-/** `$DSH_HOME/remote-window/<clientId>/runtime` for one client. */
-export function runtimePaths(dshHome: string, clientId: string): RuntimePaths {
-  if (!dshHome.startsWith('/')) throw new Error(`DSH_HOME must be an absolute server path, got ${JSON.stringify(dshHome)}`)
+/**
+ * `$DSH_HOME/remote-window/<clientId>/runtime` for one client.
+ *
+ * The POSIX layout is unchanged (`node/bin/node`, `dsh/node_modules/.bin/dsh`).
+ * A Windows Node distribution has no `bin/` directory and its dsh launcher is a
+ * `.cmd` shim, so only `nodeBin` and the meaning of `launcher` differ: on Windows
+ * `launcher` names the `dsh/` tree (the profile server is started as
+ * `node.exe <dsh package bin>`; see `windowsStartScript`).
+ * @param dshHome - absolute server DSH_HOME in the server's dialect.
+ * @param clientId - this browser client's id.
+ * @param kind - server command dialect (default POSIX).
+ */
+export function runtimePaths(dshHome: string, clientId: string, kind: RemoteKind = 'posix'): RuntimePaths {
+  if (!remoteIsAbsolute(kind, dshHome)) throw new Error(`DSH_HOME must be an absolute server path, got ${JSON.stringify(dshHome)}`)
   if (!isClientId(clientId)) throw new Error(`invalid clientId ${JSON.stringify(clientId)}`)
-  const home = dshHome.replace(/\/+$/u, '')
-  const stateDir = `${home}/remote-window/${clientId}`
-  const root = `${stateDir}/runtime`
+  const home = remoteTrimTrailing(kind, dshHome)
+  const stateDir = remoteJoin(kind, home, 'remote-window', clientId)
+  const root = remoteJoin(kind, stateDir, 'runtime')
   return {
+    kind,
     dshHome: home,
     clientId,
     root,
-    nodeDir: `${root}/node`,
-    nodeBin: `${root}/node/bin/node`,
-    dshDir: `${root}/dsh`,
-    launcher: `${root}/dsh/node_modules/.bin/dsh`,
+    nodeDir: remoteJoin(kind, root, 'node'),
+    nodeBin: kind === 'windows' ? remoteJoin(kind, root, 'node', 'node.exe') : remoteJoin(kind, root, 'node', 'bin', 'node'),
+    dshDir: remoteJoin(kind, root, 'dsh'),
+    launcher: kind === 'windows' ? remoteJoin(kind, root, 'dsh') : remoteJoin(kind, root, 'dsh', 'node_modules', '.bin', 'dsh'),
     stateDir,
-    stagingDir: `${stateDir}/staging`,
-    markerPath: `${root}/.dsh-rw-runtime.json`,
+    stagingDir: remoteJoin(kind, stateDir, 'staging'),
+    markerPath: remoteJoin(kind, root, '.dsh-rw-runtime.json'),
   }
 }
 
@@ -124,7 +141,27 @@ export function runtimeArtifactCachePath(cacheDir: string, version: string, plat
  * reusable.
  */
 export function runtimeAddonProbeCommand(paths: RuntimePaths): string {
-  const script = [
+  return `${shellQuote(paths.nodeBin)} -e ${shellQuote(addonProbeSource())} ${shellQuote(paths.dshDir)}`
+}
+
+/** The JavaScript both dialects run to prove the native addon loads. */
+function addonProbeSource(hoisted = false): string {
+  if (hoisted) {
+    // A hoisted (win32) tree has no `.pnpm` store: the packages are real
+    // directories under `node_modules`, so the probe resolves from the app-boot
+    // manifest itself.
+    return [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const { createRequire } = require('node:module')",
+      "const manifest = path.join(process.argv[1], 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'package.json')",
+      'if (!fs.existsSync(manifest)) process.exit(2)',
+      'const req = createRequire(manifest)',
+      "try { req.resolve('node-addon-require-builtin') } catch { process.exit(0) }",
+      "req('node-addon-require-builtin')",
+    ].join('\n')
+  }
+  return [
     "const fs = require('node:fs')",
     "const path = require('node:path')",
     "const { createRequire } = require('node:module')",
@@ -135,7 +172,20 @@ export function runtimeAddonProbeCommand(paths: RuntimePaths): string {
     "try { req.resolve('node-addon-require-builtin') } catch { process.exit(0) }",
     "req('node-addon-require-builtin')",
   ].join('\n')
-  return `${shellQuote(paths.nodeBin)} -e ${shellQuote(script)} ${shellQuote(paths.dshDir)}`
+}
+
+/**
+ * The addon probe as a dialect-tagged op.
+ *
+ * @param paths - the deployed runtime layout.
+ */
+export function runtimeAddonProbeOp(paths: RuntimePaths): RemoteOp {
+  if (paths.kind !== 'windows') return shellOp(runtimeAddonProbeCommand(paths))
+  return windowsOp(windowsNodeEvalScript({
+    nodeBin: paths.nodeBin,
+    dshDir: paths.dshDir,
+    source: addonProbeSource(true),
+  }))
 }
 
 /**
@@ -319,6 +369,13 @@ export function runtimeInstallScript(options: {
 
 /** Read the runtime marker from the remote host. */
 export async function readRuntimeMarker(remote: ProfileRemote, paths: RuntimePaths): Promise<RuntimeMarker | undefined> {
+  if (paths.kind === 'windows') {
+    const op = windowsOp(`$path = ${JSON.stringify(paths.markerPath)}
+if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { exit 3 }
+[Console]::Out.Write([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)))`)
+    const result = await execOp(remote, op, { maxBytes: 8192, timeoutMs: 10_000 }).catch(() => undefined)
+    return parseRuntimeMarker(result === undefined ? '' : opText(paths.kind, result))
+  }
   const result: ProfileExecResult = await remote.exec(`cat ${shellQuote(paths.markerPath)} 2>/dev/null || true`, { maxBytes: 4096, timeoutMs: 10_000 })
   return parseRuntimeMarker(result.stdout)
 }
@@ -339,15 +396,39 @@ export async function installIsolatedRuntime(options: {
   readonly installedAt?: Date
 }): Promise<{ readonly installed: boolean; readonly marker: RuntimeMarker }> {
   const tarballName = options.artifact.name
-  const stagingPath = `${options.paths.stagingDir}/${tarballName}`
-  await options.remote.exec(`command mkdir -p ${shellQuote(options.paths.stagingDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  const windows = options.paths.kind === 'windows'
+  const stagingPath = windows
+    ? remoteJoin(options.paths.kind, options.paths.stagingDir, tarballName)
+    : `${options.paths.stagingDir}/${tarballName}`
+  if (windows) {
+    await execOp(options.remote, windowsOp(windowsMkdirScript([options.paths.stagingDir])), { maxBytes: 1024, timeoutMs: 15_000 })
+  } else {
+    await options.remote.exec(`command mkdir -p ${shellQuote(options.paths.stagingDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  }
   await options.remote.writeFile(stagingPath, options.content)
-  const result = await options.remote.exec(runtimeInstallScript({
-    paths: options.paths,
-    artifact: options.artifact,
-    tarballName,
-    ...(options.installedAt === undefined ? {} : { installedAt: options.installedAt.toISOString() }),
-  }), { maxBytes: 64 * 1024, timeoutMs: 300_000 })
+  const installedAt = (options.installedAt ?? new Date()).toISOString()
+  const op = windows
+    ? windowsOp(windowsRuntimeInstallScript({
+        root: options.paths.root,
+        stagingDir: options.paths.stagingDir,
+        tarballName,
+        markerPath: options.paths.markerPath,
+        markerJson: JSON.stringify({
+          kind: 'isolated',
+          version: options.artifact.version,
+          sha256: options.artifact.sha256,
+          platformArch: options.artifact.platformArch,
+          installedAt,
+        }),
+        sha256: options.artifact.sha256,
+      }))
+    : shellOp(runtimeInstallScript({
+        paths: options.paths,
+        artifact: options.artifact,
+        tarballName,
+        installedAt,
+      }))
+  const result = await execOp(options.remote, op, { maxBytes: 64 * 1024, timeoutMs: 300_000 })
   if (result.code !== 0) {
     throw new RuntimeError(
       'runtime-install-failed',

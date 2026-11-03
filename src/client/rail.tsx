@@ -290,9 +290,7 @@ function TargetChip(props: {
   const connected = isConnected(view)
   const phase = view.connection?.phase ?? (view.target.status === 'ready' ? 'ready' : 'stopped')
   const failed = view.connection?.error !== undefined || view.error !== undefined
-  const endpoint = view.target.kind === 'wsl'
-    ? (view.target.wslDistro ?? view.target.host)
-    : `${view.target.username}@${view.target.host}`
+  const endpoint = `${view.target.username}@${view.target.host}`
   return (
     <div
       className="dsh-rw-rail-target"

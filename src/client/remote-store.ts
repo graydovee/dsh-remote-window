@@ -150,6 +150,12 @@ export interface RemoteAppState {
   readonly error?: WireError
   readonly clientId?: string
   readonly pluginVersion: string
+  /**
+   * The harness host's `process.platform` (`'win32'`, `'darwin'`, …), straight
+   * from `GET /api/state`. The connect dialog gates its method cards on it; a
+   * missing value is treated as "unknown platform" (SSH only).
+   */
+  readonly platform?: string
   readonly order: readonly string[]
   readonly connections: Readonly<Record<string, RemoteConnectionView>>
   readonly search: string
@@ -490,6 +496,9 @@ export async function loadRemoteState(): Promise<void> {
       loading: false,
       clientId: value.clientId,
       pluginVersion: value.pluginVersion,
+      // The host platform gates which connection methods may be offered; it
+      // must ride the successful commit so the dialog never loses it.
+      platform: value.platform,
       order,
       connections: mappedConnections,
     })

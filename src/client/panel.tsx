@@ -4,7 +4,7 @@
  * v1 keeps the sidebar as the only navigation; this page is the connection
  * overview: one card per saved target with its live phase, profile/runtime/
  * plugin facts and the actions that belong to a connection. The old three-step
- * wizard (and its WSL flow) is deliberately not mounted here any more.
+ * wizard (and its WSL flow) has been deleted from this client.
  */
 import { useEffect } from 'react'
 import type { ReactElement } from 'react'
@@ -62,9 +62,7 @@ function ConnectionCard(props: { view: RemoteConnectionView }): ReactElement {
         <span className="dsh-rw-card-mode">{t(view.mode === 'server' ? 'remote.mode.server' : 'remote.mode.local')}</span>
       </header>
       <p className="dsh-rw-card-endpoint">
-        {view.target.kind === 'wsl'
-          ? t('list.endpoint.wsl', { distro: view.target.wslDistro ?? view.target.host })
-          : t('list.endpoint', { username: view.target.username, host: view.target.host, port: view.target.port })}
+        {t('list.endpoint', { username: view.target.username, host: view.target.host, port: view.target.port })}
       </p>
       <dl className="dsh-rw-card-facts">
         <dt>{t('remote.panel.profile')}</dt>

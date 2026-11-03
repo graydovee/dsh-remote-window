@@ -544,9 +544,7 @@ function ConnectionRow(props: {
   const group: GroupNode = {
     key: `conn:${targetId}`,
     workspaceId: `conn:${targetId}`,
-    cwd: view.target.kind === 'wsl'
-      ? t('list.endpoint.wsl', { distro: view.target.wslDistro ?? view.target.host })
-      : t('list.endpoint', { username: view.target.username, host: view.target.host, port: view.target.port }),
+    cwd: t('list.endpoint', { username: view.target.username, host: view.target.host, port: view.target.port }),
     createdAt: Number.isNaN(Date.parse(view.target.lastConnectedAt ?? '')) ? undefined : Date.parse(view.target.lastConnectedAt ?? ''),
     label: view.target.label,
     sessionCount,

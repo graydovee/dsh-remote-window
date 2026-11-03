@@ -41,14 +41,25 @@ import { generateInstanceId } from '../targets/client-id.ts'
 import { isCompatibleDsh, DSH_VERIFIED_RUNTIMES } from './version-range.ts'
 import { describeLocalPackage, platformArch, sha256File } from './assets.ts'
 import { parseDshScanOutput, scanDshScript, type DshScan } from './dsh-scan.ts'
-import { probeFactsFrom } from './platform.ts'
 import { buildRuntimeArtifact } from './runtime-artifact.ts'
+import {
+  defaultRemoteDshHome,
+  remoteJoin,
+  remoteKindOf,
+  remotePlatformOf,
+  runtimePlatformArchOf,
+  windowsDirname,
+  type RemoteKind,
+} from './remote-dialect.ts'
+import { execOp, windowsOp } from './remote-op.ts'
+import { psQuote, windowsMkdirScript, windowsScanScript, windowsStartScript } from './windows-shell.ts'
 import {
   installIsolatedRuntime,
   planRuntime,
   resolveRuntimeArtifact,
   readRuntimeMarker,
   runtimeAddonProbeCommand,
+  runtimeAddonProbeOp,
   runtimeArtifactName,
   runtimePathAssignment,
   runtimePathPrefixes,
@@ -68,6 +79,7 @@ import {
 } from './server-plugin.ts'
 import {
   PROFILE_STARTUP_TIMEOUT_MS,
+  WINDOWS_PROFILE_STARTUP_TIMEOUT_MS,
   profilePaths,
   startProfileServer,
   stopProfileServer,
@@ -214,10 +226,16 @@ interface RemoteSetupInspection {
 interface ResolvedRuntime {
   readonly kind: 'isolated' | 'global'
   readonly action: SetupAction
+  /**
+   * POSIX: the launcher to exec. Windows: the tree that contains
+   * `node_modules/@deepseek-ai/dsh` (the launcher is resolved at start time).
+   */
   readonly launcher: string
   readonly pathPrefixes: readonly string[]
   readonly dshVersion: string
   readonly runtimeDir: string
+  /** Windows: the runtime's own `node.exe`; the profile server runs on it directly. */
+  readonly nodePath?: string
 }
 
 /** Options for {@link ProfileService}. */
@@ -243,6 +261,8 @@ interface LiveProfile {
   readonly paths: ProfilePaths
   readonly launcher: string
   readonly pathPrefixes: readonly string[]
+  /** Windows: the runtime's `node.exe` (posix: undefined, `node` comes from PATH). */
+  readonly nodePath?: string
   readonly dshVersion: string
   readonly runtimeKind: 'isolated' | 'global'
   readonly runtimeDir: string
@@ -301,6 +321,7 @@ export function createSshProfileConnector(): ProfileConnector {
         exec: async (body, options) => await execRemote(client, body, {
           maxBytes: options?.maxBytes ?? 1024 * 1024,
           timeoutMs: options?.timeoutMs ?? 60_000,
+          ...(options?.stdin === undefined ? {} : { stdin: options.stdin }),
         }).then(result => ({ code: result.code, stdout: result.stdout, stderr: result.stderr })),
         writeFile: async (path, content) => {
           if (sftp === undefined) sftp = await openSftp(client)
@@ -599,11 +620,11 @@ export class ProfileService {
       connection = await this.options.connector.connect(effectiveRequest)
       emit('connect', 'ok', `SSH 已连接 ${effectiveRequest.username}@${effectiveRequest.host}`)
       begin('probe', '正在探测远端环境…')
-      const scan = await this.scan(connection.remote)
-      const dshHome = request.dshHome ?? scan.dshHome ?? `${scan.home ?? ''}/.dsh`
-      const paths = profilePaths(dshHome, clientId)
+      const { scan, kind } = await this.scanRemote(connection.remote)
+      const dshHome = request.dshHome ?? scan.dshHome ?? defaultRemoteDshHome(kind, scan.home ?? '')
+      const paths = profilePaths(dshHome, clientId, kind)
       const tarball = await this.resolvePluginTarball()
-      const setup = await this.inspectRemoteSetup(connection, scan, dshHome, clientId, request, tarball)
+      const setup = await this.inspectRemoteSetup(connection, scan, dshHome, clientId, request, tarball, kind)
       emit('probe', 'ok', `远端环境 ${scan.platform ?? ''} ${scan.machine ?? ''}；${setup.summary}`.trim())
       // One profile directory has exactly one profile server. Stop any survivor
       // from a previous attempt **before** touching files/starting a new one,
@@ -613,7 +634,7 @@ export class ProfileService {
       let runtime: ResolvedRuntime
       if (setup.runtime.action === 'reuse') {
         activeStep = 'runtime'
-        runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request, message => {
+        runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request, kind, message => {
           emit('runtime', 'running', message)
         })
         if (runtime.action === 'reuse') {
@@ -623,7 +644,7 @@ export class ProfileService {
         }
       } else {
         begin('runtime', setup.runtime.action === 'install' ? '正在部署 DSH 运行时…' : '正在更新 DSH 运行时…')
-        runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request, message => {
+        runtime = await this.resolveRuntime(connection, scan, dshHome, clientId, request, kind, message => {
           emit('runtime', 'running', message)
         })
         emit('runtime', 'ok', runtime.kind === 'global' ? '复用 server 全局 DSH' : runtime.action === 'upgrade' ? '隔离 runtime 已更新' : '隔离 runtime 已部署')
@@ -683,7 +704,8 @@ export class ProfileService {
       handle = await startProfileServer(connection.remote, paths, {
         launcher: runtime.launcher,
         pathPrefixes: runtime.pathPrefixes,
-        timeoutMs: PROFILE_STARTUP_TIMEOUT_MS,
+        ...(runtime.nodePath === undefined ? {} : { nodePath: runtime.nodePath }),
+        timeoutMs: paths.kind === 'windows' ? WINDOWS_PROFILE_STARTUP_TIMEOUT_MS : PROFILE_STARTUP_TIMEOUT_MS,
         ...(startEnv === undefined ? {} : { env: startEnv }),
         probe: async startup => await this.probeRoot(connection as ProfileConnection, startup.port, startup.token),
       })
@@ -719,6 +741,7 @@ export class ProfileService {
         serverDshVersion: runtime.dshVersion,
         dshHome,
         modelSource,
+        ...(runtime.nodePath === undefined ? {} : { nodePath: runtime.nodePath }),
       })
       await this.registerTargetPreset(target)
       const live: LiveProfile = {
@@ -727,6 +750,7 @@ export class ProfileService {
         paths,
         launcher: runtime.launcher,
         pathPrefixes: runtime.pathPrefixes,
+        ...(runtime.nodePath === undefined ? {} : { nodePath: runtime.nodePath }),
         dshVersion: handshake.dshVersion,
         runtimeKind: runtime.kind,
         runtimeDir: runtime.runtimeDir,
@@ -1259,7 +1283,9 @@ export class ProfileService {
     if (live === undefined) {
       throw Object.assign(new Error(`remote target "${targetId}" is not connected`), { code: 'target-not-connected' })
     }
-    const result = await live.connection.remote.exec(`command mkdir -p ${shellQuote(path)}`, { maxBytes: 16 * 1024, timeoutMs: 30_000 })
+    const result = live.paths.kind === 'windows'
+      ? await execOp(live.connection.remote, windowsOp(windowsMkdirScript([path])), { maxBytes: 16 * 1024, timeoutMs: 30_000 })
+      : await live.connection.remote.exec(`command mkdir -p ${shellQuote(path)}`, { maxBytes: 16 * 1024, timeoutMs: 30_000 })
     if (result.code !== 0) throw new Error(`cannot create remote directory "${path}": ${scrubSecrets(result.stderr.trim().slice(-500))}`)
     return { path }
   }
@@ -1427,7 +1453,7 @@ export class ProfileService {
         code: 'runtime-missing', status: 500, details: { expectedVersion: state.runtime.expectedVersion, platformArch },
       })
     }
-    const paths = runtimePaths(live.paths.dshHome, live.paths.clientId)
+    const paths = runtimePaths(live.paths.dshHome, live.paths.clientId, live.paths.kind)
     const content = await readFile(artifactPath)
     const sha256 = await sha256File(artifactPath)
     const info = await stat(artifactPath)
@@ -1487,6 +1513,7 @@ export class ProfileService {
     const handle = await startProfileServer(live.connection.remote, live.paths, {
       launcher: live.launcher,
       pathPrefixes: live.pathPrefixes,
+      ...(live.nodePath === undefined ? {} : { nodePath: live.nodePath }),
       ...(live.startEnv === undefined ? {} : { env: live.startEnv }),
       probe: async startup => await this.probeRoot(live.connection, startup.port, startup.token),
     })
@@ -1611,21 +1638,96 @@ export class ProfileService {
     }
   }
 
-  private async scan(remote: ProfileRemote): Promise<DshScan> {
-    const result = await remote.exec(scanDshScript(), { maxBytes: 128 * 1024, timeoutMs: 60_000 })
-    if (result.code !== 0) throw new Error(`the remote dsh scan failed (exit ${result.code ?? 'signal'}): ${scrubSecrets(result.stderr.trim().slice(-1000))}`)
-    const scan = parseDshScanOutput(result.stdout)
-    if (scan.home === undefined || scan.home === '') throw new Error('the remote scan did not report a home directory')
-    return scan
+  /**
+   * Probe the remote and decide which shell dialect it speaks.
+   *
+   * The dialect is not a guess about the *client* host: a Windows server reached
+   * over SSH may use `cmd.exe`, PowerShell or even WSL's `sh` as its default
+   * shell, so the POSIX script goes first (it is the historical path and must
+   * stay byte-identical) and only a failed or unparsable answer triggers the
+   * PowerShell probe. The kind is then derived from the evidence, never from
+   * `process.platform`.
+   * @param remote - the connected remote command channel.
+   * @returns the parsed scan plus the dialect that produced it.
+   */
+  private async scanRemote(remote: ProfileRemote): Promise<{ scan: DshScan; kind: RemoteKind }> {
+    const options = { maxBytes: 128 * 1024, timeoutMs: 60_000 }
+    let posixFailure: string | undefined
+    const posix = await remote.exec(scanDshScript(), options)
+    if (posix.code === 0) {
+      try {
+        const scan = parseDshScanOutput(posix.stdout)
+        if (scan.home !== undefined && scan.home !== '') return { scan, kind: 'posix' }
+        posixFailure = 'the POSIX scan did not report a home directory'
+      } catch (error) {
+        posixFailure = error instanceof Error ? error.message : String(error)
+      }
+    } else {
+      posixFailure = `exit ${posix.code ?? 'signal'}: ${scrubSecrets(posix.stderr.trim().slice(-500))}`
+    }
+    let windows: { code: number | null; stdout: string; stderr: string } | undefined
+    try {
+      windows = await this.execWindows(remote, windowsScanScript(), { maxBytes: 128 * 1024, timeoutMs: 60_000 })
+    } catch (error) {
+      // Keep the message: a failed Windows probe is the only diagnostic a user
+      // gets when the POSIX probe cannot apply, and silence hid a broken wrapper
+      // during the first real-machine run.
+      posixFailure = `${posixFailure ?? 'unknown'}`
+      const reason = error instanceof Error ? scrubSecrets(error.message) : String(error)
+      throw new Error(`the remote dsh scan failed on both dialects (POSIX: ${posixFailure}; Windows: ${reason})`)
+    }
+    if (windows !== undefined && windows.code === 0) {
+      try {
+        const scan = parseDshScanOutput(windows.stdout)
+        if (scan.home !== undefined && scan.home !== '') return { scan, kind: remotePlatformOf(scan) }
+        posixFailure = `${posixFailure ?? 'unknown'} (the Windows probe reported no home directory)`
+      } catch (error) {
+        // Fall through to the aggregated error below, but keep *why*: a silent
+        // parse failure looked like "Windows: exit 0" on the first real run.
+        posixFailure = `${posixFailure ?? 'unknown'} (the Windows probe output did not parse: ${error instanceof Error ? scrubSecrets(error.message) : 'unknown'}; first bytes: ${scrubSecrets(windows.stdout.slice(0, 120))})`
+      }
+    }
+    throw new Error(`the remote dsh scan failed on both dialects (POSIX: ${posixFailure ?? 'unknown'}; Windows: ${windows === undefined ? 'command failed' : `exit ${windows.code ?? 'signal'}`})`)
   }
 
-  /** The verified global dsh candidate, if the host has one. */
-  private pickGlobal(scan: DshScan, request: ConnectProfileRequest): { path: string; nodePath?: string } | undefined {
-    const override = process.env['DSH_RW_DSH_LAUNCHER']
-    if (override !== undefined && override !== '') return { path: override }
+  /** Run one PowerShell probe, decoding its UTF-16LE output. */
+  private async execWindows(
+    remote: ProfileRemote,
+    script: string,
+    options: { maxBytes?: number; timeoutMs?: number },
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    const op = windowsOp(script)
+    const result = await execOp(remote, op, options)
+    // Raw text: only the *base64 byte readers* (`windowsReadBytesScript`) run
+    // through `opText`; a scan or a log tail arrives as the process's own stdout.
+    return { code: result.code, stdout: result.stdout, stderr: result.stderr }
+  }
+
+  /**
+   * The verified global dsh candidate, if the host has one.
+   *
+   * POSIX reuses the launcher path directly. A Windows launcher is a `.cmd`
+   * shim, so the reusable unit is the *tree* around it: the npm global layout
+   * puts `node_modules/@deepseek-ai/dsh` next to the shim, and the profile
+   * server is then started as `node.exe <bin>` (never through `cmd.exe`, so a
+   * stop can track the real pid). The desktop app's bundled CLI points into
+   * `app.asar` and is deliberately not reused — it is not a plain Node tree.
+   * @param scan - remote evidence.
+   * @param request - connect request (carries the user's launcher override).
+   * @param kind - remote shell dialect.
+   */
+  private pickGlobal(scan: DshScan, request: ConnectProfileRequest, kind: RemoteKind): { path: string; nodePath?: string } | undefined {
+    const override = (process.env['DSH_RW_DSH_LAUNCHER'] ?? '').trim()
+    if (override !== '') return { path: override }
     const candidates = scan.launchers.filter(candidate => candidate.version !== '' && isCompatibleDsh(candidate.version))
-    const chosen = candidates[0]
-    return chosen === undefined ? undefined : { path: chosen.path, ...(chosen.nodePath === undefined ? {} : { nodePath: chosen.nodePath }) }
+    if (kind === 'posix') {
+      const chosen = candidates[0]
+      return chosen === undefined ? undefined : { path: chosen.path, ...(chosen.nodePath === undefined ? {} : { nodePath: chosen.nodePath }) }
+    }
+    const shim = candidates.filter(candidate => candidate.path.toLowerCase().endsWith('dsh.cmd')).at(0)
+    if (shim === undefined) return undefined
+    const nodePath = shim.nodePath ?? scan.nodes.find(node => node.version !== '')?.path
+    return nodePath === undefined ? undefined : { path: windowsDirname(shim.path), nodePath }
   }
 
   /**
@@ -1643,11 +1745,12 @@ export class ProfileService {
     clientId: string,
     request: ConnectProfileRequest,
     tarball: ServerPluginTarball,
+    kind: RemoteKind,
   ): Promise<RemoteSetupInspection> {
     const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
     const global = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
       ? undefined
-      : this.pickGlobal(scan, request)
+      : this.pickGlobal(scan, request, kind)
     let runtime: RemoteSetupInspection['runtime']
     if (global !== undefined) {
       const node = global.nodePath === undefined ? undefined : scan.nodes.find(candidate => candidate.path === global.nodePath)
@@ -1659,7 +1762,7 @@ export class ProfileService {
         detail: `复用 server 全局 DSH ${expectedDsh}${node?.version === undefined || node.version === '' ? '' : `（Node ${node.version}）`}`,
       }
     } else {
-      const paths = runtimePaths(dshHome, clientId)
+      const paths = runtimePaths(dshHome, clientId, kind)
       const marker = await readRuntimeMarker(connection.remote, paths)
       const plan = planRuntime({ kind: 'isolated', expectedVersion: expectedDsh, marker })
       let action: SetupAction = plan.action
@@ -1689,7 +1792,7 @@ export class ProfileService {
               : `更新隔离运行时 ${installedVersion ?? '旧版本'} → ${expectedDsh}`,
       }
     }
-    const paths = profilePaths(dshHome, clientId)
+    const paths = profilePaths(dshHome, clientId, kind)
     const pluginMarker = await readServerPluginMarker(connection.remote, paths)
     const pluginAction: SetupAction = decideServerPluginInstall(pluginMarker, {
       version: tarball.version,
@@ -1723,6 +1826,18 @@ export class ProfileService {
    */
   private async probeRuntimeHealth(remote: ProfileRemote, paths: RuntimePaths): Promise<{ ok: boolean; version?: string }> {
     try {
+      if (paths.kind === 'windows') {
+        // A Windows runtime has no `node/bin` + `.bin/dsh` pair to exec: the
+        // launcher is `node.exe` running the package entry, and the addon probe
+        // is the same Node evaluation as POSIX. Running the launcher itself is
+        // skipped on purpose — the start step resolves and reports its own
+        // failure if the package tree is broken.
+        const node = await this.execWindows(remote, `& ${psQuote(paths.nodeBin)} -v`, { maxBytes: 4096, timeoutMs: 10_000 })
+        const version = node.stdout.trim().split(/\r?\n/u)[0] ?? ''
+        if (node.code !== 0 || !/^v\d+\./u.test(version)) return { ok: false }
+        const addon = await execOp(remote, runtimeAddonProbeOp(paths), { maxBytes: 4096, timeoutMs: 20_000 })
+        return { ok: addon.code === 0, version }
+      }
       const node = await remote.exec(`${shellQuote(paths.nodeBin)} -v`, { maxBytes: 4096, timeoutMs: 10_000 })
       const version = (node.stdout ?? '').trim().split('\n')[0] ?? ''
       if (node.code !== 0 || !/^v\d+\./u.test(version)) return { ok: false }
@@ -1750,31 +1865,57 @@ export class ProfileService {
     dshHome: string,
     clientId: string,
     request: ConnectProfileRequest,
+    kind: RemoteKind,
     onRuntimeProgress?: (message: string) => void,
   ): Promise<ResolvedRuntime> {
     const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
     const global = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
       ? undefined
-      : this.pickGlobal(scan, request)
+      : this.pickGlobal(scan, request, kind)
     if (global !== undefined) {
       const prefixes: string[] = []
-      if (global.nodePath !== undefined) prefixes.push(dirname(global.nodePath))
-      if (global.path.includes('/')) prefixes.push(dirname(global.path))
-      return { kind: 'global', action: 'reuse', launcher: global.path, pathPrefixes: prefixes, dshVersion: expectedDsh, runtimeDir: '' }
+      if (global.nodePath !== undefined) prefixes.push(kind === 'windows' ? windowsDirname(global.nodePath) : dirname(global.nodePath))
+      if (kind === 'posix' && global.path.includes('/')) prefixes.push(dirname(global.path))
+      if (kind === 'windows') prefixes.push(remoteJoin(kind, global.path, 'node_modules', '@deepseek-ai', 'dsh'))
+      return {
+        kind: 'global',
+        action: 'reuse',
+        launcher: global.path,
+        pathPrefixes: prefixes,
+        dshVersion: expectedDsh,
+        runtimeDir: '',
+        ...(global.nodePath === undefined ? {} : { nodePath: global.nodePath }),
+      }
     }
-    const paths = runtimePaths(dshHome, clientId)
+    const paths = runtimePaths(dshHome, clientId, kind)
     const marker = await readRuntimeMarker(connection.remote, paths)
     const plan = planRuntime({ kind: 'isolated', expectedVersion: expectedDsh, marker })
     if (plan.action === 'reuse') {
       const probe = await this.probeRuntimeHealth(connection.remote, paths)
       if (probe.ok) {
-        return { kind: 'isolated', action: 'reuse', launcher: paths.launcher, pathPrefixes: runtimePathPrefixes(paths), dshVersion: expectedDsh, runtimeDir: paths.root }
+        return {
+          kind: 'isolated',
+          action: 'reuse',
+          launcher: paths.launcher,
+          pathPrefixes: runtimePathPrefixes(paths),
+          dshVersion: expectedDsh,
+          runtimeDir: paths.root,
+          ...(kind === 'windows' ? { nodePath: paths.nodeBin } : {}),
+        }
       }
       onRuntimeProgress?.('隔离 runtime 不可用，正在重新部署…')
     }
     const action: SetupAction = marker === undefined ? 'install' : 'upgrade'
-    const facts0 = probeFactsFrom({ uname: scan.platform ?? '', machine: scan.machine ?? '', ostype: scan.ostype ?? '', ldd: scan.ldd ?? '' })
-    const archKey0 = `${facts0.platform}-${facts0.arch}`
+    // The artifact matrix is keyed by the *remote* platform. Unknown evidence is
+    // a coded refusal: guessing `linux` would install a runtime that cannot run.
+    const archKey0 = runtimePlatformArchOf(scan)
+    if (archKey0 === undefined) {
+      throw new RuntimeError(
+        'runtime-incompatible',
+        `无法判断远端平台（uname=${scan.platform ?? '空'} machine=${scan.machine ?? '空'}），不能选择运行时产物`,
+      )
+    }
+    const [buildPlatform, buildArch, buildLibc] = archKey0.split('-') as ['linux' | 'darwin' | 'win32', 'x64' | 'arm64', '' | 'gnu' | 'musl' | undefined]
     let artifactPath = await resolveRuntimeArtifact({
       version: expectedDsh,
       platformArch: archKey0,
@@ -1789,8 +1930,8 @@ export class ProfileService {
       try {
         const built = await buildRuntimeArtifact({
           version: expectedDsh,
-          platform: facts0.platform,
-          arch: facts0.arch,
+          platform: buildPlatform,
+          arch: buildArch,
           onProgress: onRuntimeProgress,
         })
         artifactPath = built.path
@@ -1877,6 +2018,8 @@ export class ProfileService {
       readonly runtimeKind: 'isolated' | 'global'
       readonly dshHome: string
       readonly modelSource: 'local' | 'server'
+      /** Windows: the runtime's `node.exe`; POSIX: `node` resolved through PATH. */
+      readonly nodePath?: string
     },
   ): Promise<PublicTarget> {
     const existing = this.options.store.listTargets().find(target => target.label.toLowerCase() === request.label.toLowerCase())
@@ -1901,7 +2044,7 @@ export class ProfileService {
       pluginVersion: hints.pluginVersion,
       serverDshVersion: hints.serverDshVersion,
       remote: {
-        nodePath: 'node',
+        nodePath: hints.nodePath ?? 'node',
         dshCommand: hints.launcher,
         profile: hints.profileName,
         dshHome: hints.dshHome,

@@ -16,18 +16,45 @@
  * supplies a {@link ProfileRemote} (one `exec`/`writeFile` seam) and, for the
  * final readiness check, a probe that asks the already-open tunnel for the
  * tokenized `GET /`.
+ *
+ * Every command below exists in **two dialects**. A POSIX server keeps the exact
+ * LF shell bodies this module always produced; a Windows server gets a PowerShell
+ * script delivered on stdin (`windows-shell.ts`) because `cmd.exe` quoting cannot
+ * carry paths with spaces or non-ASCII text and the command line is capped at 8191
+ * characters. `profilePaths(..., 'windows')` is the only switch that selects the
+ * dialect, so the POSIX path cannot drift while the Windows one is maintained.
  */
 import { createHash } from 'node:crypto'
 import type { RemoteFile } from '../targets/types.ts'
 import { isClientId, profileNameFor } from '../targets/client-id.ts'
 import { sha256OfFiles } from './assets.ts'
 import { packageFiles, pathAssignment, shellQuote } from './profile.ts'
+import { remoteIsAbsolute, remoteJoin, remoteTrimTrailing, type RemoteKind } from './remote-dialect.ts'
+import { execOp, opText, shellOp, windowsOp } from './remote-op.ts'
+import {
+  windowsMkdirScript,
+  windowsPidAliveScript,
+  windowsReadBytesScript,
+  windowsStartScript,
+  windowsStopScript,
+  windowsWriteBytesScript,
+} from './windows-shell.ts'
 
 /** Startup line, anchored: `dsh web: http://127.0.0.1:<port>/?token=<43 chars>`. */
 export const PROFILE_STARTUP_PATTERN = /^dsh web: http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]+)$/u
 
 /** How long a profile server may take to print its startup line. */
 export const PROFILE_STARTUP_TIMEOUT_MS = 15_000
+
+/**
+ * How long a Windows profile may take to print its startup line.
+ *
+ * Measured on the first real-machine run: the detached `cmd` wrapper plus a cold
+ * `node.exe` start needed more than the POSIX 15 s budget, and the server exited
+ * with a perfectly good startup line in `server.log`. Windows pays for the
+ * wrapper hop and Defender scanning the freshly extracted runtime tree.
+ */
+export const WINDOWS_PROFILE_STARTUP_TIMEOUT_MS = 90_000
 
 /** How long SIGTERM gets before SIGKILL. */
 export const PROFILE_STOP_TIMEOUT_MS = 5_000
@@ -56,12 +83,14 @@ export interface ProfileExecResult {
 
 /** The narrow remote seam the lifecycle needs (SSH `exec` + file upload). */
 export interface ProfileRemote {
-  exec(body: string, options?: { readonly maxBytes?: number; readonly timeoutMs?: number }): Promise<ProfileExecResult>
+  exec(body: string, options?: { readonly maxBytes?: number; readonly timeoutMs?: number; readonly stdin?: string }): Promise<ProfileExecResult>
   writeFile(path: string, content: Buffer): Promise<void>
 }
 
 /** Absolute server-side paths for one client's profile and its process state. */
 export interface ProfilePaths {
+  /** Which command language and path syntax the server speaks. */
+  readonly kind: RemoteKind
   readonly dshHome: string
   readonly clientId: string
   readonly profile: string
@@ -77,34 +106,46 @@ export interface ProfilePaths {
   readonly pluginDir: string
 }
 
-/** Strip trailing slashes so path joins are stable. */
-function normalizeDshHome(dshHome: string): string {
+/**
+ * Normalize and validate `$DSH_HOME`.
+ *
+ * The check is dialect-aware because `C:\Users\x\.dsh` is a perfectly good
+ * absolute Windows path that does not start with `/`. This is the *only* place
+ * that decides what "absolute server path" means.
+ * @param dshHome - the value the caller resolved (request, probe, or default).
+ * @param kind - the server's dialect.
+ */
+function normalizeDshHome(dshHome: string, kind: RemoteKind): string {
   const trimmed = dshHome.trim()
-  if (trimmed === '' || !trimmed.startsWith('/')) throw new Error(`DSH_HOME must be an absolute server path, got ${JSON.stringify(dshHome)}`)
-  return trimmed.replace(/\/+$/u, '')
+  if (trimmed === '' || !remoteIsAbsolute(kind, trimmed)) {
+    throw new Error(`DSH_HOME must be an absolute server path, got ${JSON.stringify(dshHome)}`)
+  }
+  return remoteTrimTrailing(kind, trimmed)
 }
 
 /**
  * The fixed v1 layout for one client.
  * @param dshHome - absolute server `$DSH_HOME`.
  * @param clientId - the client's stable 12-hex id.
+ * @param kind - the server's dialect (defaults to POSIX, the pre-Windows behavior).
  */
-export function profilePaths(dshHome: string, clientId: string): ProfilePaths {
-  const home = normalizeDshHome(dshHome)
+export function profilePaths(dshHome: string, clientId: string, kind: RemoteKind = 'posix'): ProfilePaths {
+  const home = normalizeDshHome(dshHome, kind)
   if (!isClientId(clientId)) throw new Error(`invalid clientId ${JSON.stringify(clientId)}`)
   const profile = profileNameFor(clientId)
-  const profileDir = `${home}/profiles/${profile}`
-  const stateDir = `${home}/remote-window/profiles/${profile}`
+  const profileDir = remoteJoin(kind, home, 'profiles', profile)
+  const stateDir = remoteJoin(kind, home, 'remote-window', 'profiles', profile)
   return {
+    kind,
     dshHome: home,
     clientId,
     profile,
     profileDir,
     stateDir,
-    logPath: `${stateDir}/server.log`,
-    pidPath: `${stateDir}/server.pid`,
-    leasePath: `${profileDir}/${PROFILE_LEASE_PATH}`,
-    pluginDir: `${profileDir}/node_modules/${PROFILE_SERVER_PLUGIN}`,
+    logPath: remoteJoin(kind, stateDir, 'server.log'),
+    pidPath: remoteJoin(kind, stateDir, 'server.pid'),
+    leasePath: remoteJoin(kind, profileDir, PROFILE_LEASE_PATH),
+    pluginDir: remoteJoin(kind, profileDir, 'node_modules', PROFILE_SERVER_PLUGIN),
   }
 }
 
@@ -280,21 +321,49 @@ export type Sleep = (ms: number) => Promise<void>
 /** Default sleep. */
 export const realSleep: Sleep = async (ms) => { await new Promise<void>(resolve => { setTimeout(resolve, ms) }) }
 
+/**
+ * Read one remote text file in the server's dialect.
+ *
+ * POSIX uses `cat` because it is always present and treats a missing file as
+ * empty; Windows reads the bytes and base64s them, because a redirected log is
+ * UTF-16LE while the channel decodes stdout as UTF-8.
+ * @param remote - profile remote seam.
+ * @param paths - the dialect and the path.
+ * @param path - absolute file path to read.
+ * @param maxBytes - cap for the answer.
+ */
+async function readRemoteText(remote: ProfileRemote, paths: ProfilePaths, path: string, maxBytes: number): Promise<string> {
+  const result = paths.kind === 'windows'
+    ? await execOp(remote, windowsOp(windowsReadBytesScript(path)), { maxBytes, timeoutMs: 10_000 })
+    : await remote.exec(`cat ${shellQuote(path)} 2>/dev/null || true`, { maxBytes, timeoutMs: 10_000 })
+  return opText(paths.kind, result)
+}
+
 /** Read and parse the latest startup line from the profile log. */
 export async function readProfileStartup(remote: ProfileRemote, paths: ProfilePaths): Promise<ProfileStartup | undefined> {
-  const log = await remote.exec(`cat ${shellQuote(paths.logPath)} 2>/dev/null || true`, { maxBytes: 64 * 1024, timeoutMs: 10_000 })
-  return findProfileStartup(log.stdout)
+  return findProfileStartup(await readRemoteText(remote, paths, paths.logPath, 64 * 1024))
 }
 
 /** Read the pid file, or undefined when absent/garbage. */
 export async function readProfilePid(remote: ProfileRemote, paths: ProfilePaths): Promise<number | undefined> {
-  const pid = await remote.exec(`cat ${shellQuote(paths.pidPath)} 2>/dev/null || true`, { maxBytes: 256, timeoutMs: 10_000 })
-  return parsePidFile(pid.stdout)
+  return parsePidFile(await readRemoteText(remote, paths, paths.pidPath, 256))
 }
 
-/** Whether a pid is alive (`kill -0`; a permission error still means a live process). */
-export async function isRemotePidAlive(remote: ProfileRemote, pid: number): Promise<boolean> {
+/**
+ * Whether a pid is alive.
+ *
+ * POSIX asks the shell (`kill -0`, where a permission error still proves a live
+ * process); Windows asks the process table, which is the equivalent of `kill -0`.
+ * @param remote - profile remote seam.
+ * @param paths - the server's dialect.
+ * @param pid - the process id.
+ */
+export async function isRemotePidAlive(remote: ProfileRemote, paths: ProfilePaths, pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 1) return false
+  if (paths.kind === 'windows') {
+    const result = await execOp(remote, windowsOp(windowsPidAliveScript(pid)), { maxBytes: 64, timeoutMs: 10_000 })
+    return result.stdout.trim() === 'alive'
+  }
   const result = await remote.exec(`kill -0 ${pid} 2>/dev/null; printf '%s' "$?"`, { maxBytes: 64, timeoutMs: 10_000 })
   return result.stdout.trim() === '0'
 }
@@ -317,15 +386,14 @@ export async function waitForProfileStartup(
   let lastLog = ''
   for (;;) {
     options.signal?.throwIfAborted()
-    const log = await remote.exec(`cat ${shellQuote(paths.logPath)} 2>/dev/null || true`, { maxBytes: 64 * 1024, timeoutMs: 10_000 })
-    lastLog = log.stdout
+    lastLog = await readRemoteText(remote, paths, paths.logPath, 64 * 1024)
     const startup = findProfileStartup(lastLog)
     if (startup !== undefined) return startup
     // Liveness first: a process that already exited is a fast, actionable
     // `profile-start-failed`, not a 15 s timeout (the deadline is for a process
     // that is still booting).
     const pid = await readProfilePid(remote, paths)
-    if (pid !== undefined && !(await isRemotePidAlive(remote, pid))) {
+    if (pid !== undefined && !(await isRemotePidAlive(remote, paths, pid))) {
       throw new ProfileLifecycleError(
         'profile-start-failed',
         `profile server exited before printing its startup line${lastLog.trim() === '' ? '' : `: ${scrubbedLogTail(lastLog)}`}`,
@@ -367,7 +435,15 @@ export async function startProfileServer(
   remote: ProfileRemote,
   paths: ProfilePaths,
   options: {
+    /**
+     * POSIX: the `dsh` launcher. Windows: the tree that holds
+     * `node_modules/@deepseek-ai/dsh` (the isolated runtime's `dsh/` directory).
+     */
     readonly launcher: string
+    /** Windows only: the runtime's `node.exe` (the profile server is launched directly). */
+    readonly nodePath?: string
+    /** Fixed port (tests pin one; production always passes 0 for OS assignment). */
+    readonly port?: number
     readonly pathPrefixes?: readonly string[]
     /** Extra environment for the launched profile server (e.g. the model bridge key). */
     readonly env?: Readonly<Record<string, string>>
@@ -378,11 +454,28 @@ export async function startProfileServer(
     readonly signal?: AbortSignal
   },
 ): Promise<ProfileServerHandle> {
-  const start = await remote.exec(profileStartScript(paths, {
-    launcher: options.launcher,
-    ...(options.pathPrefixes === undefined ? {} : { pathPrefixes: options.pathPrefixes }),
-    ...(options.env === undefined ? {} : { env: options.env }),
-  }), { maxBytes: 4096, timeoutMs: 30_000 })
+  const op = paths.kind === 'windows'
+    ? windowsOp(windowsStartScript({
+        profileDir: paths.profileDir,
+        stateDir: paths.stateDir,
+        logPath: paths.logPath,
+        pidPath: paths.pidPath,
+        dshHome: paths.dshHome,
+        nodeExe: options.nodePath ?? '',
+        dshRoot: options.launcher,
+        profile: paths.profile,
+        host: '127.0.0.1',
+        port: options.port ?? 0,
+        pathPrefixes: options.pathPrefixes ?? [],
+        ...(options.env === undefined ? {} : { env: options.env }),
+      }))
+    : shellOp(profileStartScript(paths, {
+        launcher: options.launcher,
+        ...(options.pathPrefixes === undefined ? {} : { pathPrefixes: options.pathPrefixes }),
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.port === undefined ? {} : { port: options.port }),
+      }))
+  const start = await execOp(remote, op, { maxBytes: 4096, timeoutMs: 30_000 })
   if (start.code !== 0) {
     throw new ProfileLifecycleError(
       'profile-start-failed',
@@ -410,7 +503,7 @@ export async function startProfileServer(
   if (options.probe !== undefined && !(await options.probe(startup))) {
     // Capture the log before stopping: the failure text QA sees must name the
     // port/pid and the server's own tail, not just "listening but failed".
-    const tail = await remote.exec(`cat ${shellQuote(paths.logPath)} 2>/dev/null || true`, { maxBytes: 64 * 1024, timeoutMs: 10_000 }).then(result => result.stdout).catch(() => '')
+    const tail = await readRemoteText(remote, paths, paths.logPath, 64 * 1024).catch(() => '')
     await stopProfileServer(remote, paths, { sleep: options.sleep }).catch(() => false)
     await waitForProfileStopped(remote, paths, { sleep: options.sleep }).catch(() => false)
     throw new ProfileLifecycleError(
@@ -431,9 +524,18 @@ export async function stopProfileServer(
   paths: ProfilePaths,
   options: { readonly timeoutMs?: number; readonly sleep?: Sleep } = {},
 ): Promise<boolean> {
-  const result = await remote.exec(profileStopScript(paths, {
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-  }), { maxBytes: 1024, timeoutMs: (options.timeoutMs ?? PROFILE_STOP_TIMEOUT_MS) + 15_000 })
+  const op = paths.kind === 'windows'
+    ? windowsOp(windowsStopScript({
+        pidPath: paths.pidPath,
+        logPath: paths.logPath,
+        launcherMarker: paths.dshHome,
+        profileMarker: paths.profile,
+        timeoutMs: options.timeoutMs ?? PROFILE_STOP_TIMEOUT_MS,
+      }))
+    : shellOp(profileStopScript(paths, {
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      }))
+  const result = await execOp(remote, op, { maxBytes: 1024, timeoutMs: (options.timeoutMs ?? PROFILE_STOP_TIMEOUT_MS) + 15_000 })
   if (result.code !== 0) {
     throw new ProfileLifecycleError(
       'profile-stop-failed',
@@ -463,7 +565,7 @@ export async function waitForProfileStopped(
   for (;;) {
     const pid = await readProfilePid(remote, paths)
     if (pid === undefined) return true
-    if (!(await isRemotePidAlive(remote, pid))) return true
+    if (!(await isRemotePidAlive(remote, paths, pid))) return true
     if (Date.now() >= deadline) return false
     await sleep(intervalMs)
   }
@@ -507,7 +609,8 @@ export function parseProfileLease(text: string): ProfileLease | undefined {
 
 /** Read the lease file from the profile directory. */
 export async function readProfileLease(remote: ProfileRemote, paths: ProfilePaths): Promise<ProfileLease | undefined> {
-  const result = await remote.exec(`cat ${shellQuote(paths.leasePath)} 2>/dev/null || true`, { maxBytes: 8192, timeoutMs: 10_000 })
+  const text = await readRemoteText(remote, paths, paths.leasePath, 8192).catch(() => '')
+  const result = { stdout: text }
   return parseProfileLease(result.stdout)
 }
 
@@ -605,10 +708,10 @@ export async function pluginPackageFiles(packageDir: string): Promise<RemoteFile
 export function buildProfileFileSet(paths: ProfilePaths, plugin: readonly RemoteFile[]): RemoteFile[] {
   const files: RemoteFile[] = []
   for (const [name, content] of profileStartupFiles({ profile: paths.profile })) {
-    files.push({ path: `${paths.profileDir}/${name}`, content: Buffer.from(content, 'utf8') })
+    files.push({ path: remoteJoin(paths.kind, paths.profileDir, name), content: Buffer.from(content, 'utf8') })
   }
   for (const file of plugin) {
-    files.push({ path: `${paths.pluginDir}/${file.path}`, content: file.content })
+    files.push({ path: remoteJoin(paths.kind, paths.pluginDir, file.path), content: file.content })
   }
   return files
 }
@@ -628,10 +731,27 @@ export async function profileFileSetDigest(files: readonly RemoteFile[]): Promis
  * @param paths - fixed layout.
  */
 export async function writeProfileStartupFiles(remote: ProfileRemote, paths: ProfilePaths): Promise<void> {
-  await remote.exec(`command mkdir -p ${shellQuote(paths.profileDir)} ${shellQuote(paths.pluginDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  await ensureRemoteDirs(remote, paths, [paths.profileDir, paths.pluginDir])
   for (const [name, content] of profileStartupFiles({ profile: paths.profile })) {
-    await remote.writeFile(`${paths.profileDir}/${name}`, Buffer.from(content, 'utf8'))
+    await remote.writeFile(remoteJoin(paths.kind, paths.profileDir, name), Buffer.from(content, 'utf8'))
   }
+}
+
+/**
+ * `mkdir -p` for one or more remote directories.
+ *
+ * POSIX uses `command mkdir -p`; Windows uses `[IO.Directory]::CreateDirectory`,
+ * which is idempotent and needs no `cmd` quoting for a path with spaces.
+ * @param remote - profile remote seam.
+ * @param paths - the server's dialect.
+ * @param dirs - absolute remote directories.
+ */
+async function ensureRemoteDirs(remote: ProfileRemote, paths: ProfilePaths, dirs: readonly string[]): Promise<void> {
+  if (paths.kind === 'windows') {
+    await execOp(remote, windowsOp(windowsMkdirScript(dirs)), { maxBytes: 1024, timeoutMs: 15_000 })
+    return
+  }
+  await remote.exec(`command mkdir -p ${dirs.map(shellQuote).join(' ')}`, { maxBytes: 1024, timeoutMs: 15_000 })
 }
 
 /**
@@ -647,8 +767,8 @@ export async function writeProfileStartupFiles(remote: ProfileRemote, paths: Pro
  * @param content - YAML text (`[]\n` restores the official layers).
  */
 export async function writeProfilePatch(remote: ProfileRemote, paths: ProfilePaths, content: string): Promise<void> {
-  await remote.exec(`command mkdir -p ${shellQuote(paths.profileDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
-  await remote.writeFile(`${paths.profileDir}/${PROFILE_PATCH_FILE}`, Buffer.from(content, 'utf8'))
+  await ensureRemoteDirs(remote, paths, [paths.profileDir])
+  await remote.writeFile(remoteJoin(paths.kind, paths.profileDir, PROFILE_PATCH_FILE), Buffer.from(content, 'utf8'))
 }
 
 /** The profile plugin marker body. */
@@ -662,7 +782,7 @@ export interface ProfilePluginMarker {
 
 /** One marker file path inside the profile directory. */
 export function profilePluginMarkerPath(paths: ProfilePaths): string {
-  return `${paths.profileDir}/${PROFILE_PLUGIN_MARKER}`
+  return remoteJoin(paths.kind, paths.profileDir, PROFILE_PLUGIN_MARKER)
 }
 
 /**
@@ -681,7 +801,7 @@ export async function writeProfile(
 ): Promise<{ digest: string; files: readonly RemoteFile[] }> {
   const files = buildProfileFileSet(paths, plugin)
   const digest = await profileFileSetDigest(files)
-  await remote.exec(`command mkdir -p ${shellQuote(paths.profileDir)} ${shellQuote(paths.pluginDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  await ensureRemoteDirs(remote, paths, [paths.profileDir, paths.pluginDir])
   for (const file of files) await remote.writeFile(file.path, file.content)
   const marker: ProfilePluginMarker = {
     id: 'plugin',
@@ -690,17 +810,21 @@ export async function writeProfile(
     profile: paths.profile,
     installedAt: (options.now ?? new Date()).toISOString(),
   }
-  await remote.exec(
-    `printf %s ${shellQuote(`${JSON.stringify(marker)}\n`)} > ${shellQuote(profilePluginMarkerPath(paths))}`,
-    { maxBytes: 1024, timeoutMs: 15_000 },
-  )
+  const markerPath = profilePluginMarkerPath(paths)
+  if (paths.kind === 'windows') {
+    await execOp(remote, windowsOp(windowsWriteBytesScript(markerPath, Buffer.from(`${JSON.stringify(marker)}\n`, 'utf8'))), { maxBytes: 1024, timeoutMs: 15_000 })
+  } else {
+    await remote.exec(
+      `printf %s ${shellQuote(`${JSON.stringify(marker)}\n`)} > ${shellQuote(markerPath)}`,
+      { maxBytes: 1024, timeoutMs: 15_000 },
+    )
+  }
   return { digest, files }
 }
 
 /** Read the existing profile marker; a missing/corrupt marker means "reinstall". */
 export async function readProfilePluginMarker(remote: ProfileRemote, paths: ProfilePaths): Promise<ProfilePluginMarker | undefined> {
-  const result = await remote.exec(`cat ${shellQuote(profilePluginMarkerPath(paths))} 2>/dev/null || true`, { maxBytes: 4096, timeoutMs: 10_000 })
-  const text = result.stdout.trim()
+  const text = (await readRemoteText(remote, paths, profilePluginMarkerPath(paths), 4096)).trim()
   if (text === '') return undefined
   try {
     const parsed = JSON.parse(text) as Partial<ProfilePluginMarker>

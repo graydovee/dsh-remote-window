@@ -12,10 +12,11 @@ import type { ReactElement } from 'react'
 import { Button, DisclosureRow, IconGlobeOutlineRegular, Modal, SegmentedControl, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, type DirEntry, type SshAlias } from './api.ts'
 import { Field } from './common.tsx'
+import { offeredMethods, type OfferedMethod } from './method-cards.ts'
 import { remoteApi, type ConnectProgressEvent, type ConnectProgressStep, type LocalProviderSummary } from './remote-api.ts'
 import { summarizeModeSwitch } from './executor.ts'
 import { LOCAL_MODE_READY } from './remote-store.ts'
-import { t } from './locales.ts'
+import { t, type LocaleKey } from './locales.ts'
 import {
   applyModeSwitch, browseAddWorkspace, cancelModeSwitch, cancelProfileRestart, closeAddWorkspace,
   closeConnectDialog, setAddWorkspacePath,
@@ -63,6 +64,21 @@ const PROGRESS_STATUS = {
   skipped: 'connect.status.skipped',
   failed: 'connect.status.failed',
 } as const
+
+/**
+ * Method-card copy, keyed by the pure module's offered-method ids.
+ *
+ * The card list itself comes from {@link offeredMethods} — the same predicate
+ * the host validates — so a method only appears when its transport exists
+ * (`methodAvailable`). WSL keeps its translated copy here so the day
+ * `WSL_TRANSPORT_ENABLED` flips the card renders a real label instead of a raw
+ * key; the config step below is SSH-only and must grow WSL fields before that
+ * flip adds it to `OFFERED_METHODS`.
+ */
+const METHOD_CARD_COPY: Record<OfferedMethod, { readonly name: LocaleKey; readonly description: LocaleKey; readonly aria: LocaleKey }> = {
+  ssh: { name: 'method.ssh.name', description: 'method.ssh.description', aria: 'method.ssh.aria' },
+  wsl: { name: 'method.wsl.name', description: 'method.wsl.description', aria: 'method.wsl.aria' },
+}
 
 /** Checked model count per provider (missing key = none checked yet). */
 function selectedModelCount(provider: LocalProviderSummary, selection: Readonly<Record<string, readonly string[]>>): number {
@@ -254,17 +270,22 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
             <h3 className="dsh-rw-section-title">{t('method.title')}</h3>
             <p className="dsh-rw-hint">{t('method.description')}</p>
             <div className="dsh-rw-methods">
-              <button
-                type="button"
-                className="dsh-rw-method"
-                data-selected="true"
-                aria-pressed
-                aria-label={t('method.ssh.aria')}
-                onClick={() => { setStep('config') }}
-              >
-                <span className="dsh-rw-method-name">{t('method.ssh.name')}</span>
-                <span className="dsh-rw-method-description">{t('method.ssh.description')}</span>
-              </button>
+              {/* Offered cards come from the gate: `offeredMethods` → `methodAvailable`
+                  (WSL only appears once `WSL_TRANSPORT_ENABLED` has a transport). */}
+              {offeredMethods(props.state.platform ?? '').map(method => (
+                <button
+                  key={method}
+                  type="button"
+                  className="dsh-rw-method"
+                  data-selected={method === 'ssh' ? 'true' : undefined}
+                  aria-pressed={method === 'ssh'}
+                  aria-label={t(METHOD_CARD_COPY[method].aria)}
+                  onClick={() => { setStep('config') }}
+                >
+                  <span className="dsh-rw-method-name">{t(METHOD_CARD_COPY[method].name)}</span>
+                  <span className="dsh-rw-method-description">{t(METHOD_CARD_COPY[method].description)}</span>
+                </button>
+              ))}
             </div>
           </div>
         )}

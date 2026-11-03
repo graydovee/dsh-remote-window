@@ -13,7 +13,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
-import { artifactName, artifactTag, buildServerPackage } from './package-build.ts'
+import { artifactName, artifactTag, buildServerPackage, type StageArch, type StagePlatform } from './package-build.ts'
 
 export { artifactName, artifactTag }
 
@@ -24,7 +24,8 @@ export { artifactName, artifactTag }
 export const NODE_VERSION_CANDIDATES = ['v24.21.0']
 
 /** Download roots, tried in order: CN mirror first, then the official one.
- *  Each takes the release-relative file path (`v24.21.0/node-v24.21.0-….tar.gz`). */
+ *  Each takes the release-relative file path (`v24.21.0/node-v24.21.0-….tar.gz`
+ *  on POSIX, `v24.21.0/node-v24.21.0-win-x64.zip` on win32). */
 const NODE_MIRRORS = [
   (file: string): string => `https://registry.npmmirror.com/-/binary/node/${file}`,
   (file: string): string => `https://nodejs.org/dist/${file}`,
@@ -115,19 +116,24 @@ export function nodeArchKey(machine: string): 'x64' | 'arm64' {
 }
 
 /** The `<platformArch>` segment used in cache paths and remote markers. */
-export function platformArch(platform: 'linux' | 'darwin', arch: 'x64' | 'arm64'): string {
+export function platformArch(platform: StagePlatform, arch: StageArch): string {
   return `${platform}-${arch}`
 }
 
 /**
- * The cached Node tarball for one platform, downloading it on first use.
+ * The cached Node distribution for one platform, downloading it on first use.
  * Every candidate (version × mirror) is probed with a short HEAD request
  * before the real download; a failed download removes the partial file and
  * moves to the next candidate, mirroring the remote-install fallback.
+ *
+ * Node publishes Windows only as a **zip** (`node-v24.21.0-win-x64.zip`, with
+ * `win-<arch>` rather than `win32-<arch>` in the file name), and that tree has
+ * `node.exe` at its root instead of `bin/node`; everything else is the same
+ * `.tar.gz` naming.
  */
 export async function ensureNodeTarball(options: {
-  platform: 'linux' | 'darwin'
-  arch: 'x64' | 'arm64'
+  platform: StagePlatform
+  arch: StageArch
   onProgress?: (message: string, detail?: string) => void
 }): Promise<CachedAsset> {
   const notify = options.onProgress ?? (() => {})
@@ -137,8 +143,10 @@ export async function ensureNodeTarball(options: {
   await mkdir(dir, { recursive: true })
   const failures: string[] = []
   for (const version of NODE_VERSION_CANDIDATES) {
-    const file = `node-${version}-${options.platform}-${options.arch}.tar.gz`
-    const cached = join(dir, file)
+    const distribution = options.platform === 'win32'
+      ? `node-${version}-win-${options.arch}.zip`
+      : `node-${version}-${options.platform}-${options.arch}.tar.gz`
+    const cached = join(dir, distribution)
     const ready = `${cached}.ready`
     try {
       const [info, marker] = await Promise.all([stat(cached), readFile(ready, 'utf8').catch(() => '')])
@@ -150,11 +158,12 @@ export async function ensureNodeTarball(options: {
         }
       }
     } catch {}
-    // The gzipped distribution is ~30 MB; the official dist only ships .tar.gz
-    // for linux/darwin, so no xz decompression is needed on the remote either.
-    // Both mirrors key releases by the bare version directory (`/v24.21.0/`),
-    // relative to the mirror root — no leading slash, no doubled separators.
-    const relative = `${version}/node-${version}-${options.platform}-${options.arch}.tar.gz`
+    // The POSIX gzipped distribution is ~30 MB; the official dist only ships
+    // .tar.gz for linux/darwin, so no xz decompression is needed on the remote
+    // either. Both mirrors key releases by the bare version directory
+    // (`/v24.21.0/`), relative to the mirror root — no leading slash, no
+    // doubled separators.
+    const relative = `${version}/${distribution}`
     for (const mirror of NODE_MIRRORS) {
       const url = mirror(relative)
       notify(`downloading node ${version} from ${new URL(url).host}`)

@@ -112,7 +112,7 @@ export async function connectSsh(options: SshConnectionOptions): Promise<Client>
 export async function execRemote(
   client: Client,
   command: string,
-  options: { maxBytes?: number; timeoutMs?: number } = {},
+  options: { maxBytes?: number; timeoutMs?: number; stdin?: string | Buffer } = {},
 ): Promise<ExecResult> {
   const maxBytes = options.maxBytes ?? 256 * 1024
   return await new Promise<ExecResult>((resolve, reject) => {
@@ -143,6 +143,15 @@ export async function execRemote(
       }
       stream.on('data', collect(stdout))
       stream.stderr.on('data', collect(stderr))
+      // A Windows server takes its whole script on stdin (an `-EncodedCommand`
+      // payload), so the channel must be fed and closed *after* the readers are
+      // attached: writing first filled the channel while nothing drained it, and
+      // the remote PowerShell (waiting for EOF) hit the 60 s timeout on the first
+      // real-machine run. A POSIX body never sets this option.
+      if (options.stdin !== undefined) {
+        stream.resume()
+        stream.end(options.stdin)
+      }
       stream.on('error', (streamError: Error) => {
         finish(new RemoteCommandError(`remote command failed: ${scrubSecrets(streamError.message)}`, scrubSecrets(command)))
       })
@@ -193,11 +202,38 @@ export async function realpath(sftp: SFTPWrapper, path: string): Promise<string>
 }
 
 /** Create a directory and every missing parent. */
+/**
+ * The separator a remote directory path uses.
+ *
+ * A Windows server is written with `\` (a drive path can also arrive with `/`),
+ * a POSIX server only with `/`. Choices are made per path, never per host, so a
+ * POSIX target keeps byte-identical behaviour.
+ * @param directory - one remote directory path.
+ */
+function remoteSeparator(directory: string): '/' | '\\' {
+  if (/^[A-Za-z]:[\\/]/u.test(directory)) return '\\'
+  return directory.includes('\\') && !directory.includes('/') ? '\\' : '/'
+}
+
+/** Everything before the last separator of one remote path. */
+export function remoteDirname(path: string): string {
+  const separator = remoteSeparator(path)
+  const index = path.lastIndexOf(separator)
+  if (index <= 0) return separator === '/' ? '/' : path.slice(0, index + 1)
+  return path.slice(0, index)
+}
+
 export async function mkdirp(sftp: SFTPWrapper, directory: string): Promise<void> {
-  const segments = directory.split('/').filter(segment => segment !== '')
-  let current = directory.startsWith('/') ? '' : '.'
+  const separator = remoteSeparator(directory)
+  const segments = directory.split(/[\\/]/u).filter(segment => segment !== '')
+  // A drive prefix (`C:`) is its own first step: `C:` alone is not a directory.
+  const drive = /^[A-Za-z]:$/u.exec(segments[0] ?? '') === null ? undefined : segments.shift()
+  let current = directory.startsWith('/') || separator === '\\' ? '' : '.'
+  if (drive !== undefined) current = drive
   for (const segment of segments) {
-    current = current === '' ? `/${segment}` : `${current}/${segment}`
+    current = current === ''
+      ? (separator === '/' ? `/${segment}` : segment)
+      : `${current}${separator}${segment}`
     await new Promise<void>((resolve, reject) => {
       sftp.mkdir(current, { mode: 0o755 }, (error) => {
         // An existing directory is success; anything else is reported.
@@ -210,7 +246,7 @@ export async function mkdirp(sftp: SFTPWrapper, directory: string): Promise<void
 
 /** Write one file, creating parents first. */
 export async function writeRemoteFile(sftp: SFTPWrapper, file: RemoteFile): Promise<void> {
-  const directory = file.path.slice(0, file.path.lastIndexOf('/'))
+  const directory = remoteDirname(file.path)
   await mkdirp(sftp, directory)
   await new Promise<void>((resolve, reject) => {
     sftp.writeFile(file.path, file.content, { mode: 0o644 }, (error) => {
@@ -232,7 +268,7 @@ export async function uploadRemoteFile(
   file: RemoteFile,
   onProgress?: (sent: number, total: number) => void,
 ): Promise<void> {
-  const directory = file.path.slice(0, file.path.lastIndexOf('/'))
+  const directory = remoteDirname(file.path)
   await mkdirp(sftp, directory)
   const CHUNK = 256 * 1024
   await new Promise<void>((resolve, reject) => {

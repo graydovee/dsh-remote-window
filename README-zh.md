@@ -208,6 +208,11 @@ dsh plugin --profile web allow-version dsh-remote-window@<已安装版本> \
 
 豁免只覆盖本机宿主；server 必须运行已验证运行时——client 安装的独立 runtime，或复用该精确版本的全局 DSH。
 
+远端的 server 可以是 Linux、macOS 或 **Windows**。Windows 目标需要预置
+`dsh-runtime-<version>-win32-<arch>.tar.gz`（`DSH_RW_RUNTIME_ARTIFACT`，或放在
+`~/.dsh/remote-assets/` 的同名文件），或复用一份健康的全局 DSH——client 目前不会自行下载 runtime 产物。
+Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.md](doc/windows-server-support.md)。
+
 独立 runtime 会优先复用 `~/.dsh/remote-assets/` 中该平台/版本的缓存包；缓存没有时，client 用本机 pnpm
 按同一 `node/` + `dsh/` 布局构建并上传，因此升级 DSH 后首次连接可能慢一些，之后直接复用。构建只写入
 专用 profile 的独立 runtime，不改 server 的全局 DSH 或其它 profile。

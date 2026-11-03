@@ -241,6 +241,12 @@ dsh plugin --profile web allow-version dsh-remote-window@<installed version> \
 That exemption covers the local host only. The server side must run the verified runtime — either the
 isolated runtime the client installs, or a global DSH reusing that exact verified version.
 
+Remote servers can be Linux, macOS or **Windows**. A Windows server needs either a pre-seeded
+`dsh-runtime-<version>-win32-<arch>.tar.gz` (`DSH_RW_RUNTIME_ARTIFACT`, or the same file under
+`~/.dsh/remote-assets/`) or a healthy global DSH to reuse, because the client does not download runtime
+artifacts yet. See [doc/windows-server-support.md](doc/windows-server-support.md) for the Windows contract,
+the codes it can fail with, and the verified real-machine run.
+
 The isolated runtime reuses a platform/version cache under `~/.dsh/remote-assets/` first. When the cache is
 missing, the client builds the same `node/` + `dsh/` layout with the host pnpm and uploads it, so the first
 connection after a DSH upgrade can be slower; later connections reuse it. The build only populates the

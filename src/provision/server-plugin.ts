@@ -31,6 +31,9 @@ import {
   writeProfileStartupFiles,
 } from './profile-lifecycle.ts'
 import { shellQuote } from './profile.ts'
+import { remoteJoin } from './remote-dialect.ts'
+import { execOp, opText, shellOp, windowsOp } from './remote-op.ts'
+import { windowsMkdirScript, windowsReadBytesScript, windowsServerPluginInstallScript } from './windows-shell.ts'
 
 /** Package name the profile bundle list references. */
 export const SERVER_PLUGIN_PACKAGE = 'dsh-remote-window-server'
@@ -364,7 +367,12 @@ export function serverPluginInstallScript(options: {
 
 /** Read the installed marker. */
 export async function readServerPluginMarker(remote: ProfileRemote, paths: ProfilePaths): Promise<ServerPluginMarker | undefined> {
-  const result = await remote.exec(`cat ${shellQuote(serverPluginMarkerPath(paths))} 2>/dev/null || true`, { maxBytes: 4096, timeoutMs: 10_000 })
+  const markerPath = serverPluginMarkerPath(paths)
+  if (paths.kind === 'windows') {
+    const result = await execOp(remote, windowsOp(windowsReadBytesScript(markerPath)), { maxBytes: 8192, timeoutMs: 10_000 }).catch(() => undefined)
+    return parseServerPluginMarker(result === undefined ? '' : opText(paths.kind, result))
+  }
+  const result = await remote.exec(`cat ${shellQuote(markerPath)} 2>/dev/null || true`, { maxBytes: 4096, timeoutMs: 10_000 })
   return parseServerPluginMarker(result.stdout)
 }
 
@@ -410,7 +418,7 @@ export async function installProfilePeerPackage(
 ): Promise<number> {
   const files = await collectLocalPackageFiles(options.packageDir)
   for (const file of files) {
-    await remote.writeFile(`${paths.profileDir}/node_modules/${options.name}/${file.path}`, file.content)
+    await remote.writeFile(remoteJoin(paths.kind, paths.profileDir, 'node_modules', options.name, file.path), file.content)
   }
   return files.length
 }
@@ -444,17 +452,42 @@ export async function installServerPlugin(options: {
   }
   await writeProfileStartupFiles(options.remote, options.paths)
   const content = await readFile(options.tarball.path)
-  const stagingPath = `${options.paths.stateDir}/staging/${options.tarball.name}`
-  await options.remote.exec(`command mkdir -p ${shellQuote(`${options.paths.stateDir}/staging`)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  const windows = options.paths.kind === 'windows'
+  const stagingDir = remoteJoin(options.paths.kind, options.paths.stateDir, 'staging')
+  const stagingPath = remoteJoin(options.paths.kind, stagingDir, options.tarball.name)
+  if (windows) {
+    await execOp(options.remote, windowsOp(windowsMkdirScript([stagingDir])), { maxBytes: 1024, timeoutMs: 15_000 })
+  } else {
+    await options.remote.exec(`command mkdir -p ${shellQuote(stagingDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
+  }
   await options.remote.writeFile(stagingPath, content)
-  const result = await options.remote.exec(serverPluginInstallScript({
-    tarballPath: stagingPath,
-    paths: options.paths,
-    expectedVersion: options.tarball.version,
+  const marker: ServerPluginMarker = {
+    version: options.tarball.version,
+    sha256: options.tarball.sha256,
+    protocol: SERVER_PLUGIN_PROTOCOL,
     dshVersion: options.dshVersion,
-    expectedSha256: options.tarball.sha256,
-    ...(options.installedAt === undefined ? {} : { installedAt: options.installedAt.toISOString() }),
-  }), { maxBytes: 64 * 1024, timeoutMs: 120_000 })
+  }
+  const installedAt = (options.installedAt ?? new Date()).toISOString()
+  const op = windows
+    ? windowsOp(windowsServerPluginInstallScript({
+        tarballPath: stagingPath,
+        stageDir: remoteJoin(options.paths.kind, stagingDir, 'server-plugin'),
+        destDir: options.paths.pluginDir,
+        markerPath: serverPluginMarkerPath(options.paths),
+        markerJson: JSON.stringify(marker),
+        expectedName: SERVER_PLUGIN_PACKAGE,
+        expectedVersion: options.tarball.version,
+        expectedSha256: options.tarball.sha256,
+      }))
+    : shellOp(serverPluginInstallScript({
+        tarballPath: stagingPath,
+        paths: options.paths,
+        expectedVersion: options.tarball.version,
+        dshVersion: options.dshVersion,
+        expectedSha256: options.tarball.sha256,
+        installedAt,
+      }))
+  const result = await execOp(options.remote, op, { maxBytes: 64 * 1024, timeoutMs: 120_000 })
   if (result.code !== 0) {
     throw new ServerPluginError(
       'server-plugin-install-failed',

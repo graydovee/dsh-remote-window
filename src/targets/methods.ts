@@ -8,8 +8,28 @@
  * answer.
  */
 
-/** Connection methods the wizard can present. */
+/** Connection methods the connection dialog can present. */
 export type ConnectionMethod = 'ssh' | 'docker' | 'wsl'
+
+/**
+ * Whether the WSL transport is implemented yet.
+ *
+ * A WSL target is not an SSH alias: the host has to reach a DSH bound to
+ * `127.0.0.1:<port>` *inside* a distribution. That needs two pieces this
+ * repository does not have yet —
+ *
+ *  1. a host-side connector that runs scripts with `wsl.exe -d <distro> -- sh -s`
+ *     (the script arrives on stdin, because wsl.exe argument quoting is not
+ *     reliable), and
+ *  2. a `ProfileForwarder` that dials the distribution's loopback (WSL2
+ *     localhost forwarding) for the profile HTTP/WS traffic.
+ *
+ * Until both exist the method must not be offered anywhere, even on `win32`:
+ * a card that always fails at connect/start is worse than no card. Flip this
+ * flag *and* add `'wsl'` back to `OFFERED_METHODS` in
+ * `src/client/method-cards.ts` in the same change that lands the transport.
+ */
+export const WSL_TRANSPORT_ENABLED = false
 
 /**
  * Whether one method exists on a host platform.
@@ -22,8 +42,9 @@ export function methodAvailable(method: ConnectionMethod, platform: string): boo
   // A container target is reserved for a later version on every platform.
   if (method === 'docker') return false
   // A WSL target is a *local* distro driven through `wsl.exe`
-  // (`C:\WINDOWS\system32\wsl.exe`), so it only exists on a Windows host.
-  return platform === 'win32'
+  // (`C:\WINDOWS\system32\wsl.exe`), so even with a transport it only exists
+  // on a Windows host; today it needs the transport gate as well.
+  return WSL_TRANSPORT_ENABLED && platform === 'win32'
 }
 
 /**

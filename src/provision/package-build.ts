@@ -18,11 +18,20 @@
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { join, dirname } from 'node:path'
+import { join, dirname, relative, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 /** npm registries, tried in order: CN mirror first. */
 export const STAGE_REGISTRIES = ['https://registry.npmmirror.com', 'https://registry.npmjs.org']
+
+/** One target platform a package can be staged for. */
+export type StagePlatform = 'linux' | 'darwin' | 'win32'
+
+/** One target CPU architecture. */
+export type StageArch = 'x64' | 'arm64'
+
+/** The C runtime flavour: only linux publishes gnu/musl variants. */
+export type StageLibc = '' | 'gnu' | 'musl'
 
 /** Pure-JS postinstall scripts allowed during staging; native builds excluded
  *  (a cross-OS build would only produce host binaries, and the remote world
@@ -30,9 +39,14 @@ export const STAGE_REGISTRIES = ['https://registry.npmmirror.com', 'https://regi
 const BUILD_ALLOWLIST = ['@google/genai', 'protobufjs', 'koffi']
 
 /** Run a local command as a promise with a byte ceiling. */
-export function execLocal(command: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+export function execLocal(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(command, args, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, ...(env === undefined ? {} : { env }) }, (error, stdout, stderr) => {
       if (error != null) {
         const code = typeof error.code === 'number' ? error.code : 1
         resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() })
@@ -67,8 +81,51 @@ async function resolveDshBin(stage: string): Promise<string | undefined> {
   return await stat(script).then(entry => entry.isFile() ? script : undefined, () => undefined)
 }
 
+/**
+ * The batch launcher shim for a win32 target, in npm cmd-shim shape.
+ *
+ * pnpm writes `.cmd`/`.ps1` shims only when the **host** is Windows, so a win32
+ * target staged from macOS/Linux would otherwise ship just the POSIX
+ * `.bin/dsh` shell script and the deployed Windows profile could not start. The
+ * installed runtime layout is `<root>/dsh/node_modules/.bin` beside
+ * `<root>/node/node.exe`, so the shim prefers the sibling Node tree relatively
+ * and falls back to `node` on PATH — the same preference npm's own shim makes.
+ * CRLF because it is a batch file. The server itself is launched as
+ * `node.exe <dsh bin>` (to track the real node PID), so this is a
+ * human-convenience launcher only: it must be correct or absent, never a
+ * silent no-op.
+ * @param launcherRelative - the dsh JS entry relative to `.bin`, backslash-separated.
+ */
+export function windowsCmdShim(launcherRelative: string): string {
+  return [
+    '@ECHO off',
+    'SETLOCAL',
+    'SET "_prog=%~dp0..\\..\\..\\node\\node.exe"',
+    'IF NOT EXIST "%_prog%" SET "_prog=node"',
+    `"%_prog%" "%~dp0${launcherRelative}" %*`,
+    '',
+  ].join('\r\n')
+}
+
+/**
+ * Ensure `<stage>/node_modules/.bin/dsh.cmd` exists for a win32 target; a
+ * Windows-hosted staging run already has pnpm's real shim and is left untouched.
+ *
+ * The entry is re-read from the installed manifest so the shim follows the
+ * package's declared `bin` (npm's shim does the same); the caller's verified
+ * launcher is the fallback when the manifest is unreadable.
+ */
+export async function ensureWindowsLauncherShim(stage: string, launcher: string): Promise<void> {
+  const binDir = join(stage, 'node_modules', '.bin')
+  const shim = join(binDir, 'dsh.cmd')
+  if (await stat(shim).then(entry => entry.isFile(), () => false)) return
+  const target = (await resolveDshBin(stage)) ?? launcher
+  await mkdir(binDir, { recursive: true })
+  await writeFile(shim, windowsCmdShim(relative(binDir, target).split(sep).join('\\')))
+}
+
 /** The `<platform>-<arch>[-libc]` artifact tag. */
-export function artifactTag(platform: 'linux' | 'darwin', arch: 'x64' | 'arm64', libc: '' | 'gnu' | 'musl'): string {
+export function artifactTag(platform: StagePlatform, arch: StageArch, libc: StageLibc): string {
   return libc === '' ? `${platform}-${arch}` : `${platform}-${arch}-${libc}`
 }
 
@@ -79,10 +136,17 @@ export function artifactName(version: string, tag: string): string {
 
 /**
  * The sibling-package suffix that `node-addon-require-builtin` resolves for a
- * target. glibc/musl only exists on linux.
+ * target. glibc/musl only exists on linux; win32 builds are MSVC-ABI and carry
+ * `-msvc` instead.
+ *
+ * Verified against the registry (2026-11): `node-addon-require-builtin@0.1.9`
+ * declares optionalDependencies `node-addon-require-builtin-win32-x64-msvc`,
+ * `-win32-arm64-msvc` and `-win32-ia32-msvc` — the win32 suffix must be
+ * `win32-<arch>-msvc`, not `win32-<arch>`.
  */
-export function bindingPackageSuffix(platform: 'linux' | 'darwin', arch: 'x64' | 'arm64', libc: '' | 'gnu' | 'musl'): string {
+export function bindingPackageSuffix(platform: StagePlatform, arch: StageArch, libc: StageLibc): string {
   const base = `${platform}-${arch}`
+  if (platform === 'win32') return `${base}-msvc`
   return platform === 'linux' && libc !== '' ? `${base}-${libc}` : base
 }
 
@@ -90,6 +154,26 @@ export function bindingPackageSuffix(platform: 'linux' | 'darwin', arch: 'x64' |
  *  `require-builtin` is required on the target; `system` (and any future
  *  family) is stripped when foreign so shipped trees are target-only. */
 export const BINDING_FAMILIES = ['node-addon-require-builtin', 'node-addon-system']
+
+/**
+ * The platforms `@deepseek-ai/node-addon-system` publishes a binding for.
+ *
+ * Verified against the registry (2026-11): 0.1.2 declares
+ * darwin-arm64/darwin-x64/linux-x64/linux-arm64 optional siblings and **no
+ * win32 build at all** (no `win32-*` optionalDependency). DSH itself fails
+ * closed without it — `lib/flock.js` raises the coded
+ * `ERR_FLOCK_UNSUPPORTED_PLATFORM` and the entrypoint falls back to a probe —
+ * so win32 is a valid target *without* the addon. Staging and the target-only
+ * assert therefore skip the system sibling for platforms not listed here,
+ * explicitly, instead of treating it as an installation failure. The
+ * `node-addon-require-builtin` msvc sibling stays mandatory on win32.
+ */
+export const SYSTEM_ADDON_PLATFORMS: readonly StagePlatform[] = ['darwin', 'linux']
+
+/** Whether one target should have the `@deepseek-ai/node-addon-system` sibling. */
+export function systemAddonSupported(platform: StagePlatform): boolean {
+  return SYSTEM_ADDON_PLATFORMS.includes(platform)
+}
 
 const PLATFORM_FLAVOURS = ['darwin', 'linux', 'win32']
 
@@ -130,15 +214,47 @@ export function isForeignBindingDir(dirName: string, suffix: string): boolean {
 }
 
 /**
+ * The `.npmrc` lines that steer pnpm's optional native siblings at one target.
+ *
+ * POSIX output is byte-identical to the previous inline list. win32 has no
+ * libc concept, so a caller that passes one is ignored rather than emitting an
+ * unresolvable `libc=` line (pnpm's `supportedArchitectures` cannot express
+ * MSVC ABI — the `-msvc` suffix comes from {@link bindingPackageSuffix}).
+ * Exported so the win32 target is unit-testable without a real pnpm install.
+ */
+/**
+ * The `pnpm-workspace.yaml` lines for one target.
+ *
+ * pnpm 10 reads project settings such as `nodeLinker` from this file, not from
+ * `.npmrc` (verified against pnpm 10.34/11.28). A win32 tree must be hoisted so
+ * it contains real directories instead of symlinks: Windows `tar.exe` writes
+ * reparse points that Node cannot follow (`fs.stat` → EPERM), which stopped a
+ * real Windows server from resolving its own entry point. POSIX keeps the
+ * default isolated linker and writes no workspace file at all.
+ */
+export function stageWorkspaceLines(platform: StagePlatform): string[] {
+  return platform === 'win32' ? ['nodeLinker: hoisted'] : []
+}
+
+export function stageNpmrcLines(options: { readonly platform: StagePlatform; readonly arch: StageArch; readonly libc: StageLibc }): string[] {
+  return [
+    `supported-architectures[]=os=${options.platform}`,
+    `supported-architectures[]=cpu=${options.arch}`,
+    ...(options.platform === 'linux' && options.libc !== '' ? [`supported-architectures[]=libc=${options.libc}`] : []),
+
+  ]
+}
+
+/**
  * Stage `@deepseek-ai/dsh@<version>` for one target platform into `stage`.
  * @returns the installed dsh version (from the launcher probe).
  */
 export async function stageDshPackage(options: {
   stage: string
   version: string
-  platform: 'linux' | 'darwin'
-  arch: 'x64' | 'arm64'
-  libc: '' | 'gnu' | 'musl'
+  platform: StagePlatform
+  arch: StageArch
+  libc: StageLibc
   nodeBin: string
   pnpmCjs: string
   onProgress?: (message: string, detail?: string) => void
@@ -154,11 +270,19 @@ export async function stageDshPackage(options: {
   for (const registry of STAGE_REGISTRIES) {
     await writeFile(join(options.stage, '.npmrc'), [
       `registry=${registry}`,
-      `supported-architectures[]=os=${options.platform}`,
-      `supported-architectures[]=cpu=${options.arch}`,
-      ...(options.platform === 'linux' && options.libc !== '' ? [`supported-architectures[]=libc=${options.libc}`] : []),
+      ...stageNpmrcLines(options),
       '',
     ].join('\n'))
+    // A win32 tree must not contain symlinks: Windows `tar.exe` writes reparse
+    // points that Node cannot follow (`fs.stat` → EPERM), so Node cannot even
+    // resolve its own entry point. pnpm 10 reads `nodeLinker` from
+    // `pnpm-workspace.yaml` — the `.npmrc` equivalent is ignored (verified), so
+    // the hoisted linker is written here, for win32 targets only. Measured on a
+    // real Windows 11 host; POSIX artifacts keep the isolated linker.
+    const workspace = stageWorkspaceLines(options.platform)
+    if (workspace.length > 0) {
+      await writeFile(join(options.stage, 'pnpm-workspace.yaml'), `${workspace.join('\n')}\n`)
+    }
     notify(`staging @deepseek-ai/dsh@${options.version} via pnpm (${registry.replace('https://', '')}, target ${options.platform}-${options.arch}${options.libc === '' ? '' : `-${options.libc}`})`)
     const add = await execLocal(options.nodeBin, [options.pnpmCjs, '-C', options.stage, 'add', `@deepseek-ai/dsh@${options.version}`, '--loglevel=warn'], 600_000)
     // Probe the package's own bin entry, not `<stage>/node_modules/.bin/dsh`:
@@ -171,6 +295,11 @@ export async function stageDshPackage(options: {
       continue
     }
     await fixNativeClosure({ stage: options.stage, platform: options.platform, arch: options.arch, libc: options.libc, nodeBin: options.nodeBin, pnpmCjs: options.pnpmCjs, onProgress: notify })
+    // pnpm writes `.cmd`/`.ps1` shims only when the *host* is Windows; a win32
+    // target staged from macOS/Linux must still ship a launcher the Windows
+    // profile can start (measured: pnpm 10.34.6 on darwin with the win32
+    // supported-architectures creates `node_modules/.bin/dsh` only).
+    if (options.platform === 'win32') await ensureWindowsLauncherShim(options.stage, launcher)
     const probe = await execLocal(options.nodeBin, [launcher, '--version'], 120_000)
     const version = probe.stdout.trim().split('\n')[0] ?? ''
     if (probe.code !== 0 || version === '') {
@@ -188,9 +317,9 @@ export async function stageDshPackage(options: {
  */
 export async function fixNativeClosure(options: {
   stage: string
-  platform: 'linux' | 'darwin'
-  arch: 'x64' | 'arm64'
-  libc: '' | 'gnu' | 'musl'
+  platform: StagePlatform
+  arch: StageArch
+  libc: StageLibc
   nodeBin: string
   pnpmCjs: string
   onProgress?: (message: string, detail?: string) => void
@@ -204,15 +333,28 @@ export async function fixNativeClosure(options: {
    * Native packages whose platform sibling must be installed for the *target*.
    *
    * `node-addon-require-builtin` is the PTC/`import.meta.main` addon and carries
-   * `-<libc>`; `@deepseek-ai/node-addon-system` is the flock/file-lock addon and
-   * publishes plain `<platform>-<arch>` siblings — and **no win32 build at all**,
-   * so a Windows-hosted staging run installs none of them and the deployed server
-   * dies the first time the session store takes a lock:
+   * `-<libc>` (or `-msvc` on win32); `@deepseek-ai/node-addon-system` is the
+   * flock/file-lock addon and publishes plain `<platform>-<arch>` siblings —
+   * but **no win32 build at all** (verified against the registry: 0.1.2 ships
+   * darwin-arm64/darwin-x64/linux-x64/linux-arm64 only), so a win32 target must
+   * not try to install one. DSH itself tolerates the missing addon (its
+   * `lib/flock.js` raises the coded `ERR_FLOCK_UNSUPPORTED_PLATFORM` and the
+   * entrypoint falls back to a probe), so skipping is the correct target state.
+   * For linux/darwin the system sibling stays required: a host with no sibling
+   * for the target (Windows staging linux) would otherwise install none and the
+   * deployed server would die on the first lock with
    * `Cannot find module '@deepseek-ai/node-addon-system-linux-x64/package.json'`.
    */
   const families: readonly { readonly main: RegExp; readonly target: string }[] = [
+    // The explicit sibling add is load-bearing: verified pnpm 10.34/11.28
+    // **ignore** `supported-architectures[]` from `.npmrc` (those settings moved
+    // to `pnpm-workspace.yaml`), so a win32 target staged from macOS/Linux would
+    // otherwise install the *host* sibling. Linux/darwin worked only because this
+    // add already existed.
     { main: /^node-addon-require-builtin(?:-.+)?@(\d[^/]*)$/, target: `node-addon-require-builtin-${suffix}` },
-    { main: /^@deepseek-ai\+node-addon-system@(\d[^/]*)$/, target: `@deepseek-ai/node-addon-system-${plainSuffix}` },
+    ...(systemAddonSupported(options.platform)
+      ? [{ main: /^@deepseek-ai\+node-addon-system@(\d[^/]*)$/, target: `@deepseek-ai/node-addon-system-${plainSuffix}` }]
+      : []),
   ]
 
   for (const family of families) {
@@ -225,9 +367,24 @@ export async function fixNativeClosure(options: {
         break
       }
     }
+    // A hoisted tree keeps the package as a real directory and has no store
+    // entry to read the version from, so fall back to its manifest.
+    const mainName = family.target.split('/')[0] === '@deepseek-ai' ? '@deepseek-ai/node-addon-system' : 'node-addon-require-builtin'
+    if (version === '') {
+      const manifest = await readFile(join(options.stage, 'node_modules', mainName, 'package.json'), 'utf8').catch(() => undefined)
+      if (manifest !== undefined) {
+        try {
+          const parsed = JSON.parse(manifest) as { version?: unknown }
+          if (typeof parsed.version === 'string') version = parsed.version
+        } catch {
+          // A broken manifest only means "unknown version": skip this family.
+        }
+      }
+    }
     if (version === '') continue
     const flatName = family.target.replace('/', '+')
     if (entries.some(entry => entry.startsWith(`${flatName}@`))) continue
+    if (existsSync(join(options.stage, 'node_modules', family.target))) continue
     notify(`adding native binding ${family.target}@${version}`)
     const add = await execLocal(options.nodeBin, [options.pnpmCjs, '-C', options.stage, 'add', `${family.target}@${version}`, '--loglevel=warn', '--save-optional=false'], 600_000)
     if (add.code !== 0 && add.stdout === '' && add.stderr !== '') {
@@ -243,6 +400,27 @@ export async function fixNativeClosure(options: {
       await rm(join(pnpmDir, entry), { recursive: true, force: true }).catch(() => {})
     }
   }
+  // A hoisted tree (win32) keeps the packages as real directories, so the same
+  // strip has to run against `node_modules` and `node_modules/@deepseek-ai`.
+  const modulesDir = join(options.stage, 'node_modules')
+  const candidates: { path: string; name: string }[] = []
+  for (const name of await readdir(modulesDir).catch(() => [] as string[])) {
+    if (bindingSuffixOf(name) !== undefined) candidates.push({ path: join(modulesDir, name), name })
+  }
+  const scopedDir = join(modulesDir, '@deepseek-ai')
+  for (const name of await readdir(scopedDir).catch(() => [] as string[])) {
+    const scopedName = `@deepseek-ai/${name}`
+    if (bindingSuffixOf(scopedName) !== undefined) {
+      candidates.push({ path: join(scopedDir, name), name: scopedName })
+    }
+  }
+  for (const candidate of candidates) {
+    const found = bindingSuffixOf(candidate.name) ?? ''
+    const expected = candidate.name.startsWith('@deepseek-ai/node-addon-system-') ? plainSuffix : suffix
+    if (found === expected) continue
+    notify(`removing foreign native binding ${candidate.name}`)
+    await rm(candidate.path, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 /** Whether one `.pnpm` entry is a foreign `node-addon-system` platform sibling. */
@@ -255,24 +433,58 @@ function isForeignSystemBinding(entry: string, plainSuffix: string): boolean {
  * Assert the staged tree is target-only: every shipped native binding dir
  * must match the target flavour. Throws with the offending names otherwise.
  */
-export async function assertTargetOnly(stage: string, platform: 'linux' | 'darwin', arch: 'x64' | 'arm64', libc: '' | 'gnu' | 'musl'): Promise<void> {
+/** The platform suffix of a native binding module name, from either linker. */
+function bindingSuffixOf(name: string): string | undefined {
+  const scoped = /^@deepseek-ai\/node-addon-system-(.+)$/u.exec(name)
+  if (scoped !== null) return scoped[1]
+  const plain = /^node-addon-require-builtin-(.+)$/u.exec(name)
+  if (plain !== null) return plain[1]
+  return undefined
+}
+
+/** Drop the `@<version>` a pnpm store entry carries (`name@1.2.3`). */
+function storeNameOf(entry: string): string {
+  const at = entry.lastIndexOf('@')
+  const name = at > 0 ? entry.slice(0, at) : entry
+  return name.replace('@deepseek-ai+', '@deepseek-ai/')
+}
+
+export async function assertTargetOnly(stage: string, platform: StagePlatform, arch: StageArch, libc: StageLibc): Promise<void> {
   const suffix = bindingPackageSuffix(platform, arch, libc)
   const plainSuffix = `${platform}-${arch}`
-  const pnpmDir = join(stage, 'node_modules', '.pnpm')
-  const entries = await readdir(pnpmDir).catch(() => [])
-  const foreign = entries.filter(entry => isForeignBindingDir(entry, suffix))
+  const modulesDir = join(stage, 'node_modules')
+  const pnpmEntries = await readdir(join(modulesDir, '.pnpm')).catch(() => [] as string[])
+  const modules = await readdir(modulesDir).catch(() => [] as string[])
+  const scoped = await readdir(join(modulesDir, '@deepseek-ai')).catch(() => [] as string[])
+  // Both linkers are supported, and a hoisted tree may still keep a `.pnpm`
+  // store next to the real directories: collect the binding names from both.
+  const names = new Set<string>([
+    ...modules.filter(name => !name.startsWith('.') && !name.startsWith('@')),
+    ...scoped.map(name => `@deepseek-ai/${name}`),
+    ...pnpmEntries.map(storeNameOf),
+  ])
+  const bindings = [...names].filter(name => bindingSuffixOf(name) !== undefined)
+  // The main `node-addon-system` package carries no platform suffix, so it is
+  // not in `bindings`; membership checks read `names` directly.
+  const has = (name: string): boolean => names.has(name)
+  const foreign = bindings.filter(name => {
+    const found = bindingSuffixOf(name) ?? ''
+    return name.startsWith('@deepseek-ai/node-addon-system-')
+      ? found !== plainSuffix
+      : found !== suffix
+  })
   if (foreign.length > 0) {
     throw new Error(`staged package contains foreign native bindings for ${platform}-${arch}${libc === '' ? '' : `-${libc}`}: ${foreign.join(', ')}`)
   }
-  const required = entries.some(entry => entry.startsWith(`node-addon-require-builtin-${suffix}@`))
-  if (!required) {
+  if (!has(`node-addon-require-builtin-${suffix}`)) {
     throw new Error(`staged package is missing the native binding node-addon-require-builtin-${suffix}`)
   }
-  // The signed session store locks files through this addon; a package staged on
-  // a host that has no sibling for the target (Windows ships none) must fail
-  // here instead of on the remote at the first session write.
-  const hasSystemAddon = entries.some(entry => entry.startsWith('@deepseek-ai+node-addon-system@'))
-  if (hasSystemAddon && !entries.some(entry => entry.startsWith(`@deepseek-ai+node-addon-system-${plainSuffix}@`))) {
+  // Platforms the system addon does not publish for (win32: no binding in
+  // 0.1.2; DSH fails closed with ERR_FLOCK_UNSUPPORTED_PLATFORM and probes)
+  // must not require the sibling. The require-builtin binding above is still
+  // mandatory — the skip is only for the addon that has no build.
+  if (!systemAddonSupported(platform)) return
+  if (has('@deepseek-ai/node-addon-system') && !has(`@deepseek-ai/node-addon-system-${plainSuffix}`)) {
     throw new Error(`staged package is missing the native binding @deepseek-ai/node-addon-system-${plainSuffix}`)
   }
 }
@@ -394,9 +606,9 @@ export async function packStage(stage: string, outFile: string, runner: TarRunne
 /** CLI entry for the release build script (see scripts/build-server-package.mjs). */
 export async function buildServerPackage(options: {
   version: string
-  platform: 'linux' | 'darwin'
-  arch: 'x64' | 'arm64'
-  libc: '' | 'gnu' | 'musl'
+  platform: StagePlatform
+  arch: StageArch
+  libc: StageLibc
   outDir: string
   nodeBin: string
   pnpmCjs: string

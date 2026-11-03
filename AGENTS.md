@@ -105,6 +105,26 @@ tsdown targets：
 依赖方向：`targets → ssh/provision → service → session/connection → client`。client 只能依赖平台模块和
 明确的纯模块（如 `targets/methods.ts`），不得 import host service 或 Node API。
 
+## 远端平台方言层（Windows 目标）
+
+server 端可以是 POSIX（linux/darwin）或 **Windows**；方言由远端探测决定，`ProfilePaths.kind` /
+`RuntimePaths.kind` 是唯一开关，POSIX 输出必须逐字节不变。契约细节见 `doc/windows-server-support.md`。
+
+- PowerShell 一律 `powershell.exe -EncodedCommand <base64>`，脚本本体走 stdin 的 UTF-16LE base64；argv 只允许
+  ASCII，禁止把脚本/路径拼进命令行（cmd.exe 会二次解析 `$`、引号与中文）。
+- 读远端文本必须用 `[IO.File]::Open(..., [IO.FileShare]::ReadWrite)`；`ReadAllBytes` 会与运行中 profile 的
+  `cmd >> log` 抢独占读锁，导致日志永远为空、启动误判超时。
+- 启动必须用 `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` 跑 `start-<profile>.cmd`
+  （cmd 内部重定向日志）；禁止 `Start-Process`，它继承 SSH exec 通道的 job object，通道一关就杀进程。
+  停止先用 `Get-CimInstance Win32_Process` 校验命令行（PID 复用守卫），再 `taskkill /PID <pid> /T /F` 杀整棵树。
+- Windows 启动预算 `WINDOWS_PROFILE_STARTUP_TIMEOUT_MS = 90_000`（detached cmd + 冷启动 + Defender），
+  不得复用 POSIX 的 15 s。
+- `win32` 运行时产物禁止符号链接：staging 用 `pnpm-workspace.yaml` 的 `nodeLinker: hoisted`（`.npmrc` 键被
+  pnpm 10/11 忽略），打包用 `tar -czhf`；`@deepseek-ai/node-addon-system` 无 win32 sibling，`assertTargetOnly`
+  必须显式跳过并仍需 `node-addon-require-builtin-win32-x64-msvc`；native addon 健康探针要认 hoisted 布局。
+- 平台无法判定时抛 `runtime-incompatible`，**绝不回退 linux**；`DSH_HOME` 必须是 Windows 绝对路径。
+- 新增 Windows 分支必须同时有单测（fake channel）+ 至少一次真机验证记录；不得只依赖 macOS 上的单元测试。
+
 ## 不能违反的行为约束
 
 **安全**
@@ -299,8 +319,10 @@ tsdown targets：
   `NPM_TOKEN` secret 现在是**可选**的：不配置时 `npm publish` 走 npm Trusted Publishing（OIDC），
   需在 npmjs.com 两个包各自的 “Trusted publishers” 里登记本仓库 + workflow 文件；配置了 token
   则仍可发布（granular bypass-2FA token 正被 npm 逐步废弃，2027-01 起不得再用于 direct publish）。
-- runtime 包（node+dsh）仍只在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、
-  darwin-arm64）；client 下载后必须校验同源 sha256。v1 全局 runtime 修改不开放，只检测复用。
+- runtime 包（node+dsh）只在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、
+  darwin-arm64；**win32-x64 / win32-arm64 需 server 仓库补进发布矩阵**，本仓已能本地构建该产物并由
+  `DSH_RW_RUNTIME_ARTIFACT` 注入）；client 下载后必须校验同源 sha256。v1 全局 runtime 修改不开放，
+  只检测复用。
 - README 只写用户可操作内容；开发约束只更新本文件。
 
 ## 当前遗留 / 禁止扩展

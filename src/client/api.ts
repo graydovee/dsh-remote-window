@@ -306,22 +306,6 @@ export type DshScanResult =
       candidates: DshCandidate[]
     }
 
-/** One installed WSL distribution, as `/api/wsl-distros` reports it. */
-export interface WslDistro {
-  name: string
-  /** wsl.exe's own wording, e.g. `Running` / `Stopped` / `Installing`. */
-  state?: string
-  version?: number
-  default: boolean
-}
-
-/** Response of `/api/wsl-distros`; `available: false` carries the reason. */
-export interface WslProbeResult {
-  available: boolean
-  distros: WslDistro[]
-  error?: string
-}
-
 /** Response of `/api/state` (api-contract §15.2). */
 export interface StateResult {
   targets: PublicTarget[]
@@ -339,7 +323,7 @@ export interface StateResult {
   /** The remote launcher runtimes this client accepts; shown above the reuse list. */
   verifiedRuntimes?: string[]
   defaultProfile: string
-  /** The harness host's `process.platform`; the WSL method is gated on it. */
+  /** The harness host's `process.platform`; connection-method cards are gated on it. */
   platform?: string
 }
 
@@ -508,16 +492,6 @@ export const api = {
   /** Saved targets, saved workspaces, plugin version and the default profile. */
   state(): Promise<StateResult> {
     return call<StateResult>('state', {})
-  },
-
-  /**
-   * Installed WSL distributions (`wsl.exe -l -v`).
-   *
-   * Windows hosts only; elsewhere the route answers 400 and the caller never
-   * asks, because the WSL method is not offered there at all.
-   */
-  wslDistros(): Promise<WslProbeResult> {
-    return call<WslProbeResult>('wsl-distros', {})
   },
 
   /** Aliases parsed from the local `~/.ssh/config`, plus parser warnings. */
