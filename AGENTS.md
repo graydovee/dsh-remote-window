@@ -313,7 +313,9 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**；方言由远端探�
   `doc/refactor-v1-requirements.md` §7 A–J 验收，证据可引用 `/tmp/dsh-qa`（不写 secret/真实路径）。
 - 发布：两仓同版本；server 仓库产出 `dsh-remote-window-server-<version>.tgz` + `.sha256` +
   `.manifest.json`；client 仓库用 `scripts/bundle-server-plugin.mjs` 内置并写 `checksums.json`，
-  `pnpm pack` 必须带 `assets/server-plugin/`。
+  `pnpm pack` 必须带 `assets/server-plugin/`。server 的 `.github/workflows/server-release.yml` 在
+  `v*` tag 上同时发布插件 tgz 与 runtime 矩阵，dsh 版本一律取自 `engines.dsh`（只有
+  `server-v<dsh>` tag 或手动 dispatch 才能覆盖），仓库里不得再出现写死的 dsh 版本号。
 - npm 发布由 tag 触发的 Actions 完成：client 的 `.github/workflows/release.yml` 在 GitHub Release
   之后把同一个 `pnpm pack` tarball 发到 npm（`dsh-remote-window`）；server 的
   `.github/workflows/npm-release.yml` 在 `v*` tag 发 `dsh-remote-window-server`。两仓都需要
