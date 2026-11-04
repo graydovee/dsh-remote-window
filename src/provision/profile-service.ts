@@ -1657,8 +1657,59 @@ export class ProfileService {
    * @param remote - the connected remote command channel.
    * @returns the parsed scan plus the dialect that produced it.
    */
+  /**
+   * Ask the server which shell family it speaks, with one cheap command.
+   *
+   * A Windows server parses a POSIX body with PowerShell: the errors are noise,
+   * and a truncated-looking body makes the shell wait on stdin, so the POSIX
+   * scan used to burn its whole 60 s budget before the Windows probe ran. The
+   * probe is one round trip and fails fast everywhere else (`cmd: not found`).
+   */
+  private async remoteIsWindows(remote: ProfileRemote): Promise<boolean> {
+    try {
+      const probe = await remote.exec('cmd /c ver', { maxBytes: 4 * 1024, timeoutMs: 10_000 })
+      return probe.code === 0 && /microsoft windows/i.test(probe.stdout)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Run the Windows scan, retrying once on an empty timeout.
+   *
+   * The PowerShell scan normally answers in under two seconds, but the first
+   * real-machine run showed an occasional silent timeout (no output at all), so
+   * one bounded retry keeps a flaky channel from failing the whole connect.
+   * @param remote - the server channel.
+   * @returns the raw result of the successful attempt.
+   */
+  private async execWindowsScan(remote: ProfileRemote): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    let lastError: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.execWindows(remote, windowsScanScript(), { maxBytes: 128 * 1024, timeoutMs: 25_000 })
+      } catch (error) {
+        lastError = error
+        if (attempt === 0) await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+  }
+
   private async scanRemote(remote: ProfileRemote): Promise<{ scan: DshScan; kind: RemoteKind }> {
     const options = { maxBytes: 128 * 1024, timeoutMs: 60_000 }
+    if (await this.remoteIsWindows(remote)) {
+      const windows = await this.execWindowsScan(remote)
+      if (windows.code === 0) {
+        try {
+          const scan = parseDshScanOutput(windows.stdout)
+          if (scan.home !== undefined && scan.home !== '') return { scan, kind: 'windows' }
+        } catch {
+          // Fall through to the POSIX attempt so the aggregated error below keeps
+          // both diagnostics instead of only the Windows parse failure.
+        }
+      }
+    }
     let posixFailure: string | undefined
     const posix = await remote.exec(scanDshScript(), options)
     if (posix.code === 0) {
@@ -1674,7 +1725,7 @@ export class ProfileService {
     }
     let windows: { code: number | null; stdout: string; stderr: string } | undefined
     try {
-      windows = await this.execWindows(remote, windowsScanScript(), { maxBytes: 128 * 1024, timeoutMs: 60_000 })
+      windows = await this.execWindowsScan(remote)
     } catch (error) {
       // Keep the message: a failed Windows probe is the only diagnostic a user
       // gets when the POSIX probe cannot apply, and silence hid a broken wrapper

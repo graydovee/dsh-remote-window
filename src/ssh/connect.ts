@@ -143,15 +143,14 @@ export async function execRemote(
       }
       stream.on('data', collect(stdout))
       stream.stderr.on('data', collect(stderr))
-      // A Windows server takes its whole script on stdin (an `-EncodedCommand`
-      // payload), so the channel must be fed and closed *after* the readers are
-      // attached: writing first filled the channel while nothing drained it, and
-      // the remote PowerShell (waiting for EOF) hit the 60 s timeout on the first
-      // real-machine run. A POSIX body never sets this option.
-      if (options.stdin !== undefined) {
-        stream.resume()
-        stream.end(options.stdin)
-      }
+      // The channel's stdin is closed for every command, with the payload when
+      // one is given. A Windows server takes its whole script there (an
+      // `-EncodedCommand` payload); a POSIX body never reads stdin, and leaving
+      // it open made a shell that *did* want more input (a POSIX script parsed by
+      // a Windows PowerShell login shell) wait for EOF until the exec timeout.
+      stream.resume()
+      if (options.stdin !== undefined) stream.end(options.stdin)
+      else stream.end()
       stream.on('error', (streamError: Error) => {
         finish(new RemoteCommandError(`remote command failed: ${scrubSecrets(streamError.message)}`, scrubSecrets(command)))
       })
