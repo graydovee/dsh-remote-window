@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  WINDOWS_OUTPUT_ENCODING_PRELUDE,
   decodeWindowsBytes,
   psQuote,
   windowsCommand,
@@ -14,18 +15,37 @@ import {
   windowsWriteBytesScript,
 } from '../src/provision/windows-shell.ts'
 
-const scriptOf = (command: { stdin?: string }): string =>
-  Buffer.from(command.stdin ?? '', 'base64').toString('utf16le')
+/** The script a Windows command carries, without the console-encoding prelude. */
+const scriptOf = (command: { command?: string; stdin?: string }): string => {
+  const raw = command.stdin !== undefined
+    ? Buffer.from(command.stdin.trim(), 'base64').toString('utf16le')
+    : (() => {
+      const payload = /-EncodedCommand (\S+)$/u.exec(command.command ?? '')
+      return payload === null ? '' : Buffer.from(payload[1]!, 'base64').toString('utf16le')
+    })()
+  return raw.startsWith(WINDOWS_OUTPUT_ENCODING_PRELUDE) ? raw.slice(WINDOWS_OUTPUT_ENCODING_PRELUDE.length) : raw
+}
 
 describe('windows shell command envelope', () => {
-  it('carries the script as UTF-16LE base64 on stdin', () => {
+  it('carries a small script as UTF-16LE base64 in argv', () => {
     const command = windowsCommand("Write-Output 'héllo 世界'")
     expect(command.command).toContain('powershell.exe')
     expect(command.command).toContain('-NoProfile')
     expect(command.command).toContain('-NonInteractive')
     expect(command.command).toContain('-ExecutionPolicy Bypass')
-    const decoded = scriptOf(command)
-    expect(decoded).toBe("Write-Output 'héllo 世界'")
+    // A payload that fits the 32 KiB command line goes in argv: on the real
+    // Windows server the stdin wrapper intermittently produced no output at all
+    // for the 5 KB scan while this form answered in ~1.2 s every time.
+    expect(command.stdin).toBeUndefined()
+    expect(scriptOf(command)).toBe("Write-Output 'héllo 世界'")
+  })
+
+  it('moves a payload too large for argv onto stdin', () => {
+    const huge = `Write-Output '${'x'.repeat(60_000)}'`
+    const command = windowsCommand(huge)
+    expect(command.stdin).toBeDefined()
+    expect(command.command).not.toContain('-EncodedCommand ' + 'x'.repeat(10))
+    expect(scriptOf(command)).toBe(huge)
   })
 
   it('never puts the script itself on the argv (quoting and code pages)', () => {

@@ -32,6 +32,7 @@ import { packageFiles, pathAssignment, shellQuote } from './profile.ts'
 import { remoteIsAbsolute, remoteJoin, remoteTrimTrailing, type RemoteKind } from './remote-dialect.ts'
 import { execOp, opText, shellOp, windowsOp } from './remote-op.ts'
 import {
+  cleanWindowsError,
   windowsMkdirScript,
   windowsPidAliveScript,
   windowsReadBytesScript,
@@ -479,8 +480,8 @@ export async function startProfileServer(
   if (start.code !== 0) {
     throw new ProfileLifecycleError(
       'profile-start-failed',
-      `the profile server could not be launched (exit ${start.code ?? 'signal'}): ${scrubbedLogTail(start.stderr.trim())}`,
-      { stderr: scrubbedLogTail(start.stderr) },
+      `the profile server could not be launched (exit ${start.code ?? 'signal'}): ${scrubbedLogTail(cleanWindowsError(start.stderr).trim())}`,
+      { stderr: scrubbedLogTail(cleanWindowsError(start.stderr)) },
     )
   }
   let startup: ProfileStartup

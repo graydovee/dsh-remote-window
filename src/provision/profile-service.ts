@@ -2038,7 +2038,18 @@ export class ProfileService {
         `the isolated runtime for ${clientId} was installed but failed its Node/native-addon health check; the profile server would exit before its startup line`,
       )
     }
-    return { kind: 'isolated', action, launcher: paths.launcher, pathPrefixes: runtimePathPrefixes(paths), dshVersion: expectedDsh, runtimeDir: paths.root }
+    return {
+      kind: 'isolated',
+      action,
+      launcher: paths.launcher,
+      pathPrefixes: runtimePathPrefixes(paths),
+      dshVersion: expectedDsh,
+      runtimeDir: paths.root,
+      // The just-installed runtime is the one the profile must start, so it needs
+      // the same `node.exe` hint the reuse branch returns; without it the Windows
+      // start script receives an empty `$nodeExe` and refuses to launch.
+      ...(kind === 'windows' ? { nodePath: paths.nodeBin } : {}),
+    }
   }
 
   /**

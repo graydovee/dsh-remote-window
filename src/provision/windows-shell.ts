@@ -46,8 +46,8 @@ const STDIN_WRAPPER_ENCODED = Buffer.from(STDIN_WRAPPER, 'utf16le').toString('ba
 export interface WindowsCommand {
   /** The argv the transport executes; ASCII only, no quotes, no spaces in paths. */
   readonly command: string
-  /** Base64 of the UTF-16LE script; written to the channel's stdin. */
-  readonly stdin: string
+  /** Base64 of the UTF-16LE script, when it travels on stdin instead of argv. */
+  readonly stdin?: string
 }
 
 /**
@@ -61,10 +61,35 @@ export interface WindowsCommand {
  * @param script - a PowerShell body, ASCII only.
  * @returns the command and its stdin payload.
  */
+/**
+ * A PowerShell payload travels in argv while it fits the Windows command line.
+ *
+ * The stdin wrapper is fine for megabytes, but on the real Windows server it
+ * intermittently produced **no output at all** for the ~5 KB scan script while
+ * the same script as `-EncodedCommand` answered in ~1.2 s, every time. Windows
+ * caps a command line at 32 KiB, so anything that fits goes in argv and only the
+ * genuinely large payloads (installers) keep using stdin.
+ */
+const INLINE_PAYLOAD_LIMIT = 28_000
+
+/**
+ * Console output is UTF-8, always.
+ *
+ * ssh2 decodes every byte as UTF-8; PowerShell 5.1 otherwise writes stderr in
+ * the ANSI code page, so a localized error ("cannot bind argument to parameter",
+ * in Chinese) reached the UI as mojibake. The prelude is prepended to every
+ * script instead of being a caller's concern.
+ */
+export const WINDOWS_OUTPUT_ENCODING_PRELUDE = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; '
+
 export function windowsCommand(script: string): WindowsCommand {
+  const encoded = Buffer.from(WINDOWS_OUTPUT_ENCODING_PRELUDE + script, 'utf16le').toString('base64')
+  if (encoded.length <= INLINE_PAYLOAD_LIMIT) {
+    return { command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}` }
+  }
   return {
     command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${STDIN_WRAPPER_ENCODED}`,
-    stdin: Buffer.from(script, 'utf16le').toString('base64'),
+    stdin: encoded,
   }
 }
 
@@ -562,4 +587,25 @@ export function windowsServerPluginInstallScript(options: {
     'Remove-Item -LiteralPath $tarball -Force -ErrorAction SilentlyContinue',
     "Write-Output 'installed'",
   ].join('\n')
+}
+
+/**
+ * Unwrap PowerShell's CLIXML error envelope.
+ *
+ * When stderr is redirected (`-EncodedCommand` through ssh), PowerShell wraps
+ * every error record in `#< CLIXML … <S S="Error">text</S> …`, which is what the
+ * UI would otherwise show verbatim. The inner text is what the user needs.
+ */
+export function cleanWindowsError(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('#< CLIXML')) return trimmed
+  const parts = [...trimmed.matchAll(/<S S="Error">([\s\S]*?)<\/S>/gu)].map(match => match[1] ?? '')
+  return parts
+    .join('')
+    .replaceAll('_x000D_', '')
+    .replaceAll('_x000A_', '\n')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&')
+    .trim()
 }

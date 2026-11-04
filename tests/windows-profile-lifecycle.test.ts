@@ -23,8 +23,9 @@ interface Recorded {
 
 /** The script a recorded command actually runs (stdin is the encoded payload). */
 function scriptOf(record: Recorded): string {
-  if (record.stdin === undefined) return record.body
-  return Buffer.from(record.stdin.trim(), 'base64').toString('utf16le')
+  if (record.stdin !== undefined) return Buffer.from(record.stdin.trim(), 'base64').toString('utf16le')
+  const payload = /-EncodedCommand (\S+)$/u.exec(record.body)
+  return payload === null ? record.body : Buffer.from(payload[1]!, 'base64').toString('utf16le')
 }
 
 /**
@@ -155,7 +156,7 @@ describe('profile files on Windows', () => {
 test('the encoded command never carries the script in argv', () => {
   const command = windowsCommand("Write-Output 'secret script text'")
   expect(command.command).not.toContain('secret script text')
-  expect(Buffer.from(command.stdin.trim(), 'base64').toString('utf16le')).toContain('secret script text')
+  expect(scriptOf({ body: command.command, ...(command.stdin === undefined ? {} : { stdin: command.stdin }) })).toContain('secret script text')
 })
 
 test('startup polling decodes the UTF-16LE log that Start-Process writes', async () => {
