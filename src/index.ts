@@ -26,6 +26,7 @@ import { reconnectDshHome } from './targets/methods.ts'
 import { scrubSecrets, toPublicTarget } from './targets/types.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from './ssh/hostkey.ts'
 import { DSH_VERIFIED_RUNTIMES } from './provision/version-range.ts'
+import { RUNTIME_COMPAT, describeRange } from './provision/runtime-compat.ts'
 import { REMOTE_WORKSPACE_PLUGIN_PROTOCOL } from './remote/plugin-client.ts'
 import { PORTAL_BASE, portalMuxPath } from './portal/proxy.ts'
 import { ProfileService, createSshProfileConnector, readPrivateKeyFile, type ConnectProgressEvent } from './provision/profile-service.ts'
@@ -477,6 +478,10 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
         targets: store.listTargets().map(toPublicTarget),
         pluginVersion: pluginVersion(),
         verifiedRuntimes: [...DSH_VERIFIED_RUNTIMES],
+        // The supported interval, as one string: the wizard shows it verbatim and
+        // the client must never compute it from the list (the list is artifacts,
+        // the interval is compatibility — they differ once a release is pending).
+        supportedDsh: describeRange(RUNTIME_COMPAT.dsh),
         platform: process.platform,
       }
     }

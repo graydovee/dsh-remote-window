@@ -58,6 +58,12 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+      # The compatibility table is the release contract: the manifest, the peers
+      # and both READMEs must already agree with it, and any drift fails here
+      # instead of shipping a plugin whose declared DSH interval is stale.
+      - name: compatibility table is in sync
+        run: node scripts/sync-compat.mjs --check
+
       # Advisory until the build is confirmed reproducible on the runner.
       - name: lib is up to date with src
         continue-on-error: true
@@ -72,6 +78,10 @@ jobs:
           echo "TARBALL=$tarball" >> "$GITHUB_ENV"
           shasum -a 256 "$tarball" | cut -d' ' -f1 > "$tarball.sha256"
           cat "$tarball.sha256"
+          # The other repository releases the runtimes: it downloads this
+          # snapshot to know which DSH releases and platforms to build, and
+          # renders its release notes from the same numbers.
+          node scripts/emit-runtime-compat.mjs --out dist/runtime-compat.json
 
       # The published package ships lib/ and the profile patch only; source,
       # tests and maintainer docs stay out.
@@ -98,6 +108,7 @@ jobs:
           files: |
             dist/*.tgz
             dist/*.tgz.sha256
+            dist/runtime-compat.json
 
       # A prerelease version cannot be published onto the default `latest`
       # dist-tag (npm rejects it without --tag), so derive the tag from the

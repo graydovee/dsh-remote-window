@@ -10,6 +10,9 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, statSync } from 'node:fs'
 import { DSH_VERIFIED_RUNTIMES, DSH_VERIFIED_SUMMARY, formatDshVersion, parseDshVersion } from '../src/provision/version-range.ts'
+import { RUNTIME_COMPAT, compatProblems, inDshRange, rangeExpression } from '../src/provision/runtime-compat.ts'
+/** The release helper keeps its own copy of the expression rule; assert parity. */
+import { rangeExpression as scriptRangeExpression } from '../scripts/sync-compat.mjs'
 
 const read = (path: string): string => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const manifest = JSON.parse(read('package.json')) as {
@@ -30,11 +33,34 @@ const dshDependencies = (record: Record<string, string>): [string, string][] =>
 /** An exact version, never a range: no caret, tilde, comparison or `*`. */
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 
+/** The expression `engines.dsh` and every peer must carry for this table. */
+const EXPECTED_DSH_EXPRESSION = rangeExpression(RUNTIME_COMPAT.dsh)
+
 describe('runtime contract', () => {
-  it('declares one of the verified runtimes in engines.dsh', () => {
+  it('compiles a table that passes the same checks the sync script runs', () => {
+    expect(compatProblems(RUNTIME_COMPAT)).toEqual([])
+  })
+
+  it('declares the supported interval as engines.dsh, in one spelling', () => {
     expect(DSH_VERIFIED_RUNTIMES.length).toBeGreaterThan(0)
     expect(new Set(DSH_VERIFIED_RUNTIMES).size).toBe(DSH_VERIFIED_RUNTIMES.length)
-    expect(DSH_VERIFIED_RUNTIMES).toContain(manifest.engines.dsh)
+    for (const runtime of DSH_VERIFIED_RUNTIMES) expect(inDshRange(runtime)).toBe(true)
+    expect(manifest.engines.dsh).toBe(EXPECTED_DSH_EXPRESSION)
+    if (RUNTIME_COMPAT.dsh.min === RUNTIME_COMPAT.dsh.max) {
+      // A single supported release stays exact: ranges resolve differently under
+      // pnpm and the exact form is what every published version shipped.
+      expect(manifest.engines.dsh).toMatch(EXACT_VERSION)
+    }
+  })
+
+  it('keeps the release script and the plugin on one expression rule', () => {
+    for (const range of [
+      { min: '0.2.1-rc.3', max: '0.2.1-rc.3' },
+      { min: '0.2.1-rc.3', max: '0.2.2' },
+      { min: '0.2.1', max: '0.3.0-rc.1' },
+    ]) {
+      expect(scriptRangeExpression(range)).toBe(rangeExpression(range))
+    }
   })
 
   it('keeps every verified runtime parseable and canonically spelled', () => {
@@ -52,14 +78,13 @@ describe('runtime contract', () => {
     // `autoInstallPeers: false`, so declaring them as peers alone leaves a fresh
     // install with `Cannot find package '@deepseek-ai/dsh-ssh'`.
     for (const name of ['@deepseek-ai/dsh-ssh', '@deepseek-ai/dsh-fs-ssh', '@deepseek-ai/dsh-subprocess-ssh', '@deepseek-ai/dsh-sandbox-ssh']) {
-      expect(manifest.dependencies[name], name).toBe(manifest.engines.dsh)
+      expect(manifest.dependencies[name], name).toBe(EXPECTED_DSH_EXPRESSION)
     }
   })
 
-  it('pins every dsh peer and devDependency to that same exact version', () => {
+  it('pins every dsh peer and devDependency to that same expression', () => {
     for (const [name, range] of [...dshDependencies(manifest.peerDependencies), ...dshDependencies(manifest.devDependencies)]) {
-      expect(range, name).toMatch(EXACT_VERSION)
-      expect(range, name).toBe(manifest.engines.dsh)
+      expect(range, name).toBe(EXPECTED_DSH_EXPRESSION)
     }
     expect(dshDependencies(manifest.peerDependencies).length).toBeGreaterThan(0)
   })
@@ -92,9 +117,13 @@ describe('README pair', () => {
   const headings = (path: string): string[] =>
     read(path).split('\n').filter(line => line.startsWith('## ')).map(line => line.trim())
 
-  it('names the verified runtime in both languages', () => {
+  it('names the supported interval and this plugin version in both languages', () => {
     for (const path of ['README.md', 'README-zh.md']) {
-      expect(read(path), path).toContain(DSH_VERIFIED_SUMMARY)
+      const text = read(path)
+      expect(text, path).toContain(DSH_VERIFIED_SUMMARY)
+      expect(text, path).toContain(manifest.version)
+      expect(text, path).toContain('<!-- verified-runtimes:start -->')
+      expect(text, path).toContain('<!-- verified-runtimes:end -->')
     }
   })
 

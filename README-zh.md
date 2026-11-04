@@ -185,30 +185,29 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 
 ## Compatibility
 
-当前只对这一个运行时做过验证：
+兼容性是**声明出来的区间**，不是藏在代码里的常量：
 
-| 插件 | 已验证 DSH 运行时 | 状态 |
+<!-- verified-runtimes:start -->
+| Plugin | Supported DSH | Published runtimes |
 | --- | --- | --- |
-| 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
-| 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
-<!-- verified-runtimes -->
+| 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
+| 0.1.0-alpha.4 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
+<!-- verified-runtimes:end -->
 
-本版本针对 DSH `0.2.1-rc.3` 构建、打包并测试；`0.2.1-rc.2` 已不在已验证集合内，默认会被精确版本
-守卫拒绝，除非显式豁免该组合。检查项、剩余范围与升级步骤见
-[doc/dsh-rc3-compatibility.md](doc/dsh-rc3-compatibility.md)。
+这张表由 `node scripts/sync-compat.mjs` 从 [`compat/runtimes.json`](compat/runtimes.json) 生成；
+`--check` 会在清单、peer、README 与生成表不一致时让发布失败。三个版本号各有含义，故意分开：
 
-声明是**精确版本**，不是区间：清单把 `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 钉在上面的运行时，
-客户端也只在 server 版本属于已验证运行时时才接受它。DSH 还是开发者预览版；未验证版本会被一条可操作的
-错误拒绝，而不是跑到一半失败。
+- **插件版本**（`0.1.0-alpha.4`）是我们自己的包版本，按我们的节奏走。
+- **DSH 区间**（`min … max`，两端闭）表示这个构建能驱动的 DSH 版本。DSH 是开发者预览版，高于上界的
+  版本和低于下界的版本一样可能不兼容，所以判断是闭区间，而不是「这个版本或更新」。区间退化为单版本时
+  就直接写成精确版本。
+- **runtime 产物**（`dsh-runtime-<dsh>-<平台>.tar.gz`）按它内含的 DSH 版本命名，而不是插件版本：包里是
+  `node/` 加 `@deepseek-ai/dsh@<dsh>`，不含插件代码，多个插件版本复用同一份产物。
 
-如果确实要在本机试别的 DSH 版本，对这一对精确版本做豁免，并把结果视为不受支持：
-
-```bash
-dsh plugin --profile web allow-version dsh-remote-window@<已安装版本> \
-  --dsh-version <运行时版本> --accept-risk
-```
-
-豁免只覆盖本机宿主；server 必须运行已验证运行时——client 安装的独立 runtime，或复用该精确版本的全局 DSH。
+连接时会自动挑「能拿到 runtime 的最新受支持 DSH」：显式 `DSH_RW_RUNTIME_ARTIFACT` → 区间内且健康的
+全局 DSH → 本地缓存 → 已发布的 release 产物 → POSIX 宿主本地构建。版本在区间内但暂时没有产物时会明确
+报「没有可用 runtime 产物」，不会被当成不兼容。`engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 使用同一
+表达式：区间为单版本时写精确版本，否则写 `>=min <=max`。
 
 远端的 server 可以是 Linux、macOS 或 **Windows**。Windows 目标需要预置
 `dsh-runtime-<version>-win32-<arch>.tar.gz`（`DSH_RW_RUNTIME_ARTIFACT`，或放在

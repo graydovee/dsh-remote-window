@@ -1,30 +1,32 @@
 /**
- * The dsh runtimes this plugin has verified, and the comparison used to word a
- * rejection.
+ * Comparing dsh versions, and the compatibility gate built on top of them.
  *
- * The contract is a *membership* test, not a version range: a remote launcher is
- * usable when its version is exactly one of {@link DSH_VERIFIED_RUNTIMES}. The
- * list is kept in lockstep with `package.json` (`engines.dsh` and every
- * `@deepseek-ai/dsh-*` peer) by `tests/release-contract.test.ts`; widening it is
- * a release action that adds an entry after that runtime has been exercised.
+ * The gate is an **inclusive interval** test: a remote launcher is usable when
+ * `min <= version <= max`, where both bounds come from `compat/runtimes.json`
+ * (compiled into `runtime-compat.generated.ts`). The interval is declared by the
+ * release, not derived from "the newest thing we know": dsh is a developer
+ * preview, so a release above the upper bound can break exactly like one below
+ * the lower bound. Versions *inside* the interval that have no published
+ * artifact are still "compatible" — the runtime planner falls back within the
+ * interval and only then refuses (see `runtime-selection.ts`).
  *
- * Why not a range: an upper bound such as `<0.3.0` promises compatibility with
- * releases that do not exist yet, and a range also admits unverified
- * prereleases inside it (`rc.3` between `rc.2` and `rc.4`). DSH is a developer
- * preview, so a breaking change can land in any release.
- *
- * Why not `semver`: a second, *mutable* parser in the dependency tree has
- * already cost this repo real pain (`zod` had to be pinned to an exact version
- * because a duplicate copy made `tsc` OOM, see AGENTS.md). The code below covers
- * the semantics we need, and the prerelease ordering is unit-tested — that is
- * the part a naive `localeCompare` gets wrong (`rc.10` vs `rc.2`).
+ * Why a hand-written parser instead of `semver`: a second, *mutable* parser in
+ * the dependency tree has already cost this repo real pain (`zod` had to be
+ * pinned to an exact version because a duplicate copy made `tsc` OOM, see
+ * AGENTS.md). The code below covers the semantics we need, and the prerelease
+ * ordering is unit-tested — that is the part a naive `localeCompare` gets wrong
+ * (`rc.10` vs `rc.2`).
  */
 
-/** The dsh runtimes this client has verified. Membership decides; never a range. */
-export const DSH_VERIFIED_RUNTIMES: readonly string[] = ['0.2.1-rc.3']
+import { RUNTIME_COMPAT } from './runtime-compat.generated.ts'
 
-/** Human text for messages and the wizard: `0.2.1-rc.2`. */
-export const DSH_VERIFIED_SUMMARY = DSH_VERIFIED_RUNTIMES.join(' / ')
+/** The dsh runtimes this build ships, newest-first (from `compat/runtimes.json`). */
+export const DSH_VERIFIED_RUNTIMES: readonly string[] = RUNTIME_COMPAT.runtimes.map(entry => entry.dsh)
+
+/** The inclusive interval this build supports, as text for messages and the wizard. */
+export const DSH_VERIFIED_SUMMARY = RUNTIME_COMPAT.dsh.min === RUNTIME_COMPAT.dsh.max
+  ? RUNTIME_COMPAT.dsh.min
+  : `${RUNTIME_COMPAT.dsh.min} \u2026 ${RUNTIME_COMPAT.dsh.max}`
 
 /** One parsed version: three numeric segments plus dot-separated prerelease ids. */
 export interface DshVersion {
@@ -130,32 +132,34 @@ export function formatDshVersion(version: DshVersion): string {
 /**
  * Whether a version line names a dsh release this plugin can drive remotely.
  *
- * This is a membership test over {@link DSH_VERIFIED_RUNTIMES}; unparseable text
- * is never a member.
+ * Inclusive interval test over the table's `dsh.min`/`dsh.max`; unparseable text
+ * is never compatible.
  * @param text - whatever `dsh --version` (or a scan record) printed.
- * @returns true only for a verified runtime.
+ * @returns true when the parsed version is inside the supported interval.
  */
 export function isCompatibleDsh(text: string): boolean {
   const version = parseDshVersion(text)
   if (version === undefined) return false
-  return DSH_VERIFIED_RUNTIMES.includes(formatDshVersion(version))
+  const min = parseDshVersion(RUNTIME_COMPAT.dsh.min)
+  const max = parseDshVersion(RUNTIME_COMPAT.dsh.max)
+  if (min === undefined || max === undefined) return false
+  return compareDshVersion(version, min) >= 0 && compareDshVersion(version, max) <= 0
 }
 
-/** The verified runtimes as parsed versions, computed once. */
-const VERIFIED = DSH_VERIFIED_RUNTIMES
-  .map(text => parseDshVersion(text))
-  .filter((version): version is DshVersion => version !== undefined)
-
-/** Lowest verified runtime, for wording a rejection. */
-const LOWEST = VERIFIED.reduce((low, current) => (compareDshVersion(current, low) < 0 ? current : low))
-/** Highest verified runtime, for wording a rejection. */
-const HIGHEST = VERIFIED.reduce((high, current) => (compareDshVersion(current, high) > 0 ? current : high))
+/** The supported interval as parsed versions, computed once. */
+const INTERVAL = {
+  min: parseDshVersion(RUNTIME_COMPAT.dsh.min),
+  max: parseDshVersion(RUNTIME_COMPAT.dsh.max),
+}
 
 /**
  * A human-readable reason for rejecting a version line.
  *
  * Shown verbatim in the wizard's candidate list and in `reuse`-mode failures, so
- * it names the verified runtime instead of saying "unsupported".
+ * it names the supported interval instead of saying "unsupported". The two
+ * bounds are reported separately on purpose: "too new" is the case the old
+ * exact-version guard could not express, and it needs different advice (upgrade
+ * the plugin) than "too old" (upgrade the server).
  * @param text - the version line that failed {@link isCompatibleDsh}.
  * @returns one sentence; never empty.
  */
@@ -165,11 +169,13 @@ export function describeIncompatibility(text: string): string {
   if (version === undefined) {
     return trimmed === '' ? 'the launcher printed no version' : `"${trimmed}" is not a dsh version`
   }
-  if (compareDshVersion(version, LOWEST) < 0) {
-    return `version ${trimmed} is older than the verified DSH runtime ${DSH_VERIFIED_SUMMARY}`
+  const min = INTERVAL.min
+  const max = INTERVAL.max
+  if (min !== undefined && compareDshVersion(version, min) < 0) {
+    return `version ${trimmed} is below the supported DSH interval (${DSH_VERIFIED_SUMMARY})`
   }
-  if (compareDshVersion(version, HIGHEST) > 0) {
-    return `version ${trimmed} is newer than the verified DSH runtime ${DSH_VERIFIED_SUMMARY}`
+  if (max !== undefined && compareDshVersion(version, max) > 0) {
+    return `version ${trimmed} is above the supported DSH interval (${DSH_VERIFIED_SUMMARY}); upgrade the plugin`
   }
-  return `version ${trimmed} is not one of the verified DSH runtimes (${DSH_VERIFIED_SUMMARY})`
+  return `version ${trimmed} is not a DSH release this plugin can drive (${DSH_VERIFIED_SUMMARY})`
 }

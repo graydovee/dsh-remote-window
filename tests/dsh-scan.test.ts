@@ -182,7 +182,7 @@ describe('assembleCandidates', () => {
     const old = byPath.get('/opt/old/dsh')
     expect(old?.compatible).toBe(false)
     expect(old?.selfContained).toBe(true)
-    expect(old?.reason).toContain('older than the verified DSH runtime')
+    expect(old?.reason).toContain('below the supported DSH interval')
   })
 
   it('reports upToDate=false when the installed digest differs', () => {

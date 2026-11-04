@@ -213,34 +213,34 @@ package manager. Then:
 
 ## Compatibility
 
-Verified against exactly this runtime:
+Compatibility is a **declared interval**, not a constant hidden in the code:
 
-| Plugin | Verified DSH runtime | Status |
+<!-- verified-runtimes:start -->
+| Plugin | Supported DSH | Published runtimes |
 | --- | --- | --- |
-| 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
-| 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
-<!-- verified-runtimes -->
+| 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
+| 0.1.0-alpha.4 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
+<!-- verified-runtimes:end -->
 
-This release is built, packed and tested against DSH `0.2.1-rc.3`. `0.2.1-rc.2` is no longer in the
-verified set, so the exact-version guard refuses it unless you explicitly exempt that pair. See
-[doc/dsh-rc3-compatibility.md](doc/dsh-rc3-compatibility.md) for what was checked, what remains, and the
-upgrade procedure.
+The table is generated from [`compat/runtimes.json`](compat/runtimes.json) by
+`node scripts/sync-compat.mjs`; `--check` fails the release when the manifest, the peers, the READMEs or
+the generated table disagree. Three different version numbers appear on purpose:
 
-The declaration is a **precise version**, not a range: the manifest pins `engines.dsh` and every
-`@deepseek-ai/dsh-*` peer to the runtime above, and the client accepts the server only when its version is
-one of the verified runtimes. DSH is a developer preview; an unverified release is refused with an
-actionable message instead of failing halfway.
+- **Plugin version** (`0.1.0-alpha.4`) names our packages; it moves on our schedule.
+- **DSH interval** (`min … max`, both ends inclusive) says which DSH releases this build can drive. DSH is
+  a developer preview, so a release *above* the upper bound can break exactly like one below the lower
+  bound: the check is a closed interval, not "this version or newer". An interval of one release is
+  written as the exact version.
+- **Runtime artifact** (`dsh-runtime-<dsh>-<platform>.tar.gz`) is named after the DSH release it carries,
+  not after the plugin: it contains `node/` plus `@deepseek-ai/dsh@<dsh>` and no plugin code, so several
+  plugin versions reuse one artifact.
 
-If you intentionally run another DSH version locally, exempt the exact pair and treat the result as
-unsupported:
-
-```bash
-dsh plugin --profile web allow-version dsh-remote-window@<installed version> \
-  --dsh-version <runtime version> --accept-risk
-```
-
-That exemption covers the local host only. The server side must run the verified runtime — either the
-isolated runtime the client installs, or a global DSH reusing that exact verified version.
+On connect the client picks the newest supported DSH for which a runtime is reachable — explicit
+`DSH_RW_RUNTIME_ARTIFACT` → a healthy global DSH inside the interval → the local cache → a published
+release asset → a local build on a POSIX host. A DSH version *inside* the interval that has no artifact
+yet is reported as such (`no runtime artifact is available for …`), never as an incompatibility.
+`engines.dsh` and every `@deepseek-ai/dsh-*` peer carry the same expression: exact while the interval is a
+single release, `>=min <=max` otherwise.
 
 Remote servers can be Linux, macOS or **Windows**. A Windows server needs either a pre-seeded
 `dsh-runtime-<version>-win32-<arch>.tar.gz` (`DSH_RW_RUNTIME_ARTIFACT`, or the same file under

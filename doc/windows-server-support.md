@@ -19,7 +19,7 @@ Supported today:
 | --- | --- | --- |
 | SSH connection, host-key pinning, password / key auth | yes | yes |
 | Remote scan (`dsh`, `node`, profiles, native addon) | yes | yes |
-| Isolated runtime deploy (`node/` + `dsh/`) | yes | yes (`win32-x64`, `win32-arm64`) |
+| Isolated runtime deploy (`node/` + `dsh/`) | yes | yes (`win32-x64`, `win32-arm64`); the dsh release is chosen by `compat/runtimes.json` |
 | Server plugin install | yes | yes |
 | Profile start / stop / lease | yes | yes (detached `cmd`, `taskkill /T`) |
 | Portal proxy, plugin transport, session/workspace data | yes | yes |
@@ -81,16 +81,23 @@ prunes foreign bindings from both `.pnpm` and the hoisted tree.
 | Code | Where | Meaning |
 | --- | --- | --- |
 | `runtime-incompatible` | `resolveRuntime` | The remote platform could not be identified, so no runtime artifact can be chosen. Never falls back to `linux`. |
-| `runtime-missing` | `resolveRuntime` | No cached/`DSH_RW_RUNTIME_ARTIFACT` artifact for that platform. Pre-seed the file or use a `reuse` global DSH. |
+| `runtime-incompatible` | `resolveRuntime` | The chosen dsh is outside the supported interval, or nothing in the interval has an artifact for this platform. The message names the interval and the next action. |
+| `runtime-missing` | `resolveRuntime` | The selected dsh has no cached/`DSH_RW_RUNTIME_ARTIFACT` artifact for that platform and this host cannot build one. Pre-seed the file or point `DSH_RW_RUNTIME_ARTIFACT` at it. |
 | `runtime-install-failed` | runtime install | `tar.exe`, `Get-FileHash`, `node.exe -v` or the native-addon probe failed. |
 | `server-plugin-install-failed` | plugin install | Manifest, name, version, sha256 or archive-path check failed (`windowsServerPluginInstallScript` mirrors the POSIX exit codes 10–15). |
 | `profile-start-failed` / `profile-start-timeout` | profile lifecycle | The wrapper could not start `node.exe`, or its startup line never appeared. |
 
 ## 5. Known limitations
 
-* The client never downloads `dsh-runtime-*` artifacts. A Windows target therefore needs either
+* Runtime choice is not a constant: `src/provision/runtime-selection.ts` picks the newest dsh inside the
+  interval declared by `compat/runtimes.json` for which an artifact is reachable (explicit
+  `DSH_RW_RUNTIME_ARTIFACT` → healthy global dsh → local cache → published release asset → local build on a
+  POSIX host). A version inside the interval *without* an artifact is `no-artifact`, not an incompatibility.
+* The client never downloads `dsh-runtime-*` artifacts yet. A Windows target therefore needs either
   `DSH_RW_RUNTIME_ARTIFACT=<path to dsh-runtime-*-win32-<arch>.tar.gz>`, a pre-seeded
   `~/.dsh/remote-assets/dsh-runtime-<version>-win32-<arch>.tar.gz`, or a healthy global DSH to `reuse`.
+  The artifact name carries the **dsh** version it contains (`dsh-runtime-<dsh>-win32-x64.tar.gz`), which is
+  independent of the plugin version; see `doc/runtime-compatibility.md`.
 * Building a POSIX-side runtime artifact from a Windows *client* host is refused; this branch does not add
   Windows client support.
 * Agent authentication is not available for a Windows **client** host; the server side uses key/password auth

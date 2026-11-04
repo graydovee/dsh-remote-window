@@ -82,7 +82,7 @@ describe('compareDshVersion', () => {
 })
 
 describe('isCompatibleDsh', () => {
-  it('accepts the verified runtime however it is spelled', () => {
+  it('accepts the shipped runtime however it is spelled', () => {
     for (const runtime of DSH_VERIFIED_RUNTIMES) {
       expect(isCompatibleDsh(runtime)).toBe(true)
       expect(isCompatibleDsh(`v${runtime}`)).toBe(true)
@@ -92,15 +92,15 @@ describe('isCompatibleDsh', () => {
     }
   })
 
-  it('rejects any other release, including one inside a plausible window', () => {
-    expect(isCompatibleDsh('0.2.1')).toBe(false)
+  it('rejects releases on both sides of the interval', () => {
+    // The interval is inclusive on both ends on purpose: a preview release above
+    // the upper bound can break exactly like one below the lower bound, which is
+    // the case the old exact-version guard could not express.
+    expect(isCompatibleDsh('0.1.9')).toBe(false)
     expect(isCompatibleDsh('0.2.1-rc.1')).toBe(false)
-    expect(isCompatibleDsh('0.2.1-rc.10')).toBe(false)
-    expect(isCompatibleDsh('0.2.2')).toBe(false)
-    expect(isCompatibleDsh('0.2.9-rc.1')).toBe(false)
+    expect(isCompatibleDsh('0.2.1-rc.2')).toBe(false)
     expect(isCompatibleDsh('0.3.0-rc.1')).toBe(false)
     expect(isCompatibleDsh('0.3.0')).toBe(false)
-    expect(isCompatibleDsh('0.1.9')).toBe(false)
     expect(isCompatibleDsh('1.0.0')).toBe(false)
   })
 
@@ -111,9 +111,13 @@ describe('isCompatibleDsh', () => {
 })
 
 describe('describeIncompatibility', () => {
-  it('names the verified runtime and the direction', () => {
-    expect(describeIncompatibility('0.1.9')).toBe(`version 0.1.9 is older than the verified DSH runtime ${DSH_VERIFIED_SUMMARY}`)
-    expect(describeIncompatibility('0.3.0')).toBe(`version 0.3.0 is newer than the verified DSH runtime ${DSH_VERIFIED_SUMMARY}`)
+  it('names the interval and the direction', () => {
+    expect(describeIncompatibility('0.1.9')).toBe(
+      `version 0.1.9 is below the supported DSH interval (${DSH_VERIFIED_SUMMARY})`,
+    )
+    expect(describeIncompatibility('0.3.0')).toBe(
+      `version 0.3.0 is above the supported DSH interval (${DSH_VERIFIED_SUMMARY}); upgrade the plugin`,
+    )
   })
 
   it('explains an empty or unparseable answer', () => {

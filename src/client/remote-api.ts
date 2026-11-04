@@ -142,6 +142,8 @@ export interface StateResultV1 {
   /** Client-host portal root; per-target paths are in `connections[].portal`. */
   readonly portalBase?: string
   readonly verifiedRuntimes?: readonly string[]
+  /** The dsh interval this client supports, already formatted (`min … max`). */
+  readonly supportedDsh?: string
   readonly defaultProfile: string
   readonly platform?: string
 }

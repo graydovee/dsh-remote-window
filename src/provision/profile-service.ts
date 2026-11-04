@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -38,7 +39,9 @@ import { SshForwarder, sendForwardedHttp, type ForwardStream } from '../ssh/forw
 import { effectiveModelSource, scrubSecrets, type PublicTarget, type RemoteTargetRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
 import { generateInstanceId } from '../targets/client-id.ts'
-import { isCompatibleDsh, DSH_VERIFIED_RUNTIMES } from './version-range.ts'
+import { compareDshVersion, isCompatibleDsh, parseDshVersion } from './version-range.ts'
+import { RUNTIME_COMPAT, describeRange, inDshRange } from './runtime-compat.ts'
+import { describeSelection, selectRuntimeVersion } from './runtime-selection.ts'
 import { describeLocalPackage, platformArch, sha256File } from './assets.ts'
 import { parseDshScanOutput, scanDshScript, type DshScan } from './dsh-scan.ts'
 import { buildRuntimeArtifact } from './runtime-artifact.ts'
@@ -60,6 +63,7 @@ import {
   readRuntimeMarker,
   runtimeAddonProbeCommand,
   runtimeAddonProbeOp,
+  runtimeArtifactCachePath,
   runtimeArtifactName,
   runtimePathAssignment,
   runtimePathPrefixes,
@@ -493,7 +497,8 @@ export class ProfileService {
     const record = this.options.store.target(targetId)
     if (record === undefined) return undefined
     const live = this.live.get(targetId)
-    const expectedRuntime = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
+    // What a fresh connection would install, not a constant: the table decides.
+    const expectedRuntime = RUNTIME_COMPAT.runtimes[0]?.dsh ?? RUNTIME_COMPAT.dsh.min
     const runtimeKind = live?.runtimeKind ?? record.runtimeKind ?? 'global'
     const installedRuntime = live?.dshVersion ?? record.serverDshVersion
     const runtimeAction = installedRuntime === undefined ? 'install' : installedRuntime === expectedRuntime ? 'reuse' : 'upgrade'
@@ -1777,18 +1782,44 @@ export class ProfileService {
    * @param request - connect request (carries the user's launcher override).
    * @param kind - remote shell dialect.
    */
-  private pickGlobal(scan: DshScan, request: ConnectProfileRequest, kind: RemoteKind): { path: string; nodePath?: string } | undefined {
+  /**
+   * The remote's own dsh, when the scan found one we could drive.
+   *
+   * This no longer filters by compatibility: the planner needs to *see* an
+   * out-of-interval global dsh to word a refusal ("upgrade the server's dsh"),
+   * and a healthy launcher inside the interval is the cheapest runtime. The
+   * version returned here is the launcher's own probe output, never the table's
+   * expectation, so the progress row and the profile marker report what is
+   * actually installed.
+   */
+  private pickGlobal(
+    scan: DshScan,
+    request: ConnectProfileRequest,
+    kind: RemoteKind,
+  ): { path: string; nodePath?: string; version: string; healthy: boolean } | undefined {
     const override = (process.env['DSH_RW_DSH_LAUNCHER'] ?? '').trim()
-    if (override !== '') return { path: override }
-    const candidates = scan.launchers.filter(candidate => candidate.version !== '' && isCompatibleDsh(candidate.version))
+    if (override !== '') return { path: override, version: '', healthy: false }
+    const usable = scan.launchers.filter(candidate => candidate.version !== '' && candidate.exitCode === 0)
+    const choose = kind === 'posix'
+      ? usable.at(0)
+      : usable.filter(candidate => candidate.path.toLowerCase().endsWith('dsh.cmd')).at(0)
+    if (choose === undefined) return undefined
     if (kind === 'posix') {
-      const chosen = candidates[0]
-      return chosen === undefined ? undefined : { path: chosen.path, ...(chosen.nodePath === undefined ? {} : { nodePath: chosen.nodePath }) }
+      return {
+        path: choose.path,
+        version: choose.version,
+        healthy: isCompatibleDsh(choose.version),
+        ...(choose.nodePath === undefined ? {} : { nodePath: choose.nodePath }),
+      }
     }
-    const shim = candidates.filter(candidate => candidate.path.toLowerCase().endsWith('dsh.cmd')).at(0)
-    if (shim === undefined) return undefined
-    const nodePath = shim.nodePath ?? scan.nodes.find(node => node.version !== '')?.path
-    return nodePath === undefined ? undefined : { path: windowsDirname(shim.path), nodePath }
+    const nodePath = choose.nodePath ?? scan.nodes.find(node => node.version !== '')?.path
+    if (nodePath === undefined) return undefined
+    return {
+      path: windowsDirname(choose.path),
+      nodePath,
+      version: choose.version,
+      healthy: isCompatibleDsh(choose.version),
+    }
   }
 
   /**
@@ -1808,7 +1839,9 @@ export class ProfileService {
     tarball: ServerPluginTarball,
     kind: RemoteKind,
   ): Promise<RemoteSetupInspection> {
-    const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
+    // The newest runtime the table supports is what an install/upgrade targets;
+    // a reusable global dsh is reported by its own scanned version below.
+    const expectedDsh = RUNTIME_COMPAT.runtimes[0]?.dsh ?? RUNTIME_COMPAT.dsh.min
     // A global DSH is located first and only then skipped: the probe row reports
     // what the server already has, and says when this connection ignores it.
     const globalCandidate = this.pickGlobal(scan, request, kind)
@@ -1817,12 +1850,13 @@ export class ProfileService {
     let runtime: RemoteSetupInspection['runtime']
     if (global !== undefined) {
       const node = global.nodePath === undefined ? undefined : scan.nodes.find(candidate => candidate.path === global.nodePath)
+      const globalVersion = global.version === '' ? expectedDsh : global.version
       runtime = {
         kind: 'global',
         action: 'reuse',
-        version: expectedDsh,
+        version: globalVersion,
         ...(node?.version === undefined || node.version === '' ? {} : { nodeVersion: node.version }),
-        detail: `复用 server 全局 DSH ${expectedDsh}${node?.version === undefined || node.version === '' ? '' : `（Node ${node.version}）`}`,
+        detail: `复用 server 全局 DSH ${globalVersion}${node?.version === undefined || node.version === '' ? '' : `（Node ${node.version}）`}`,
       }
     } else {
       const paths = runtimePaths(dshHome, clientId, kind)
@@ -1934,6 +1968,15 @@ export class ProfileService {
    * upgrade from the injected artifact). Failing to find either is a coded
    * `runtime-missing`; the connect never silently falls back to a local world.
    */
+  /**
+   * Choose and install the dsh runtime a connection runs on.
+   *
+   * The decision belongs to {@link selectRuntimeVersion} (pure, unit-tested); this
+   * method only gathers the facts it needs and performs the effects. What it must
+   * never do is assume a version: every version that appears below comes from the
+   * compatibility table, the remote scan, or the artifact manifest — never from a
+   * constant in this file.
+   */
   private async resolveRuntime(
     connection: ProfileConnection,
     scan: DshScan,
@@ -1943,27 +1986,65 @@ export class ProfileService {
     kind: RemoteKind,
     onRuntimeProgress?: (message: string) => void,
   ): Promise<ResolvedRuntime> {
-    const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
-    // A global DSH is located first and only then skipped: the probe row reports
-    // what the server already has, and says when this connection ignores it.
+    // The artifact matrix is keyed by the *remote* platform. Unknown evidence is
+    // a coded refusal: guessing `linux` would install a runtime that cannot run.
+    const platformArch = runtimePlatformArchOf(scan)
+    if (platformArch === undefined) {
+      throw new RuntimeError(
+        'runtime-incompatible',
+        `无法判断远端平台（uname=${scan.platform ?? '空'} machine=${scan.machine ?? '空'}），不能选择运行时产物`,
+      )
+    }
+    const cacheDir = join(homedir(), '.dsh', 'remote-assets')
+    const envArtifactPath = (process.env['DSH_RW_RUNTIME_ARTIFACT'] ?? '').trim()
+    const envVersion = envArtifactPath === '' ? undefined : await readArtifactManifestVersion(envArtifactPath)
     const globalCandidate = this.pickGlobal(scan, request, kind)
     const forcedIsolated = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
-    const global = forcedIsolated ? undefined : globalCandidate
-    if (global !== undefined) {
+    const selection = selectRuntimeVersion({
+      range: RUNTIME_COMPAT.dsh,
+      entries: RUNTIME_COMPAT.runtimes,
+      platformArch,
+      // An unreadable manifest still means "the operator named this file": the
+      // newest supported version is assumed and the health probe decides.
+      envVersion: envArtifactPath === '' ? undefined : (envVersion ?? RUNTIME_COMPAT.runtimes[0]?.dsh ?? RUNTIME_COMPAT.dsh.min),
+      remoteGlobal: forcedIsolated || globalCandidate === undefined || globalCandidate.version === ''
+        ? undefined
+        : { version: globalCandidate.version, healthy: globalCandidate.healthy },
+      // Only a POSIX host can stage/build a runtime tree today; a Windows host
+      // refuses local builds with a coded error (see assertHostCanPackageRuntime).
+      hostCanBuild: process.platform !== 'win32',
+      hasCache: version => existsSync(runtimeArtifactCachePath(cacheDir, version, platformArch)),
+      // No runtime downloader ships yet: the release asset must be pre-placed
+      // (DSH_RW_RUNTIME_ARTIFACT / cache) or built locally. Kept as an injected
+      // predicate so adding the downloader later is a one-line change here.
+      canFetch: () => false,
+    })
+    if (!selection.ok) {
+      throw new RuntimeError(
+        'runtime-incompatible',
+        `no usable dsh runtime: ${describeSelection(selection)} (supported interval ${describeRange(RUNTIME_COMPAT.dsh)})`,
+      )
+    }
+
+    if (selection.source === 'global' && globalCandidate !== undefined) {
       const prefixes: string[] = []
-      if (global.nodePath !== undefined) prefixes.push(kind === 'windows' ? windowsDirname(global.nodePath) : dirname(global.nodePath))
-      if (kind === 'posix' && global.path.includes('/')) prefixes.push(dirname(global.path))
-      if (kind === 'windows') prefixes.push(remoteJoin(kind, global.path, 'node_modules', '@deepseek-ai', 'dsh'))
+      if (globalCandidate.nodePath !== undefined) {
+        prefixes.push(kind === 'windows' ? windowsDirname(globalCandidate.nodePath) : dirname(globalCandidate.nodePath))
+      }
+      if (kind === 'posix' && globalCandidate.path.includes('/')) prefixes.push(dirname(globalCandidate.path))
+      if (kind === 'windows') prefixes.push(remoteJoin(kind, globalCandidate.path, 'node_modules', '@deepseek-ai', 'dsh'))
       return {
         kind: 'global',
         action: 'reuse',
-        launcher: global.path,
+        launcher: globalCandidate.path,
         pathPrefixes: prefixes,
-        dshVersion: expectedDsh,
+        dshVersion: selection.version,
         runtimeDir: '',
-        ...(global.nodePath === undefined ? {} : { nodePath: global.nodePath }),
+        ...(globalCandidate.nodePath === undefined ? {} : { nodePath: globalCandidate.nodePath }),
       }
     }
+
+    const expectedDsh = selection.version
     const paths = runtimePaths(dshHome, clientId, kind)
     const marker = await readRuntimeMarker(connection.remote, paths)
     const plan = planRuntime({ kind: 'isolated', expectedVersion: expectedDsh, marker })
@@ -1983,20 +2064,11 @@ export class ProfileService {
       onRuntimeProgress?.('隔离 runtime 不可用，正在重新部署…')
     }
     const action: SetupAction = marker === undefined ? 'install' : 'upgrade'
-    // The artifact matrix is keyed by the *remote* platform. Unknown evidence is
-    // a coded refusal: guessing `linux` would install a runtime that cannot run.
-    const archKey0 = runtimePlatformArchOf(scan)
-    if (archKey0 === undefined) {
-      throw new RuntimeError(
-        'runtime-incompatible',
-        `无法判断远端平台（uname=${scan.platform ?? '空'} machine=${scan.machine ?? '空'}），不能选择运行时产物`,
-      )
-    }
-    const [buildPlatform, buildArch, buildLibc] = archKey0.split('-') as ['linux' | 'darwin' | 'win32', 'x64' | 'arm64', '' | 'gnu' | 'musl' | undefined]
+    const [buildPlatform, buildArch, buildLibc] = platformArch.split('-') as ['linux' | 'darwin' | 'win32', 'x64' | 'arm64', '' | 'gnu' | 'musl' | undefined]
     let artifactPath = await resolveRuntimeArtifact({
       version: expectedDsh,
-      platformArch: archKey0,
-      cacheDir: join(homedir(), '.dsh', 'remote-assets'),
+      platformArch,
+      cacheDir,
       env: process.env,
     })
     if (artifactPath === undefined) {
@@ -2009,13 +2081,15 @@ export class ProfileService {
           version: expectedDsh,
           platform: buildPlatform,
           arch: buildArch,
+          ...(buildLibc === undefined || buildLibc === '' ? {} : { libc: buildLibc }),
           onProgress: onRuntimeProgress,
         })
         artifactPath = built.path
       } catch (error) {
         throw new RuntimeError(
           'runtime-missing',
-          `the server has no verified dsh ${expectedDsh} and the isolated runtime artifact could not be built: ${error instanceof Error ? error.message : String(error)}`,
+          `no dsh ${expectedDsh} runtime is available for ${platformArch}: ${error instanceof Error ? error.message : String(error)}; ` +
+            'place the artifact in the cache or point DSH_RW_RUNTIME_ARTIFACT at it',
         )
       }
     }
@@ -2024,11 +2098,11 @@ export class ProfileService {
     const sha256 = await sha256File(artifactPath)
     const artifact = {
       path: artifactPath,
-      name: basename(artifactPath) === '' ? runtimeArtifactName(expectedDsh, archKey0) : basename(artifactPath),
+      name: basename(artifactPath) === '' ? runtimeArtifactName(expectedDsh, platformArch) : basename(artifactPath),
       sha256,
       size: info.size,
       version: expectedDsh,
-      platformArch: archKey0,
+      platformArch,
     }
     await installIsolatedRuntime({ remote: connection.remote, paths, artifact, content })
     const health = await this.probeRuntimeHealth(connection.remote, paths)
@@ -2167,5 +2241,24 @@ export class ProfileService {
       status: record.status,
       ...(record.lastConnectedAt === undefined ? {} : { lastConnectedAt: record.lastConnectedAt }),
     }
+  }
+}
+
+/**
+ * The dsh version a runtime artifact declares, when it ships a manifest.
+ *
+ * Release artifacts carry `<file>.manifest.json` next to the tarball (written by
+ * the server repo). A locally built artifact has no manifest; `undefined` then
+ * means "unknown", never "unsupported" — the caller decides how strict to be.
+ * @param artifactPath - the tarball path named by DSH_RW_RUNTIME_ARTIFACT.
+ * @returns the declared dsh version, or undefined when absent/unreadable.
+ */
+async function readArtifactManifestVersion(artifactPath: string): Promise<string | undefined> {
+  try {
+    const text = await readFile(`${artifactPath}.manifest.json`, 'utf8')
+    const parsed = JSON.parse(text) as { dshVersion?: unknown }
+    return typeof parsed.dshVersion === 'string' && parsed.dshVersion !== '' ? parsed.dshVersion : undefined
+  } catch {
+    return undefined
   }
 }

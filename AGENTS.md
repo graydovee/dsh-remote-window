@@ -217,12 +217,22 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**；方言由远端探�
   （`targets/methods.ts` `reconnectDshHome()`，请求显式值优先，`~`/空/相对路径才回退远端扫描）；
   否则 profile patch/隧道会写到默认 home，server 继续调用旧 bridge 端口。回归测试
   `tests/targets-reconnect.test.ts`。
-- 不新增版本区间：运行时契约唯一来源 `DSH_VERIFIED_RUNTIMES`，只接受实测 `0.2.1-rc.3`。
-- `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 精确 `0.2.1-rc.3`；zod 固定 `4.4.3`；
-  `engines.node` 保持 `^22.19.0 || >=24.0.0`。
+- 版本契约的唯一来源是 `compat/runtimes.json`（schema 2）：`dsh.min`/`dsh.max` 是**两端闭区间**，
+  `runtimes[]` 按新到旧列出可交付的 dsh 与平台标签。源码里不得再出现写死的 dsh 版本；需要「最新期望
+  版本」时读 `RUNTIME_COMPAT.runtimes[0].dsh`，判断兼容用 `inDshRange`。
+- 改表后必须 `node scripts/sync-compat.mjs` 并提交生成物：`src/provision/runtime-compat.generated.ts`、
+  `package.json` 的 `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer、两份 README 的
+  `<!-- verified-runtimes:start -->`/`end` 区块；`--check` 是发布门禁，不一致直接失败。
+- `engines.dsh` 与 peer 写 `rangeExpression(range)`：区间为单版本时是精确版本，否则 `>=min <=max`；
+  zod 固定 `4.4.3`；`engines.node` 保持 `^22.19.0 || >=24.0.0`。
+- 选版逻辑只有一处：`src/provision/runtime-selection.ts` 的 `selectRuntimeVersion`（优先级
+  `DSH_RW_RUNTIME_ARTIFACT` → 区间内且健康的全局 dsh → 本地缓存 → release 产物 → POSIX 宿主本地构建 →
+  拒绝）。区间内但暂时没有产物必须报 `no-artifact`，不得当成版本不兼容；`too-new`/`too-old` 要分别给
+  「升级插件」/「升级 server 的 dsh」的建议。
 - `@deepseek-ai/dsh-ssh`、`dsh-fs-ssh`、`dsh-subprocess-ssh`、`dsh-sandbox-ssh` 是精确版本
   **dependencies**（harness 安装里没有；local 模式按值 import/按名挂载）。
 - 版本号由仓库发布版本决定（当前 `0.1.0-alpha.4`）；内置 server 插件 tarball 版本必须与它精确一致。
+  `compat/history.json` 记录每个已发布插件版本的区间，新版本发布时追加一行（`sync-compat.mjs` 校验）。
   本机调试可用修订后缀，但部署后 `git checkout -- package.json`，修订号永不提交/发布。
 
 **官方 UI（iframe，硬约束）**
@@ -323,10 +333,12 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**；方言由远端探�
   `NPM_TOKEN` secret 现在是**可选**的：不配置时 `npm publish` 走 npm Trusted Publishing（OIDC），
   需在 npmjs.com 两个包各自的 “Trusted publishers” 里登记本仓库 + workflow 文件；配置了 token
   则仍可发布（granular bypass-2FA token 正被 npm 逐步废弃，2027-01 起不得再用于 direct publish）。
-- runtime 包（node+dsh）只在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、
+- runtime 包（node+dsh）在 server 仓库按矩阵发布（linux-x64-gnu、linux-arm64-gnu、darwin-x64、
   darwin-arm64；**win32-x64 / win32-arm64 需 server 仓库补进发布矩阵**，本仓已能本地构建该产物并由
-  `DSH_RW_RUNTIME_ARTIFACT` 注入）；client 下载后必须校验同源 sha256。v1 全局 runtime 修改不开放，
-  只检测复用。
+  `DSH_RW_RUNTIME_ARTIFACT` 注入）。文件名按内含的 dsh 版本命名
+  （`dsh-runtime-<dsh>-<platform>.tar.gz`），与插件版本无关：多个插件版本复用同一份产物。发布正文必须
+  由脚本从 `compat/runtimes.json` 生成「支持的 dsh 区间 + 资产表」并附 `runtime-compat.json` 快照；
+  client 下载后必须校验同源 sha256。v1 全局 runtime 修改不开放，只检测复用。
 - README 只写用户可操作内容；开发约束只更新本文件。
 
 ## 当前遗留 / 禁止扩展
