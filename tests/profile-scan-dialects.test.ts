@@ -12,6 +12,10 @@ import type { ProfileRemote } from '../src/provision/profile-lifecycle.ts'
 import type { SshForwarder } from '../src/ssh/forward.ts'
 import type { ProfileExecResult } from '../src/provision/profile-lifecycle.ts'
 import type { TargetStore } from '../src/targets/store.ts'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { packPackage, writeFakeServerPluginPackage } from './helpers/local-remote.ts'
 
 const WINDOWS_VER = '\r\nMicrosoft Windows [版本 10.0.26200.9711]\r\n'
 
@@ -136,3 +140,36 @@ describe('scan dialect selection', () => {
     expect(remote.scripts.filter(script => script.startsWith('powershell.exe'))).toHaveLength(1)
   })
 })
+
+/** A Windows server whose scan finds Node and only an unsupported global DSH. */
+const WINDOWS_INVENTORY = [
+  '@@RW@@SCAN@@1',
+  'HOME\tC:\\Users\\tester',
+  'DSHHOME\tC:\\Users\\tester\\.dsh',
+  'UNAME\tWindows',
+  'MACHINE\tAMD64',
+  'OSTYPE\t',
+  'LDD\t',
+  'TOOL\ttar\tC:\\Windows\\System32\\tar.exe',
+  'NODE\tC:\\Program Files\\nodejs\\node.exe\tv22.18.0',
+  'DSH\tC:\\Users\\tester\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\tC:\\Users\\tester\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\t0.2.1-rc.2\t0\t',
+  'END',
+].join('\n')
+
+class InventoryRemote implements ProfileRemote {
+  readonly scripts: string[] = []
+  private powershellCalls = 0
+  async exec(body: string): Promise<ProfileExecResult> {
+    this.scripts.push(body)
+    if (body === 'cmd /c ver') return { code: 0, stdout: WINDOWS_VER, stderr: '' }
+    if (body.startsWith('powershell.exe')) {
+      this.powershellCalls += 1
+      if (this.powershellCalls === 1) return { code: 0, stdout: WINDOWS_INVENTORY, stderr: '' }
+      // Marker reads report a missing file. The first deployment command then
+      // fails on purpose: the case only needs the probe that precedes it.
+      return { code: 3, stdout: 'MISSING', stderr: '' }
+    }
+    return { code: 1, stdout: '', stderr: 'sh: 1: Syntax error: "(" unexpected' }
+  }
+  async writeFile(): Promise<void> {}
+}

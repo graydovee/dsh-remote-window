@@ -67,6 +67,7 @@ import {
   RuntimeError,
   type RuntimePaths,
 } from './runtime.ts'
+import { remoteSetupFacts } from './setup-facts.ts'
 import {
   installProfilePeerPackage,
   installServerPlugin,
@@ -1808,9 +1809,11 @@ export class ProfileService {
     kind: RemoteKind,
   ): Promise<RemoteSetupInspection> {
     const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
-    const global = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
-      ? undefined
-      : this.pickGlobal(scan, request, kind)
+    // A global DSH is located first and only then skipped: the probe row reports
+    // what the server already has, and says when this connection ignores it.
+    const globalCandidate = this.pickGlobal(scan, request, kind)
+    const forcedIsolated = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
+    const global = forcedIsolated ? undefined : globalCandidate
     let runtime: RemoteSetupInspection['runtime']
     if (global !== undefined) {
       const node = global.nodePath === undefined ? undefined : scan.nodes.find(candidate => candidate.path === global.nodePath)
@@ -1875,26 +1878,14 @@ export class ProfileService {
     // The probe row reports observations only. The action rows below it say what
     // the client is about to do; mixing the two made "探测远端环境" read like a
     // deployment log with nothing about the remote itself.
-    const platformLabel = [scan.platform ?? '', scan.machine ?? ''].filter(part => part !== '').join(' ')
-    const nodeSuffix = (version: string | undefined): string => version === undefined || version === '' ? '' : `（Node ${version}）`
-    const runtimeFact = runtime.kind === 'global'
-      ? `server 全局 DSH ${runtime.version}${nodeSuffix(runtime.nodeVersion)}`
-      : runtime.action === 'reuse'
-        ? `隔离运行时 ${runtime.installedVersion ?? runtime.version}${nodeSuffix(runtime.nodeVersion)}`
-        : runtime.action === 'upgrade'
-          ? `隔离运行时 ${runtime.installedVersion ?? '旧版本'}（需更新到 ${runtime.version}）`
-          : '隔离运行时 未安装'
-    const pluginFact = plugin.action === 'reuse'
-      ? `server 插件 ${plugin.installedVersion ?? plugin.version}`
-      : plugin.action === 'upgrade'
-        ? `server 插件 ${plugin.installedVersion ?? '旧版本'}（需更新到 ${plugin.version}）`
-        : 'server 插件 未安装'
-    const facts = [
-      `远端环境 ${platformLabel === '' ? '未知' : platformLabel}`,
-      `DSH_HOME ${dshHome}`,
-      runtimeFact,
-      pluginFact,
-    ].join(' · ')
+    const facts = remoteSetupFacts({
+      scan,
+      dshHome,
+      expectedDsh,
+      forcedIsolated,
+      runtime,
+      plugin,
+    })
     return {
       facts,
       runtime,
@@ -1953,9 +1944,11 @@ export class ProfileService {
     onRuntimeProgress?: (message: string) => void,
   ): Promise<ResolvedRuntime> {
     const expectedDsh = DSH_VERIFIED_RUNTIMES[0] ?? '0.2.1-rc.3'
-    const global = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
-      ? undefined
-      : this.pickGlobal(scan, request, kind)
+    // A global DSH is located first and only then skipped: the probe row reports
+    // what the server already has, and says when this connection ignores it.
+    const globalCandidate = this.pickGlobal(scan, request, kind)
+    const forcedIsolated = request.runtimePolicy === 'isolated' || process.env['DSH_RW_FORCE_ISOLATED_RUNTIME'] === '1'
+    const global = forcedIsolated ? undefined : globalCandidate
     if (global !== undefined) {
       const prefixes: string[] = []
       if (global.nodePath !== undefined) prefixes.push(kind === 'windows' ? windowsDirname(global.nodePath) : dirname(global.nodePath))
