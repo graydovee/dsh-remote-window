@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import Schema from '@deepseek-ai/schemastery'
 import { createRoutingPersistence, localSessionRoot, type RoutingRemoteService, type SessionRoute } from './session-persistence/routing.ts'
 import { assertRemoteSessionPreset } from './session/remote-guard.ts'
+import { listLocalPrivateKeys } from './provision/ssh-keys.ts'
 import { listSshAliases } from './ssh-config.ts'
 import { TargetStore } from './targets/store.ts'
 import { reconnectDshHome } from './targets/methods.ts'
@@ -421,6 +422,11 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
         })),
         warnings,
       }
+    }
+    case 'ssh-keys': {
+      // Only paths leave the host; the dialog keeps the tilde form the UI shows.
+      const keys = await listLocalPrivateKeys()
+      return { keys }
     }
     case 'state': {
       if (storageFailure !== '') throw new RouteError('storage-unavailable', `plugin storage failed to open: ${storageFailure}`, 500)

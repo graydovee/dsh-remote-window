@@ -157,6 +157,11 @@ export interface SshAliasesResult {
   warnings: string[]
 }
 
+/** Response of `/api/ssh-keys`. */
+export interface SshKeysResult {
+  keys: Array<{ path: string; label: string }>
+}
+
 /** Response of `/api/alias-prefill`. */
 export interface AliasPrefill {
   alias: string
@@ -497,6 +502,16 @@ export const api = {
   /** Aliases parsed from the local `~/.ssh/config`, plus parser warnings. */
   sshAliases(): Promise<SshAliasesResult> {
     return call<SshAliasesResult>('ssh-aliases', {})
+  },
+
+  /**
+   * Private keys discoverable under `~/.ssh` on this host.
+   *
+   * Only paths cross the wire; the dialog offers them as datalist options and
+   * still lets the user type a path that is not listed.
+   */
+  sshKeys(): Promise<SshKeysResult> {
+    return call<SshKeysResult>('ssh-keys', {})
   },
 
   /** Resolved connection fields for one alias (host/port/user/identity). */

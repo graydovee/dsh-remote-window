@@ -80,6 +80,9 @@ const METHOD_CARD_COPY: Record<OfferedMethod, { readonly name: LocaleKey; readon
   wsl: { name: 'method.wsl.name', description: 'method.wsl.description', aria: 'method.wsl.aria' },
 }
 
+/** Id of the datalist that offers the private keys found under `~/.ssh`. */
+const SSH_KEY_LIST_ID = 'dsh-rw-ssh-key-options'
+
 /** Checked model count per provider (missing key = none checked yet). */
 function selectedModelCount(provider: LocalProviderSummary, selection: Readonly<Record<string, readonly string[]>>): number {
   const checked = new Set(selection[provider.id] ?? [])
@@ -98,6 +101,8 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
   const [aliasWarnings, setAliasWarnings] = useState<string[]>([])
   const [aliasesLoading, setAliasesLoading] = useState(false)
   const [aliasesLoaded, setAliasesLoaded] = useState(false)
+  const [sshKeyOptions, setSshKeyOptions] = useState<Array<{ path: string; label: string }>>([])
+  const [sshKeysLoaded, setSshKeysLoaded] = useState(false)
   const [aliasChoice, setAliasChoice] = useState('')
   const [configError, setConfigError] = useState<string | undefined>(undefined)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -118,6 +123,14 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
       .catch(() => { setAliasesLoaded(true) })
       .finally(() => { setAliasesLoading(false) })
   }, [step, aliasesLoaded, aliasesLoading])
+  useEffect(() => {
+    // Only fetched when the private-key tab is visible: a password/agent
+    // connection never touches `~/.ssh`, and the list is cached per dialog.
+    if (step !== 'config' || dialog?.authKind !== 'privateKey' || sshKeysLoaded) return
+    void api.sshKeys()
+      .then(result => { setSshKeyOptions(result.keys); setSshKeysLoaded(true) })
+      .catch(() => { setSshKeysLoaded(true) })
+  }, [step, dialog?.authKind, sshKeysLoaded])
   useEffect(() => {
     if (step !== 'connect') return
     if (props.state.connectDialog?.phase !== 'idle') return
@@ -413,8 +426,19 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                     value={dialog.privateKeyPath}
                     disabled={submitting}
                     placeholder="~/.ssh/id_ed25519"
+                    list={SSH_KEY_LIST_ID}
                     onChange={(event: { target: { value: string } }) => patch({ privateKeyPath: event.target.value })}
                   />
+                  <datalist id={SSH_KEY_LIST_ID}>
+                    {sshKeyOptions.map(option => (
+                      <option key={option.path} value={option.path} label={option.label} />
+                    ))}
+                  </datalist>
+                  <p className="dsh-rw-hint" data-testid="dsh-rw-ssh-keys">
+                    {sshKeyOptions.length === 0
+                      ? t('remote.connect.privateKeyNone')
+                      : t('remote.connect.privateKeyFound', { count: String(sshKeyOptions.length) })}
+                  </p>
                 </Field>
                 <Field label={t('remote.connect.passphrase')} hint={t('remote.connect.passphraseHint')}>
                   <input

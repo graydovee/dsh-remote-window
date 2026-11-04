@@ -133,7 +133,10 @@ vi.mock('../src/client/remote-store.ts', () => ({
   useRemoteAppState: () => storeSpies.appState,
 }))
 vi.mock('../src/client/api.ts', () => ({
-  api: { sshAliases: vi.fn(async () => ({ aliases: [], warnings: [] })) },
+  api: {
+    sshAliases: vi.fn(async () => ({ aliases: [], warnings: [] })),
+    sshKeys: vi.fn(async () => ({ keys: [] })),
+  },
 }))
 const apiSpies = vi.hoisted(() => ({ connectProgress: vi.fn() }))
 vi.mock('../src/client/remote-api.ts', () => ({ remoteApi: apiSpies }))
@@ -173,6 +176,22 @@ function collect(node: unknown, output: Element[] = []): Element[] {
   return output
 }
 
+
+/** Seed every hook slot the dialog reads, so a stale value never leaks in. */
+function seedDialogHooks(options: Array<{ path: string; label: string }>): void {
+  reactState.values.length = 0
+  reactState.values[0] = 'config'
+  reactState.values[1] = []
+  reactState.values[2] = []
+  reactState.values[3] = false
+  reactState.values[4] = true
+  reactState.values[5] = options
+  reactState.values[6] = true
+  reactState.values[7] = undefined
+  reactState.values[8] = false
+  reactState.values[9] = []
+  reactState.values[10] = 0
+}
 /** Render one dialog snapshot and return every element it produced. */
 async function renderDialog(overrides: Record<string, unknown> = {}): Promise<Element[]> {
   storeSpies.appState = {
@@ -353,6 +372,31 @@ describe('v3 connect dialog model source', () => {
     expect(button(elements, t('remote.connect.next'))?.props.disabled).toBe(true)
   })
 
+  it('offers the discovered private keys as datalist options and still takes a typed path', async () => {
+    // The catalog is fetched by an effect the hook mocks do not run, so the two
+    // state slots (options, loaded) are seeded directly: index 5 and 6.
+    seedDialogHooks([
+      { path: '~/.ssh/id_ed25519', label: 'id_ed25519' },
+      { path: '~/.ssh/deploy', label: 'deploy' },
+    ])
+    const elements = await renderDialog({ authKind: 'privateKey', privateKeyPath: '' })
+    const input = elements.find(element => element.props?.list === 'dsh-rw-ssh-key-options')
+    expect(input).toBeDefined()
+    expect(input?.props.placeholder).toBe('~/.ssh/id_ed25519')
+    // Only the datalist options carry `label`; the alias <select> options do not.
+    const options = elements.filter(element => element.type === 'option' && element.props.label !== undefined)
+    expect(options.map(option => option.props.value)).toEqual(['~/.ssh/id_ed25519', '~/.ssh/deploy'])
+    expect(options.map(option => option.props.label)).toEqual(['id_ed25519', 'deploy'])
+    expect(text(elements, 'dsh-rw-ssh-keys')).toBe(t('remote.connect.privateKeyFound', { count: '2' }))
+  })
+
+  it('tells the user to type a path when no key was discovered', async () => {
+    seedDialogHooks([])
+    const elements = await renderDialog({ authKind: 'privateKey', privateKeyPath: '' })
+    expect(elements.filter(element => element.type === 'option' && element.props.label !== undefined)).toHaveLength(0)
+    expect(text(elements, 'dsh-rw-ssh-keys')).toBe(t('remote.connect.privateKeyNone'))
+  })
+
   it('shows a waiting hint above the steps until the first progress poll answers', async () => {
     reactState.values[0] = 'connect'
     const submitting = await renderDialog({ phase: 'submitting', attemptId: 'attempt-1' })
@@ -363,4 +407,5 @@ describe('v3 connect dialog model source', () => {
     expect(text(idle, 'dsh-rw-progress-waiting')).toBeUndefined()
     expect(text(idle, 'dsh-rw-connect-elapsed')).toBeUndefined()
   })
+
 })
