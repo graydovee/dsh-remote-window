@@ -464,7 +464,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                   />
                 </Field>
                 <div className="dsh-rw-local-model dsh-rw-local-source" data-testid="dsh-rw-model-source">
-                  <Field label={t('connect.local.title')} hint={t('connect.local.hint')}>
+                  <Field label={t('connect.local.title')}>
                     <SegmentedControl<'local' | 'server'>
                       id="dsh-rw-connect-model-source"
                       value={dialog.modelSource}
