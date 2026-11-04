@@ -927,220 +927,54 @@ describe('v3 full-screen official UI activation', () => {
 })
 
 describe('v3 local model source', () => {
-  /** Fill the minimum SSH identity so submit reaches the model-source gate. */
-  function fillIdentity(store: typeof import('../src/client/remote-store.ts')): void {
+  const TARGET_LOCAL = { id: 't-local' }
+  const CONNECTION_LOCAL = { status: 'ready' }
+
+  /** Fill the SSH identity fields the dialog requires before submitting. */
+  function fillIdentity(store: {
+    patchConnectDialog(patch: Record<string, unknown>): void
+  }): void {
     store.patchConnectDialog({
       label: 'box', host: '203.0.113.10', port: '22', username: 'tester', authKind: 'agent',
     })
   }
 
-  type SelectionRequest = { providerId: string; models: readonly string[] }
-  type Provider = { id: string; name: string; models: Array<{ id: string; name: string }> }
-
-  /** The `local-llm/read` payload; `selection` is optional for older hosts. */
-  function readState(selection?: readonly SelectionRequest[]): Record<string, unknown> {
-    return {
-      mode: 'auto',
-      baseUrl: '',
-      models: [],
-      timeoutMs: 120_000,
-      hasApiKey: false,
-      ...(selection === undefined ? {} : { selection }),
-    }
-  }
-
-  /** The payload `local-llm/save` echoes back for one request. */
-  function savedState(request: {
-    mode?: 'auto' | 'manual'
-    selection?: readonly SelectionRequest[]
-  }): Record<string, unknown> {
-    return readState(request.selection)
-  }
-
-  function providers(...catalog: Provider[]): { providers: Provider[] } {
-    return { providers: catalog }
-  }
-
-  const P1: Provider = {
-    id: 'p1', name: 'Provider one', models: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
-  }
-  const P2: Provider = {
-    id: 'p2', name: 'Provider two', models: [{ id: 'c', name: 'C' }],
-  }
-
-  it('hydrates the auto default, discovers providers and selects every model', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockResolvedValue(providers(P1, P2))
+  it('connects with the local source even when this host has no model provider', async () => {
+    apiSpies.connectV1.mockResolvedValue({ target: TARGET_LOCAL, state: CONNECTION_LOCAL })
     const store = await freshStore()
     store.openConnectDialog()
-    await settle()
-    await settle()
-    const dialog = store.remoteAppSnapshot().connectDialog
-    expect(dialog?.modelSource).toBe('local')
-    expect(dialog?.localProviders.map(provider => provider.id)).toEqual(['p1', 'p2'])
-    expect(dialog?.localProvidersLoaded).toBe(true)
-    expect(dialog?.localProvidersLoading).toBe(false)
-    // No saved selection: the first discovery materializes "all checked".
-    expect(dialog?.localSelection).toEqual({ p1: ['a', 'b'], p2: ['c'] })
-    expect(dialog?.localSettingsLoading).toBe(false)
-    expect(apiSpies.localLlmDiscover).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps the saved selection authoritative and selects unseen providers fully', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState([{ providerId: 'p1', models: ['b'] }]))
-    apiSpies.localLlmDiscover.mockResolvedValue(providers(P1, P2))
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
-    await settle()
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: ['b'], p2: ['c'] })
-  })
-
-  it('toggles single models and selects/clears a whole provider', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockResolvedValue(providers(P1))
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
-    await settle()
-    store.toggleLocalModel('p1', 'a')
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: ['b'] })
-    store.toggleLocalModel('p1', 'a')
-    // Catalog order is preserved across toggles.
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: ['a', 'b'] })
-    store.setLocalProviderSelected('p1', false)
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: [] })
-    store.setLocalProviderSelected('p1', true)
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: ['a', 'b'] })
-  })
-
-  it('defaults newly discovered models to checked while keeping deselected ones off', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockResolvedValueOnce(providers(P1))
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
-    await settle()
-    store.toggleLocalModel('p1', 'b')
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: ['a'] })
-    apiSpies.localLlmDiscover.mockResolvedValueOnce(providers(
-      { id: 'p1', name: 'Provider one', models: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }] },
-      { id: 'p2', name: 'Provider two', models: [{ id: 'd', name: 'D' }] },
-    ))
-    await store.discoverLocalProviders()
-    // 'b' stayed off, the new 'c' and the new provider default to checked.
-    expect(store.remoteAppSnapshot().connectDialog?.localSelection).toEqual({ p1: ['a', 'c'], p2: ['d'] })
-  })
-
-  it('surfaces a discovery failure inline and keeps the auto panel usable', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockRejectedValue(new MockRemoteApiError(
-      'local-llm-providers-unavailable', 'configure a provider in this DSH installation', 502,
-    ))
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
-    await settle()
-    const dialog = store.remoteAppSnapshot().connectDialog
-    expect(dialog?.localProviders).toEqual([])
-    expect(dialog?.localProvidersLoaded).toBe(true)
-    expect(dialog?.localProvidersLoading).toBe(false)
-    expect(dialog?.localError).toContain('读取本机模型失败')
-  })
-
-  it('fails fast when a successful discovery found no provider (no server fallback)', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockResolvedValue({ providers: [] })
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
     await settle()
     fillIdentity(store)
     await store.submitConnectDialog()
+    // No catalog gate any more: the host forwards whatever exists (possibly
+    // nothing) and the server keeps its own models.
+    expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'local' }))
+    expect(store.remoteAppSnapshot().connectDialog).toBeUndefined()
+  })
+
+  it('never calls the local-model settings endpoints from the dialog', async () => {
+    apiSpies.connectV1.mockResolvedValue({ target: TARGET_LOCAL, state: CONNECTION_LOCAL })
+    const store = await freshStore()
+    store.openConnectDialog()
+    await settle()
+    fillIdentity(store)
+    await store.submitConnectDialog()
+    expect(apiSpies.localLlmRead).not.toHaveBeenCalled()
+    expect(apiSpies.localLlmDiscover).not.toHaveBeenCalled()
     expect(apiSpies.localLlmSave).not.toHaveBeenCalled()
-    expect(apiSpies.connectV1).not.toHaveBeenCalled()
-    const dialog = store.remoteAppSnapshot().connectDialog
-    expect(dialog?.phase).toBe('failed')
-    expect(dialog?.error?.code).toBe('local-llm-unconfigured')
-  })
-
-  it('submits auto mode by saving mode=auto plus the checked catalog', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockResolvedValue(providers(P1, P2))
-    apiSpies.localLlmSave.mockImplementation(async (request: {
-      mode?: 'auto' | 'manual'
-      selection?: readonly SelectionRequest[]
-    }) => savedState(request))
-    apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
-    await settle()
-    store.toggleLocalModel('p2', 'c')
-    fillIdentity(store)
-    await store.submitConnectDialog()
     expect(apiSpies.localLlmProbe).not.toHaveBeenCalled()
-    expect(apiSpies.localLlmSave).toHaveBeenCalledWith({
-      mode: 'auto',
-      selection: [
-        { providerId: 'p1', models: ['a', 'b'] },
-        { providerId: 'p2', models: [] },
-      ],
-    })
-    expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'local' }))
   })
 
-  it('sends no selection until a discovery populated the catalog', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockRejectedValue(new MockRemoteApiError(
-      'local-llm-providers-unavailable', 'nope', 502,
-    ))
-    apiSpies.localLlmSave.mockImplementation(async (request: {
-      mode?: 'auto' | 'manual'
-      selection?: readonly SelectionRequest[]
-    }) => savedState(request))
-    apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
+  it('passes server as the explicit source', async () => {
+    apiSpies.connectV1.mockResolvedValue({ target: TARGET_LOCAL, state: CONNECTION_LOCAL })
     const store = await freshStore()
     store.openConnectDialog()
-    await settle()
-    await settle()
-    fillIdentity(store)
-    await store.submitConnectDialog()
-    // The host then resolves "all discovered models" on its side.
-    expect(apiSpies.localLlmSave).toHaveBeenCalledWith({ mode: 'auto' })
-    expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'local' }))
-  })
-
-  it('reports a failed save as a coded dialog error and does not connect', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.localLlmDiscover.mockResolvedValue(providers(P1))
-    apiSpies.localLlmSave.mockRejectedValue(new MockRemoteApiError('local-llm-save-failed', 'write failed', 500))
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
-    await settle()
-    fillIdentity(store)
-    await store.submitConnectDialog()
-    expect(apiSpies.connectV1).not.toHaveBeenCalled()
-    const dialog = store.remoteAppSnapshot().connectDialog
-    expect(dialog?.phase).toBe('failed')
-    expect(dialog?.error?.code).toBe('local-llm-save-failed')
-    expect(dialog?.localError).toContain('本地模型请求失败')
-  })
-
-  it('passes server as the explicit source without saving local settings', async () => {
-    apiSpies.localLlmRead.mockResolvedValue(readState())
-    apiSpies.connectV1.mockResolvedValue({ target: TARGET, state: CONNECTION })
-    const store = await freshStore()
-    store.openConnectDialog()
-    await settle()
     await settle()
     store.patchConnectDialog({
       label: 'box', host: '203.0.113.10', port: '22', username: 'tester', authKind: 'agent',
       modelSource: 'server',
     })
     await store.submitConnectDialog()
-    expect(apiSpies.localLlmSave).not.toHaveBeenCalled()
     expect(apiSpies.connectV1).toHaveBeenCalledWith(expect.objectContaining({ modelSource: 'server' }))
   })
 })

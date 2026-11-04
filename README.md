@@ -131,12 +131,13 @@ that point at `http://127.0.0.1:<random>/<provider>/v1`. That port is an SSH `fo
 tunnel, terminated by a loopback-only bridge on the client. The default **auto proxy** enumerates the
 local DSH's own `ctx.llm` providers/models (`listProviders`/`listModels`) and answers every model call
 from `ctx.llm.stream()` with the harness' native types, so the local DSH's own credentials and protocols
-keep working and nothing is re-entered. The client's **advanced options** persist which providers/models
-are proxied (`localSelection`): unset means “all”, a filtered set trims the generated routes, and an
-empty result is rejected. (The legacy manual endpoint path still exists for old saved settings and tests,
-but the UI no longer offers it; the profile always sees a placeholder key.) An unreadable catalog, an
-empty model list or an sshd that refuses forwarding is a coded, actionable failure — never a silent
-fallback to server models.
+keep working and nothing is re-entered. **Every** provider and model is proxied — there is no per-model
+opt-in and no selection UI; the server's model picker simply lists all of this host's models. A host with
+no model at all still connects: no bridge is started, the profile keeps the server's own models, and
+models added later are picked up by the next connection. (The legacy manual endpoint path still exists for
+old saved settings and tests, but the UI no longer offers it; the profile always sees a placeholder key.)
+An unreadable catalog, a broken bridge or an sshd that refuses forwarding is a coded, actionable failure —
+never a silent fallback to server models.
 
 **Server-authoritative data.** Workspace list/title/order/pin/archive come from the server's official
 `workspaceRegistry`; session list/title/blank/running come from `sessionController` plus a plugin-side

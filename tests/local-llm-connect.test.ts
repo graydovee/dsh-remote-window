@@ -350,12 +350,13 @@ describe('ProfileService local model source', () => {
     await expect(fetch(`http://127.0.0.1:${port}/openai/v1/models`)).rejects.toThrow()
   })
 
-  it('exposes only the saved selection of the automatic source to the profile and bridge', async () => {
+  it('forwards every provider of the automatic source to the profile and bridge', async () => {
     store = fakeStore({
       mode: 'auto',
       baseUrl: '',
       models: [],
       timeoutMs: 5_000,
+      // A legacy stored selection must not narrow the forwarded catalog.
       localSelection: [{ providerId: 'ollama', models: ['llama3'] }],
     })
     const runtime = autoRuntime()
@@ -366,17 +367,14 @@ describe('ProfileService local model source', () => {
     const port = fixture.forwardTargets[0] as number
 
     const patch = fixture.remote.writes.filter(write => write.path.endsWith('/cordis.patch.yml')).at(-1)?.content ?? ''
-    // Only the selected provider becomes a route (and the profile default);
-    // the unselected provider must not leak into the profile patch.
     expect(patch).toContain('      "remote-ollama":')
-    expect(patch).not.toContain('remote-openai')
-    expect(patch).toContain('    provider: "remote-ollama"')
-    expect(patch).toContain('    model: "llama3"')
+    expect(patch).toContain('      "remote-openai":')
 
-    // The bridge serves the filtered catalog only: unselected routes are 404.
-    const models = await (await fetch(`http://127.0.0.1:${port}/ollama/v1/models`)).json() as { data: { id: string }[] }
-    expect(models.data.map(entry => entry.id)).toEqual(['llama3'])
-    expect((await fetch(`http://127.0.0.1:${port}/openai/v1/models`)).status).toBe(404)
+    // Both providers are reachable through the bridge, each with its own models.
+    const ollama = await (await fetch(`http://127.0.0.1:${port}/ollama/v1/models`)).json() as { data: { id: string }[] }
+    expect(ollama.data.map(entry => entry.id)).toEqual(['llama3'])
+    const openai = await (await fetch(`http://127.0.0.1:${port}/openai/v1/models`)).json() as { data: { id: string }[] }
+    expect(openai.data.map(entry => entry.id)).toEqual(['gpt-5', 'gpt-5-mini'])
 
     await service.stop(result.target.id)
   })
@@ -431,17 +429,19 @@ describe('ProfileService local model source', () => {
     await service.stop(result.target.id)
   })
 
-  it('fails before SSH/profile work when the automatic local source has no model runtime', async () => {
+  it('connects with the server models when this host has no model runtime', async () => {
     store = fakeStore()
     const fixture = fakeConnector()
     const service = serviceWith(fixture.connector)
-    await expect(service.connect({ ...request, modelSource: 'local' })).rejects.toMatchObject({
-      code: 'local-llm-unavailable',
-      status: 502,
-    })
-    expect(connectCalls).toBe(0)
-    expect(fixture.remote.scripts.some(script => script.includes('setsid nohup'))).toBe(false)
-    expect(Object.values(service.connections())).toHaveLength(0)
+    const result = await service.connect({ ...request, modelSource: 'local' })
+    expect(result.target.modelSource).toBe('local')
+    expect(connectCalls).toBe(1)
+    // No bridge and no reverse tunnel: the profile keeps the server's own models.
+    expect(fixture.forwardTargets).toHaveLength(0)
+    const patch = fixture.remote.writes.filter(write => write.path.endsWith('/cordis.patch.yml')).at(-1)
+    expect(patch?.content).toBe(EMPTY_PROFILE_PATCH)
+    expect(fixture.remote.scripts.some(script => script.includes('DSH_RW_LOCAL_LLM_KEY'))).toBe(false)
+    await service.stop(result.target.id)
   })
 
   it('tears the bridge + tunnel down when the profile fails to start', async () => {

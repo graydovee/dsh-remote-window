@@ -511,24 +511,6 @@ export interface LocalProviderModel {
   readonly name: string
 }
 
-/** One model provider of the client DSH installation (`local-llm/discover`). */
-export interface LocalProviderSummary {
-  readonly id: string
-  readonly name: string
-  readonly models: readonly LocalProviderModel[]
-}
-
-/**
- * One provider's selected model ids for the local `auto` source.
- *
- * The host exposes only these models through the SSH reverse tunnel; the ids
- * are the provider's own `models[].id` values from `local-llm/discover`.
- */
-export interface LocalModelSelection {
-  readonly providerId: string
-  readonly models: readonly string[]
-}
-
 /** Browser-facing local-model settings; the key itself never leaves the host. */
 export interface LocalLlmReadState {
   /** `auto` proxies the DSH's own providers; `manual` uses `baseUrl`. */
@@ -538,8 +520,6 @@ export interface LocalLlmReadState {
   readonly timeoutMs: number
   readonly hasApiKey: boolean
   readonly modelSource?: 'local' | 'server'
-  /** Persisted per-provider selection (`auto` mode only). */
-  readonly selection?: readonly LocalModelSelection[]
 }
 
 export const remoteApi = {
@@ -584,47 +564,6 @@ export const remoteApi = {
     readonly modelSource?: 'local' | 'server'
   }): Promise<{ target: PublicTargetV1; state: ConnectionStateV1 }> {
     return call<{ target: PublicTargetV1; state: ConnectionStateV1 }>('v1/connect', request)
-  },
-
-  /** Read the saved local-model settings (never the API key; only `hasApiKey`). */
-  localLlmRead(targetId?: string): Promise<LocalLlmReadState> {
-    return call<LocalLlmReadState>('local-llm/read', targetId === undefined ? {} : { targetId })
-  },
-
-  /** Save the local-model mode and (auto) selected models; optionally an API key. */
-  localLlmSave(request: {
-    readonly mode: LocalLlmMode
-    readonly baseUrl?: string
-    readonly models?: readonly string[]
-    readonly timeoutMs?: number
-    readonly apiKey?: string
-    /** Auto mode: which discovered provider models the host may expose. */
-    readonly selection?: readonly LocalModelSelection[]
-    readonly targetId?: string
-  }): Promise<LocalLlmReadState> {
-    return call<LocalLlmReadState>('local-llm/save', request)
-  },
-
-  /**
-   * Discover the model providers the client DSH exposes (`local-llm/discover`).
-   * The host answers `local-llm-providers-unavailable` when none is usable.
-   */
-  localLlmDiscover(): Promise<{ providers: readonly LocalProviderSummary[] }> {
-    return call<{ providers: readonly LocalProviderSummary[] }>('local-llm/discover', {})
-  },
-
-  /** Probe the local OpenAI-compatible endpoint and return its model ids. */
-  localLlmProbe(request: {
-    readonly baseUrl?: string
-    readonly apiKey?: string
-    readonly timeoutMs?: number
-  }): Promise<{ models: string[] }> {
-    return call<{ models: string[] }>('local-llm/probe', request)
-  },
-
-  /** Remove the stored local-model API key. */
-  localLlmClearKey(): Promise<LocalLlmReadState> {
-    return call<LocalLlmReadState>('local-llm/clear-key', {})
   },
 
   /** Read the progress buffer for one connect attempt. */

@@ -16,10 +16,11 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 
 - **local（默认）**：agent、会话日志与工具仍在 server，但每次模型请求经 SSH 反向隧道转发到 client
   本机。默认接入方式是 **自动代理本机模型**：client 用本机 DSH 的 `ctx.llm` 枚举全部 provider/model，
-  无需填 endpoint 或 key，每个 provider 在 server profile 的模型选择器里各成一条 route。**高级选项**
-  会列出发现到的全部 provider/model（默认全选，可逐项勾选、按 provider 全选/清空、刷新），选择会
-  保存并决定 profile 生成哪些 route，server 会话即可在你允许的本地模型之间自由切换。新 server 通常
-  没配模型 key，所以默认走这里；本机模型目录读不到时阻止连接，绝不静默回退到 server 模型。
+  无需填 endpoint 或 key，每个 provider 在 server profile 的模型选择器里各成一条 route。**全部
+  provider/model 一律转发**，没有勾选 UI；server 会话直接在本机全部模型之间切换。本机暂时没有可用
+  模型时也能连接：此时不启动反向隧道，profile 用 server 自己已配的模型，之后本机新增的模型在下次
+  连接时自动同步。新 server 通常没配模型 key，所以默认走这里；本机模型目录读取异常时用带 code 的
+  错误提示，绝不静默回退到 server 模型。
 - **server（可选）**：server profile 使用自己的模型配置；仅当 server 已配置模型凭据时显式选择。
 
 两种来源写同一份 server 会话日志；切换模型来源需要重连，而不是换会话。
@@ -113,10 +114,11 @@ shell sidebar 隐藏，target rail 保留可用。
 `http://127.0.0.1:<随机>/<provider>/v1`。该端口是 SSH `forwardIn` 反向隧道，终止在 client 的
 loopback-only bridge。默认的 **自动代理** 用本机 DSH 自己的 `ctx.llm` 枚举 provider/model
 （`listProviders`/`listModels`），每个模型请求都以官方类型转成 `ctx.llm.stream()`，因此本机 DSH 的
-凭据与协议原样生效、无需重填。**高级选项** 保存的 `localSelection` 决定代理哪些 provider/model：
-未保存 = 全量，过滤后的集合裁剪生成的 route，过滤为空则报错拒绝。（旧的 **手动 endpoint** 路径仅为
-兼容旧设置/测试保留，对话框不再提供；profile 始终只看到占位 key。）本机目录读不到、模型列表为空或
-sshd 拒绝转发都返回带 code 的可操作错误，绝不静默回退 server 模型。
+凭据与协议原样生效、无需重填。本机发现到的**全部** provider/model 都会代理，没有过滤或勾选；本机
+一个模型都没有时仍然可以连接（不启动桥/隧道，profile 继续用 server 自己的模型），下次连接会重新
+发现并同步新模型。（旧的 **手动 endpoint** 路径仅为兼容旧设置/测试保留，对话框不再提供；profile
+始终只看到占位 key。）本机目录读取异常、桥启动失败或 sshd 拒绝转发都返回带 code 的可操作错误，绝不
+静默回退 server 模型。
 
 **server 权威数据。** workspace 清单/标题/顺序/pin/archive 来自 server 官方
 `workspaceRegistry`；session 清单/标题/blank/running 来自 `sessionController` + 插件 JSONL title fold。
@@ -159,8 +161,8 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 1. 打开浮动 **target rail**（hover 或按 `Alt+R`），点 **新建连接**。
 2. 选择 `SSH`，填目标信息，首次连接确认 host key 指纹。
 3. 选择模型来源：**local**（默认）或 **server**（使用 server profile 自己的模型配置）。选 **local**
-   时，**高级选项** 会列出本机 DSH 的全部 provider/model（默认全选）；取消勾选即可不暴露某些模型，
-   点刷新重新发现，保存的选择决定 server profile 能切换到哪些模型。
+   时，本机 DSH 的全部 provider/model 都会转发给 server profile（没有勾选步骤）；本机还没有模型也能
+   连接，之后新增的模型会在下次连接时同步。
 4. 查看探测结果。client 检查 server 的 Node/DSH 运行时与 server 插件，决定后续步骤是部署、更新还是
    跳过；随后启动 profile server，选 local 模型时打开 SSH 反向隧道，并完成握手鉴权。失败的尝试不会
    保存。

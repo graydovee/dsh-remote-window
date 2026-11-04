@@ -676,7 +676,14 @@ export class ProfileService {
       // profile that booted with the previous connect's port would call a dead
       // bridge. `server` source writes `[]` so a switch back is a clean start.
       let startEnv: Readonly<Record<string, string>> | undefined
-      if (modelSource === 'local') {
+      if (modelSource === 'local' && (localModelPlan?.models.length ?? 0) === 0) {
+        // The automatic source forwards every provider this host has, and a host
+        // with none is a normal state (a fresh DSH install). Connecting must not
+        // be blocked: write the empty patch so the server keeps its own models,
+        // and the next connect picks up whatever was added in the meantime.
+        await writeProfilePatch(connection.remote, paths, EMPTY_PROFILE_PATCH)
+        emit('start', 'running', '本机暂无可用模型，本次连接使用 server 端模型；本机新增模型后重连即自动同步')
+      } else if (modelSource === 'local') {
         if (localModelPlan === undefined) {
           throw new LocalLlmError('local-llm-unconfigured', 'the local model source is selected but no endpoint plan was loaded')
         }

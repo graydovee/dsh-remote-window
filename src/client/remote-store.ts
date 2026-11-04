@@ -11,7 +11,7 @@ import { useSyncExternalStore } from 'react'
 import { api, RemoteApiError, toWireError } from './api.ts'
 import type { DirEntry, ListDirResult, WireError } from './api.ts'
 import type {
-  ConnectionStateV1, DeploymentApplyResult, DeploymentStateV1, LocalModelSelection, LocalProviderSummary,
+  ConnectionStateV1, DeploymentApplyResult, DeploymentStateV1,
   LocalSessionResult, ProfileRestartPreview, PublicTargetV1, StateRefreshResult, StateResultV1,
 } from './remote-api.ts'
 import { openRemoteStateStream, openSessionEvents, remoteApi } from './remote-api.ts'
@@ -216,23 +216,6 @@ export interface ConnectDialogState {
   readonly attemptId?: string
   /** Where the server agent's model requests are served (v3). */
   readonly modelSource: 'local' | 'server'
-  /**
-   * Model providers of the client DSH (`local-llm/discover`), auto mode.
-   * The local source always auto-discovers; there is no manual endpoint UI.
-   */
-  readonly localProviders: readonly LocalProviderSummary[]
-  readonly localProvidersLoading: boolean
-  /** A successful discover populated {@link localProviders} (even when empty). */
-  readonly localProvidersLoaded: boolean
-  /**
-   * Selected model ids per provider. A missing provider key means "all models
-   * of that provider" until the first discovery decides; an explicit empty
-   * list means the user cleared that provider.
-   */
-  readonly localSelection: Readonly<Record<string, readonly string[]>>
-  readonly localSettingsLoading: boolean
-  /** Scrubbed, user-readable local-model failure (discover/save). */
-  readonly localError?: string
   readonly error?: WireError
 }
 
@@ -1847,212 +1830,8 @@ export function openConnectDialog(): void {
       dshHome: '',
       runtimePolicy: 'auto',
       modelSource: 'local',
-      localProviders: [],
-      localProvidersLoading: false,
-      localProvidersLoaded: false,
-      localSelection: {},
-      localSettingsLoading: false,
     },
   })
-  // Saved settings are client-host facts; load them so the default "local"
-  // is actionable instead of silently unconfigured.
-  void hydrateLocalLlmSettings()
-}
-
-/** Fold a `local-llm/read` selection list into the dialog's per-provider map. */
-function selectionRecord(selection: readonly LocalModelSelection[]): Record<string, readonly string[]> {
-  const record: Record<string, readonly string[]> = {}
-  for (const entry of selection) record[entry.providerId] = [...entry.models]
-  return record
-}
-
-/**
- * Fold a fresh catalog into the current selection.
- *
- * - a provider the user has never seen is fully selected;
- * - a provider whose saved selection exists keeps exactly those models
- *   (first discovery after hydration — the saved selection is authoritative);
- * - on a later discovery, models that appeared since the previous catalog are
- *   selected by default unless the user had explicitly deselected them, while
- *   previously deselected models stay deselected.
- */
-function mergeLocalSelection(
-  providers: readonly LocalProviderSummary[],
-  previousSelection: Readonly<Record<string, readonly string[]>>,
-  previousProviders: readonly LocalProviderSummary[],
-): Record<string, readonly string[]> {
-  const previousCatalog = new Map(
-    previousProviders.map(provider => [provider.id, new Set(provider.models.map(model => model.id))]),
-  )
-  const selection: Record<string, readonly string[]> = {}
-  for (const provider of providers) {
-    const chosen = previousSelection[provider.id]
-    if (chosen === undefined) {
-      selection[provider.id] = provider.models.map(model => model.id)
-      continue
-    }
-    const selected = new Set(chosen)
-    const known = previousCatalog.get(provider.id)
-    selection[provider.id] = provider.models
-      .map(model => model.id)
-      .filter(id => selected.has(id) || (known !== undefined && !known.has(id)))
-  }
-  return selection
-}
-
-/** The save payload's selection: catalog order, only models still offered. */
-function localSelectionPayload(dialog: ConnectDialogState): LocalModelSelection[] | undefined {
-  if (dialog.localProviders.length > 0) {
-    return dialog.localProviders.map(provider => {
-      const selected = new Set(dialog.localSelection[provider.id] ?? [])
-      return {
-        providerId: provider.id,
-        models: provider.models.map(model => model.id).filter(id => selected.has(id)),
-      }
-    })
-  }
-  const entries = Object.entries(dialog.localSelection)
-  if (entries.length === 0) return undefined
-  return entries.map(([providerId, models]) => ({ providerId, models: [...models] }))
-}
-
-/**
- * Patch local-model fields without clearing a connect error.
- *
- * Hydration/discovery run in the background while a submit may be failing; the
- * user-visible `error` belongs to the submit and must survive those patches.
- */
-function patchLocalDialog(patch: Partial<ConnectDialogState>): void {
-  const current = state.connectDialog
-  if (current === undefined) return
-  commit({ connectDialog: { ...current, ...patch } })
-}
-
-/**
- * Read the saved local-model settings into the open connect dialog.
- *
- * The local source is always "auto" now: the discovery catalog is the only
- * model list, and a saved `selection` decides which discovered models start
- * checked. `undefined` selection means "everything selected", which the first
- * discovery then materializes. An older host may not serve `local-llm/read`;
- * the dialog then starts with an all-selected catalog and the host resolves
- * the source at connect time (no fallback to server models).
- */
-export async function hydrateLocalLlmSettings(): Promise<void> {
-  const dialog = state.connectDialog
-  if (dialog === undefined) return
-  patchLocalDialog({ localSettingsLoading: true })
-  try {
-    const read = await remoteApi.localLlmRead()
-    if (state.connectDialog === undefined) return
-    patchLocalDialog({
-      localSettingsLoading: false,
-      ...(read.selection === undefined ? {} : { localSelection: selectionRecord(read.selection) }),
-    })
-  } catch {
-    if (state.connectDialog === undefined) return
-    patchLocalDialog({ localSettingsLoading: false })
-  }
-  void discoverLocalProviders()
-}
-
-/**
- * Discover the model providers the client DSH exposes (`local-llm/discover`).
- *
- * The grouped checklist is driven by this catalog; an empty result is a
- * successful discovery, not an error — the UI then tells the user to configure
- * a provider in this DSH installation. A re-discovery keeps the user's
- * deselections and selects newly appeared providers/models by default.
- */
-export async function discoverLocalProviders(): Promise<void> {
-  const dialog = state.connectDialog
-  if (dialog === undefined || dialog.localProvidersLoading) return
-  patchLocalDialog({ localProvidersLoading: true, localError: undefined })
-  try {
-    const result = await remoteApi.localLlmDiscover()
-    const current = state.connectDialog
-    if (current === undefined) return
-    patchLocalDialog({
-      localProvidersLoading: false,
-      localProvidersLoaded: true,
-      localProviders: result.providers,
-      localSelection: mergeLocalSelection(result.providers, current.localSelection, current.localProviders),
-    })
-  } catch (error) {
-    if (state.connectDialog === undefined) return
-    patchLocalDialog({
-      localProvidersLoading: false,
-      localProvidersLoaded: true,
-      localError: t('connect.local.discoverFailed', { message: describeFailure(error) }),
-    })
-  }
-}
-
-/** Toggle one discovered model in the local-source selection. */
-export function toggleLocalModel(providerId: string, modelId: string): void {
-  const dialog = state.connectDialog
-  if (dialog === undefined) return
-  const current = dialog.localSelection[providerId] ?? []
-  const next = current.includes(modelId)
-    ? current.filter(id => id !== modelId)
-    : [...current, modelId]
-  const provider = dialog.localProviders.find(candidate => candidate.id === providerId)
-  // Keep catalog order so the payload is stable across toggles.
-  const ordered = provider === undefined
-    ? next
-    : provider.models.map(model => model.id).filter(id => next.includes(id))
-  commit({
-    connectDialog: { ...dialog, localSelection: { ...dialog.localSelection, [providerId]: ordered } },
-  })
-}
-
-/** Select every discovered model of one provider, or clear it. */
-export function setLocalProviderSelected(providerId: string, selected: boolean): void {
-  const dialog = state.connectDialog
-  if (dialog === undefined) return
-  const provider = dialog.localProviders.find(candidate => candidate.id === providerId)
-  const models = selected
-    ? (provider?.models.map(model => model.id) ?? [...(dialog.localSelection[providerId] ?? [])])
-    : []
-  commit({
-    connectDialog: { ...dialog, localSelection: { ...dialog.localSelection, [providerId]: models } },
-  })
-}
-
-/** Fold a local-model route failure into the dialog without leaking a URL secret. */
-function patchLocalError(message: string | undefined): void {
-  const dialog = state.connectDialog
-  if (dialog === undefined) return
-  commit({ connectDialog: { ...dialog, localSettingsLoading: false, ...(message === undefined ? { localError: undefined } : { localError: message }) } })
-}
-
-/**
- * Persist the local source before connecting: always `auto` (the only UI mode)
- * plus the selected models. An unhydrated/empty catalog sends no `selection`,
- * which the host reads as "all discovered models".
- * @returns true when the host accepted the settings.
- */
-export async function saveLocalLlmSettings(): Promise<boolean> {
-  const dialog = state.connectDialog
-  if (dialog === undefined) return false
-  patchLocalError(undefined)
-  patchLocalDialog({ localSettingsLoading: true })
-  const selection = localSelectionPayload(dialog)
-  try {
-    const read = await remoteApi.localLlmSave({
-      mode: 'auto',
-      ...(selection === undefined ? {} : { selection }),
-    })
-    if (state.connectDialog === undefined) return true
-    patchLocalDialog({
-      localSettingsLoading: false,
-      ...(read.selection === undefined ? {} : { localSelection: selectionRecord(read.selection) }),
-    })
-    return true
-  } catch (error) {
-    patchLocalError(t('connect.local.failed', { message: describeFailure(error) }))
-    return false
-  }
 }
 
 /** Close the v1 connect dialog and drop its secret. */
@@ -2105,40 +1884,6 @@ export async function submitConnectDialog(): Promise<void> {
   if (invalid !== undefined) {
     commit({ connectDialog: { ...dialog, error: invalid } })
     return
-  }
-  // Local model source is the default and must be explicit. The UI always
-  // persists `auto` (this DSH's own providers) plus the checked models; the
-  // host blocks with coded `local-llm-*` errors instead of silently falling
-  // back to server models. A discovery that succeeded but found nothing fails
-  // fast here instead of starting a connection that cannot work.
-  if (dialog.modelSource === 'local') {
-    if (
-      dialog.localProvidersLoaded && !dialog.localProvidersLoading
-      && dialog.localProviders.length === 0 && dialog.localError === undefined
-    ) {
-      commit({
-        connectDialog: {
-          ...dialog,
-          phase: 'failed',
-          error: { code: 'local-llm-unconfigured', message: t('connect.local.auto.empty') },
-        },
-      })
-      return
-    }
-    if (!(await saveLocalLlmSettings())) {
-      const message = state.connectDialog?.localError ?? t('connect.local.autoFailed')
-      const current = state.connectDialog
-      if (current !== undefined) {
-        commit({
-          connectDialog: {
-            ...current,
-            phase: 'failed',
-            error: { code: 'local-llm-save-failed', message },
-          },
-        })
-      }
-      return
-    }
   }
   const attemptId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()

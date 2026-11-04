@@ -217,62 +217,21 @@ describe('dispatchLocalLlmApi', () => {
     })
   })
 
-  it('forwards the automatic selection on save and returns it on read', async () => {
+  it('saves the automatic source without any selection and reports the live catalog', async () => {
     const { store, raw } = fakeStore()
+    // A selection sent by an older client is ignored: the automatic source
+    // forwards every provider this host has.
     const saved = await dispatchLocalLlmApi(store, 'local-llm/save', {
       mode: 'auto',
-      selection: [
-        { providerId: ' openai ', models: ['gpt-5', 'gpt-5', 'gpt-5-mini'] },
-        { providerId: 'openai', models: ['gpt-5'] },
-        { providerId: 'ollama', models: ['llama3'] },
-      ],
+      selection: [{ providerId: 'openai', models: ['gpt-5'] }],
     }, () => catalogRuntime())
-    const selection = [
-      { providerId: 'openai', models: ['gpt-5', 'gpt-5-mini'] },
-      { providerId: 'ollama', models: ['llama3'] },
-    ]
-    expect(saved).toMatchObject({ mode: 'auto', selection })
-    expect(raw.global.localLlm?.localSelection).toEqual(selection)
-    // The reply still carries the *full* catalog so the dialog can list the
-    // models that were not selected; only the plan is filtered.
+    expect(saved).toMatchObject({ mode: 'auto' })
+    expect(saved).not.toHaveProperty('selection')
+    expect(raw.global.localLlm?.localSelection).toBeUndefined()
     expect((saved as { catalog?: { providers: unknown[] } }).catalog?.providers).toHaveLength(2)
     expect(await dispatchLocalLlmApi(store, 'local-llm/read', {}, () => catalogRuntime())).toMatchObject({
       mode: 'auto',
-      selection,
     })
-  })
-
-  it('drops the selection on a manual save and omits it from the manual read', async () => {
-    const { store, raw } = fakeStore()
-    await dispatchLocalLlmApi(store, 'local-llm/save', {
-      mode: 'auto',
-      selection: [{ providerId: 'openai', models: ['gpt-5'] }],
-    }, () => catalogRuntime())
-    const manual = await dispatchLocalLlmApi(store, 'local-llm/save', {
-      mode: 'manual',
-      baseUrl: 'http://127.0.0.1:11434',
-      selection: [{ providerId: 'openai', models: ['gpt-5'] }],
-    })
-    expect(manual).not.toHaveProperty('selection')
-    expect(raw.global.localLlm?.localSelection).toBeUndefined()
-    expect(await dispatchLocalLlmApi(store, 'local-llm/read', {})).not.toHaveProperty('selection')
-  })
-
-  it('rejects malformed selection bodies with a coded 400', async () => {
-    const { store } = fakeStore()
-    for (const selection of [
-      'openai',
-      [null],
-      [{ providerId: '', models: [] }],
-      [{ providerId: 'openai' }],
-      [{ providerId: 'openai', models: [1] }],
-      [{ providerId: 'openai', models: [], extra: true }],
-    ]) {
-      await expect(
-        dispatchLocalLlmApi(store, 'local-llm/save', { mode: 'auto', selection }),
-      ).rejects.toMatchObject({ code: 'local-llm-bad-settings', status: 400 })
-    }
-    expect(store.localLlmSettings()).toBeUndefined()
   })
 
   it('keeps probe failures coded and scrubbed', async () => {

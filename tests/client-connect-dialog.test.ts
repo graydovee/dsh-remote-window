@@ -282,71 +282,9 @@ describe('v3 connect dialog model source', () => {
     const source = segmented(nested, 'dsh-rw-connect-model-source')
     expect(source.props.value).toBe('local')
     expect((source.props.options as Array<{ value: string }>).map(option => option.value)).toEqual(['local', 'server'])
-    // Local is always auto-discovery: hint + refresh + summary.
-    expect(hasText(nested, t('connect.local.auto.hint'))).toBe(true)
-    expect(button(nested, t('connect.local.auto.refresh'))).toBeDefined()
-    expect(text(nested, 'dsh-rw-local-summary')).toBe(
-      t('connect.local.auto.summary', { providers: 0, selected: 0, models: 0 }),
-    )
-  })
-
-  it('renders the discovered catalog grouped per provider with every model checked', async () => {
-    const nested = advancedContent(await renderDialog({
-      localProviders: [PROVIDER_ONE, PROVIDER_TWO],
-      localSelection: { p1: ['a', 'b'], p2: ['c'] },
-    }))
-    expect(text(nested, 'dsh-rw-local-summary')).toBe(
-      t('connect.local.auto.summary', { providers: 2, selected: 3, models: 3 }),
-    )
-    expect(hasText(nested, 'Provider one')).toBe(true)
-    expect(hasText(nested, 'Provider two')).toBe(true)
-    expect(hasText(nested, 'Model A')).toBe(true)
-    expect(hasText(nested, 'Model C')).toBe(true)
-    expect(checkbox(nested, 'p1', 'a').props.checked).toBe(true)
-    expect(checkbox(nested, 'p1', 'b').props.checked).toBe(true)
-    expect(checkbox(nested, 'p2', 'c').props.checked).toBe(true)
-    expect(checkbox(nested, 'p1', 'a').props.disabled).toBe(false)
-    expect(hasText(nested, t('connect.local.auto.empty'))).toBe(false)
-    // Per-provider count + 全选/清空 buttons, one pair per provider.
-    expect(hasText(nested, t('connect.local.auto.providerCount', { selected: 2, total: 2 }))).toBe(true)
-    expect(hasText(nested, t('connect.local.auto.providerCount', { selected: 1, total: 1 }))).toBe(true)
-    const selectAll = buttons(nested, t('connect.local.auto.selectAll'))
-    const clear = buttons(nested, t('connect.local.auto.clear'))
-    expect(selectAll).toHaveLength(2)
-    expect(clear).toHaveLength(2)
-    ;(selectAll[0]!.props.onClick as () => void)()
-    expect(storeSpies.setLocalProviderSelected).toHaveBeenCalledWith('p1', true)
-    ;(clear[1]!.props.onClick as () => void)()
-    expect(storeSpies.setLocalProviderSelected).toHaveBeenCalledWith('p2', false)
-  })
-
-  it('delegates checkbox changes and refreshes the catalog', async () => {
-    const nested = advancedContent(await renderDialog({
-      localProviders: [PROVIDER_ONE, PROVIDER_TWO],
-      localSelection: { p1: ['a', 'b'], p2: ['c'] },
-    }))
-    ;(checkbox(nested, 'p1', 'a').props.onChange as () => void)()
-    expect(storeSpies.toggleLocalModel).toHaveBeenCalledWith('p1', 'a')
-    ;(checkbox(nested, 'p2', 'c').props.onChange as () => void)()
-    expect(storeSpies.toggleLocalModel).toHaveBeenCalledWith('p2', 'c')
-    ;(button(nested, t('connect.local.auto.refresh'))?.props.onClick as () => void)()
-    expect(storeSpies.discoverLocalProviders).toHaveBeenCalledTimes(1)
-  })
-
-  it('asks the user to configure a provider when discovery returns nothing', async () => {
-    const nested = advancedContent(await renderDialog({ localProviders: [], localProvidersLoaded: true }))
-    expect(text(nested, 'dsh-rw-local-empty')).toBe(t('connect.local.auto.empty'))
-  })
-
-  it('shows the loading and error states inline while refreshing', async () => {
-    const loading = advancedContent(await renderDialog({
-      localProviders: [PROVIDER_ONE],
-      localProvidersLoading: true,
-      localProvidersLoaded: false,
-    }))
-    expect(button(loading, t('connect.local.auto.refreshing'))).toBeDefined()
-    const failed = advancedContent(await renderDialog({ localError: 'boom' }))
-    expect(hasText(failed, 'boom')).toBe(true)
+    // Local always forwards everything: one static hint, no catalog UI.
+    expect(hasText(nested, t('connect.local.auto.forwardAll'))).toBe(true)
+    expect(nested.some(element => element.props?.['data-testid'] === 'dsh-rw-local-summary')).toBe(false)
   })
 
   it('keeps the server hint when the source is server', async () => {

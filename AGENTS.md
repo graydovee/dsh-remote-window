@@ -23,11 +23,13 @@ v3 的 server 主区是 **server profile 官方 DSH UI 的全屏同源 iframe**�
   SSH 反向隧道转发到 client 本机）与 `server`（server profile 自己的模型）。local 的默认接入方式是
   **自动代理本机模型**：client host 用 `ctx.llm` 枚举本机全部 provider/model，经一条反向隧道暴露成
   server profile 的多个 `llm-pi-ai` route（每个 provider 一条 `remote-*` route，路径前缀区分）。
-  连接对话框的 **高级选项** 列出发现到的全部 provider 与模型（默认全选，可逐项勾选/按 provider 全选
-  或清空/刷新），所选集合持久化在 client 设置里，并决定 profile patch 生成哪些 route；不要把手动
-  endpoint 当作高级选项的主交互（host 侧 manual 模式仅为旧 API/测试保留，UI 不再暴露）。切换需重连
-  （D20：cancel → whenIdle/flush → 重启 profile）；本机发现不到模型或 provider 不可用时用专用
-  `local-llm-*` 错误码拒绝，不静默回退到 server 模型。
+  **全部 provider/model 一律转发**：不做勾选、不做 provider/model 级过滤，连接对话框只显示一行说明
+  （`connect.local.auto.forwardAll`），没有目录/勾选 UI。本机暂时没有可用模型**也允许连接**——此时不
+  启动 bridge/反向隧道、profile patch 写空补丁，server 用自己已配的模型；本机后来新增的模型在**下一次
+  连接**时重新发现并写入 patch（`@deepseek-ai/dsh-llm` 没有 provider-changed 事件，不做 profile 热
+  重启）。不要把手动 endpoint 当作主交互（host 侧 manual 模式仅为旧 API/测试保留，UI 不再暴露）。
+  切换需重连（D20：cancel → whenIdle/flush → 重启 profile）；只有真正的失败（目录读取异常、桥或隧道
+  失败）才用 `local-llm-*` 错误码拒绝。
 - v2 的 executor（local agent 执行世界）保留在数据/旧会话中，但 iframe 主区始终由 server 官方 UI 打开
   server agent；新连接不再走 client native 主区。
 - 目标机运行 `dsh --profile <p> --host 127.0.0.1 --port 0 --no-open`，stdout 打印
@@ -159,8 +161,8 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**；方言由远端探�
 - 新连接默认 **modelSource=local**（server 通常没配模型 key）；连接设置存 client，target 记录用可选
   `modelSource` 持久化。server 模式必须在对话框显式选择。
 - local 模型生命周期：解析计划（默认 `auto`：`ctx.llm.listProviders()/listModels()` 枚举本机
-  provider/model，再按高级选项保存的 `localSelection` 过滤——未保存选择表示全量代理，过滤后为空则
-  `local-llm-no-models`；`manual` 仅为旧 API/测试保留）→ 启动 client bridge（auto 是
+  provider/model，**全量**进计划，不再读写 `localSelection`；为空则 `models: []` 且跳过 bridge，
+  `manual` 仅为旧 API/测试保留）→ 启动 client bridge（auto 是
   `ctx.llm.stream()` 的 OpenAI 兼容原生代理，manual 是 `/v1/*` 注入 key 的转发桥）→
   `ssh2.forwardIn('127.0.0.1', 0)` 取得 server 回环端口 → 重写 profile `cordis.patch.yml`（auto 每个
   provider 一条 `remote-<slug>` route、manual 一条 `client-local` route；`apiKeyEnv=DSH_RW_LOCAL_LLM_KEY`
@@ -264,7 +266,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**；方言由远端探�
 
 | 位置 | 内容 |
 |---|---|
-| client `~/.dsh/storages/dsh_remote_window.json` | target 记录（含 `modelSource`）、`localLlm` 模式（auto/manual 兼容）/本地模型选择 `localSelection`/超时、全局包策略、旧 workspace refs（待清理） |
+| client `~/.dsh/storages/dsh_remote_window.json` | target 记录（含 `modelSource`）、`localLlm` 模式（auto/manual 兼容）/超时、全局包策略、旧 workspace refs（待清理）；旧文件里的 `localSelection` 仅为向后兼容读取，忽略不生效 |
 | client `~/.dsh/.credentials.yaml` | SSH/凭据引用与 manual 模式的本地模型 API key（旧 API 兼容，官方 store，0600）；auto 模式不存 key |
 | client `~/.dsh/remote-windows/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
 | client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
