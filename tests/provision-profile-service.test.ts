@@ -327,8 +327,13 @@ describe('ProfileService M1 slice', () => {
       modelSource: 'server',
     }, event => progress.push(event))
     const probe = progress.find(event => event.step === 'probe' && event.status === 'ok')
-    expect(probe?.message).toContain('运行时 跳过')
-    expect(probe?.message).toContain('server 插件 部署')
+    // The probe row reports what the remote has; the action rows below it report
+    // what the client then did with it.
+    expect(probe?.message).toContain('远端环境')
+    expect(probe?.message).toContain('DSH_HOME')
+    expect(probe?.message).toMatch(/(隔离运行时|server 全局 DSH)/u)
+    expect(probe?.message).toContain('server 插件')
+    expect(probe?.message).not.toContain('部署')
     expect(progress.find(event => event.step === 'runtime')?.status).toBe('skipped')
     expect(progress.find(event => event.step === 'upload')?.status).toBe('ok')
   })

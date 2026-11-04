@@ -204,6 +204,8 @@ export interface ConnectionStateV1 {
 type SetupAction = 'reuse' | 'install' | 'upgrade'
 
 interface RemoteSetupInspection {
+  /** What the remote actually has, phrased as observations (no plans). */
+  readonly facts: string
   readonly runtime: {
     readonly kind: 'isolated' | 'global'
     readonly action: SetupAction
@@ -625,7 +627,7 @@ export class ProfileService {
       const paths = profilePaths(dshHome, clientId, kind)
       const tarball = await this.resolvePluginTarball()
       const setup = await this.inspectRemoteSetup(connection, scan, dshHome, clientId, request, tarball, kind)
-      emit('probe', 'ok', `远端环境 ${scan.platform ?? ''} ${scan.machine ?? ''}；${setup.summary}`.trim())
+      emit('probe', 'ok', setup.facts)
       // One profile directory has exactly one profile server. Stop any survivor
       // from a previous attempt **before** touching files/starting a new one,
       // and wait until its pid is really gone so the next start cannot race it.
@@ -1870,7 +1872,31 @@ export class ProfileService {
           : `更新 server 插件 ${installedPlugin ?? '旧版本'} → ${tarball.version}`,
     }
     const actionLabel: Record<SetupAction, string> = { reuse: '跳过', install: '部署', upgrade: '更新' }
+    // The probe row reports observations only. The action rows below it say what
+    // the client is about to do; mixing the two made "探测远端环境" read like a
+    // deployment log with nothing about the remote itself.
+    const platformLabel = [scan.platform ?? '', scan.machine ?? ''].filter(part => part !== '').join(' ')
+    const nodeSuffix = (version: string | undefined): string => version === undefined || version === '' ? '' : `（Node ${version}）`
+    const runtimeFact = runtime.kind === 'global'
+      ? `server 全局 DSH ${runtime.version}${nodeSuffix(runtime.nodeVersion)}`
+      : runtime.action === 'reuse'
+        ? `隔离运行时 ${runtime.installedVersion ?? runtime.version}${nodeSuffix(runtime.nodeVersion)}`
+        : runtime.action === 'upgrade'
+          ? `隔离运行时 ${runtime.installedVersion ?? '旧版本'}（需更新到 ${runtime.version}）`
+          : '隔离运行时 未安装'
+    const pluginFact = plugin.action === 'reuse'
+      ? `server 插件 ${plugin.installedVersion ?? plugin.version}`
+      : plugin.action === 'upgrade'
+        ? `server 插件 ${plugin.installedVersion ?? '旧版本'}（需更新到 ${plugin.version}）`
+        : 'server 插件 未安装'
+    const facts = [
+      `远端环境 ${platformLabel === '' ? '未知' : platformLabel}`,
+      `DSH_HOME ${dshHome}`,
+      runtimeFact,
+      pluginFact,
+    ].join(' · ')
     return {
+      facts,
       runtime,
       plugin,
       summary: `运行时 ${actionLabel[runtime.action]}（${runtime.detail}）；server 插件 ${actionLabel[plugin.action]}（${plugin.detail}）`,
