@@ -137,9 +137,9 @@ rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤
 
 ## Quick start
 
-装进 client 的 `web` profile（Plugins 页面或 CLI）。最省事的是 GitHub Release 里与本版本对应的预构建
-tarball（插件页支持 tarball 地址或它的绝对路径），或直接从 Git 分支安装——两者都使用仓库里已提交的
-`lib/`，不在本机跑构建：
+装进 client 的 `web` profile（Plugins 页面或 CLI）。在 GitHub Release 里取与本版本对应的预构建 tarball
+（插件页支持 tarball 地址或它的绝对路径），或从 Git 分支安装——两种方式都直接使用仓库里已提交的
+`lib/`：
 
 ```bash
 dsh plugin --profile web add https://github.com/graydovee/dsh-remote-window/releases/download/v<version>/dsh-remote-window-<version>.tgz
@@ -280,8 +280,8 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 | 症状 | 检查 |
 | --- | --- |
 | `incompatible-version` | 本机装区间内的 DSH（`0.2.1-rc.2 … 0.2.1-rc.5`），或对该精确版本做豁免（见 Compatibility）。 |
-| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | 安装的提交里声明了构建脚本（`prepare`），而 profile 的 `allowBuilds` 没有放行。改用 Release tarball 或 Git 分支（旧 tag 仍带该脚本），或包含打包修复的提交。 |
-| 启用时报 `dsh: warning: 2 entries did not activate`（`session-controller` / `tool-agent-team`） | 不是安装失败：本插件替换官方 `session-persistence` 行，DSH 的实时 profile 重载无法就地应用。把 `dsh-remote-window` 写进 profile `package.json` 的 `dsh.profile.bundles` 后**重启** DSH，冷启动可正常激活。 |
+| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | 该提交声明了构建脚本（`prepare`），profile 的 `allowBuilds` 未放行它。改用 Release tarball 或 Git 分支安装（旧 tag 仍带该脚本），或换到包含打包修复的提交。 |
+| 启用时报 `dsh: warning: 2 entries did not activate`（`session-controller` / `tool-agent-team`） | 本插件替换官方 `session-persistence` 行，profile 热重载无法就地完成这次替换。把 `dsh-remote-window` 写进 profile `package.json` 的 `dsh.profile.bundles` 后**重启** DSH，冷启动可正常激活。 |
 | 没有 target rail | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。hover rail 或按 `Alt+R` 展开。 |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | client 包内置的 server 插件 tarball 丢失/版本不匹配；重装 client 插件后重连。 |
 | `server-plugin-integrity-failed` | 内置/下载的 server 插件 sha256 校验失败；重装 client 包。 |
