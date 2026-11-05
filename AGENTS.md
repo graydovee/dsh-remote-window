@@ -355,3 +355,13 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `scripts/render-release-notes.mjs` 从快照生成「支持的 dsh 区间 + 资产表」，并附 `runtime-compat.json`
   快照；client 下载后校验同源 sha256。全局 runtime 只检测复用。
 - README 只写用户可操作内容；开发约束只更新本文件。
+
+## 文档写法
+
+README、AGENTS.md 与 doc/ 共用同一套写法：
+
+- 先给目标动作与可操作路径：装什么、跑哪条命令、改哪个字段、重启哪个进程、在哪里核对结果。
+- 每句都让读者能执行或能核对：写全命令、路径、字段名、期望输出。
+- 约束写成可执行的形式：「做 A 时先满足 B」，或「禁止 C，否则出现 D」。
+- 落笔前把无法指导操作的反向句（「不做 X」「不是 Y」）改写成上面的动作或约束。
+
