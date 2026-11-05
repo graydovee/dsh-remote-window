@@ -170,11 +170,11 @@ dsh plugin --profile web add https://github.com/graydovee/dsh-remote-window/rele
 dsh plugin --profile web add github:graydovee/dsh-remote-window
 ```
 
-Older tags still declare a `prepare` script, so do not install them by tag (`#v0.1.0-alpha.5` fails with
-`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`). The npm package also installs at an exact version
-(`dsh-remote-window@0.1.0-alpha.5`), but do not use the bare name or `@alpha`: the pnpm 11 bundled with
-DSH 0.2.1-rc.5 defaults `minimumReleaseAge` to one day, so a just-published version is not resolved for
-24 hours and the tag falls back to the older `0.1.0-alpha.3` (whose DSH interval is `0.2.1-rc.3`).
+The npm package installs at an exact version:
+
+```bash
+dsh plugin --profile web add dsh-remote-window@0.1.0-alpha.5
+```
 
 pnpm may refuse `ssh2`'s optional native build script; let the Plugins page install it or pass
 `--config.strict-dep-builds=false` on the first run. If it is already installed but not enabled, enable it
@@ -324,8 +324,8 @@ credential store.
 | Symptom | What to check |
 | --- | --- |
 | `incompatible-version` | Install a DSH release inside the supported interval (`0.2.1-rc.2 … 0.2.1-rc.5`) locally, or exempt that exact pair (see Compatibility). |
-| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | The installed commit declares a build script (`prepare`) and the profile's `allowBuilds` has no entry for it. Install the release tarball or the Git branch (older tags still carry it), or a commit with the packaging fix. |
-| Enabling reports `dsh: warning: 2 entries did not activate` (`session-controller` / `tool-agent-team`) | The plugin replaces the official `session-persistence` row, and a live profile reload cannot complete that swap in place. Add `dsh-remote-window` to `dsh.profile.bundles` in the profile `package.json`, then restart DSH; a cold start activates it. |
+| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | Install the release tarball or the Git branch; both use the committed `lib/` directly. |
+| Enabling reports `dsh: warning: 2 entries did not activate` (`session-controller` / `tool-agent-team`) | Add `dsh-remote-window` to `dsh.profile.bundles` in the profile `package.json`, then restart DSH. |
 | No target rail | The plugin must be installed and enabled in `web`; restart `dsh web` and reload. Hover the rail or press `Alt+R`. |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | The client package lost or mismatched its bundled server-plugin tarball; reinstall the client plugin and reconnect. |
 | `server-plugin-integrity-failed` | The bundled/downloaded server plugin failed its sha256 check; reinstall the client package. |

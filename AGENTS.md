@@ -50,10 +50,9 @@ Node 22.19+ 或 24+；依赖管理只用 pnpm。
 `pnpm typecheck` 是 `tsc --noEmit`（没有 lint 脚本）。`pnpm build` 生成 host/client 产物；`lib/` 已入库
 但**由 `src/` 重新构建产生**，修改一律落在 `src/` 后重跑 `pnpm build`。
 
-`package.json` 不声明 `prepare`/`preinstall`/`install`/`postinstall`：`lib/` 已入库，发布包由 `pnpm pack`
-生成（pnpm 会把这类脚本从打包 manifest 剥掉）；而 pnpm 11 对 git 安装的构建脚本要求消费者在
-`allowBuilds` 放行（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），声明就会让 `dsh plugin add <git url>`
-失败。`tests/release-contract.test.ts` 守住这条。
+`package.json` 的 scripts 保持 `build`、`typecheck`、`test`、`bundle:server-plugin` 四项：`lib/` 由
+`pnpm build` 产出并入库，发布包由 `pnpm pack` 生成。`tests/release-contract.test.ts` 校验 scripts 与
+打包清单。
 
 `src/client/vendor/workspace-rows` 的 provenance 固定在记录里（见文件头 NOTICE）；升级运行时或重新
 vendor 前，按 `doc/dsh-rc3-compatibility.md` 复核 row API/样式边界。
@@ -229,10 +228,8 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `dsh web --profile`。
 - 解析 stdout 单行 `^dsh web: http://127\.0\.0\.1:(\d+)/\?token=([A-Za-z0-9_-]+)$`；token 只进
   `server.log`（0600）与 host 内存。
-- 启用/升级把插件写进 profile 的 `dsh.profile.bundles` 后冷启动完成：本插件 bundle 替换官方
-  `session-persistence` 行，profile 热重载（HMR 就地重排）会让 `session-controller` /
-  `tool-agent-team` 激活失败（`file-upload: Agent resolver is already registered`、
-  `cannot create effect on inactive context`）。用户侧步骤见 README Troubleshooting。
+- 本插件 bundle 替换官方 `session-persistence` 行；启用/升级把它写进 profile 的
+  `dsh.profile.bundles`，冷启动 DSH 完成。
 - 单 client profile lease（clientId/instanceId/pid/port/heartbeat，TTL 20 s）在 server 插件裁决：第二实例
   `profile-in-use`、异 client `profile-foreign-client`，stale 才可接管。
 - 专用 profile：离线解包内置 `dsh-remote-window-server-<client-version>.tgz`，写 4 个 profile 文件，最后
@@ -358,10 +355,10 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 
 ## 文档写法
 
-README、AGENTS.md 与 doc/ 共用同一套写法：
+README、AGENTS.md 与 doc/ 都写成读者要执行的动作。文字会进入后续模型的上下文，写下的步骤会被重复
+执行。
 
-- 先给目标动作与可操作路径：装什么、跑哪条命令、改哪个字段、重启哪个进程、在哪里核对结果。
-- 每句都让读者能执行或能核对：写全命令、路径、字段名、期望输出。
-- 约束写成可执行的形式：「做 A 时先满足 B」，或「禁止 C，否则出现 D」。
-- 落笔前把无法指导操作的反向句（「不做 X」「不是 Y」）改写成上面的动作或约束。
+- 每句给出动作、路径或判定条件：装什么、跑哪条命令、改哪个字段、重启哪个进程、在哪里核对结果。
+- 约束用必须满足的条件表达：「用精确版本 `…`」「先写进 `dsh.profile.bundles`，再冷启动」。
+- 排查条目写恢复步骤与期望结果，例如「重装 tarball 后重启」。
 
