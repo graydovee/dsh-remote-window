@@ -229,6 +229,10 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `dsh web --profile`。
 - 解析 stdout 单行 `^dsh web: http://127\.0\.0\.1:(\d+)/\?token=([A-Za-z0-9_-]+)$`；token 只进
   `server.log`（0600）与 host 内存。
+- 本插件的 bundle 替换官方 `session-persistence` 行，**不能靠 profile 热重载启用**：DSH 的 HMR 就地重排会让
+  `session-controller` / `tool-agent-team` 激活失败（`file-upload: Agent resolver is already registered`、
+  `cannot create effect on inactive context`）。安装后写进 `dsh.profile.bundles` 再冷启动；用户侧步骤见
+  README Troubleshooting。
 - 单 client profile lease（clientId/instanceId/pid/port/heartbeat，TTL 20 s）在 server 插件裁决：第二实例
   `profile-in-use`、异 client `profile-foreign-client`，stale 才可接管。
 - 专用 profile：离线解包内置 `dsh-remote-window-server-<client-version>.tgz`，写 4 个 profile 文件，最后

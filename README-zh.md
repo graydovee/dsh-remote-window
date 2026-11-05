@@ -137,23 +137,21 @@ rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤
 
 ## Quick start
 
-装进 client 的 `web` profile（Plugins 页面或 CLI）：
-
-```bash
-dsh plugin --profile web add dsh-remote-window@alpha
-```
-
-目前发布的版本都是 npm `alpha` 通道上的预发布；`latest` 可能滞后（仍指向 `0.1.0-alpha.3`，它的 DSH
-区间更旧），所以不要用裸包名，需要可复现时写 Compatibility 表里的精确版本。也可以下载 GitHub Release
-的预构建 tarball（在 Plugins 页面填它的绝对路径），或直接从 Git 分支安装——使用仓库里已提交的
+装进 client 的 `web` profile（Plugins 页面或 CLI）。最省事的是 GitHub Release 里与本版本对应的预构建
+tarball（插件页支持 tarball 地址或它的绝对路径），或直接从 Git 分支安装——两者都使用仓库里已提交的
 `lib/`，不在本机跑构建：
 
 ```bash
+dsh plugin --profile web add https://github.com/graydovee/dsh-remote-window/releases/download/v<version>/dsh-remote-window-<version>.tgz
+# 或
 dsh plugin --profile web add github:graydovee/dsh-remote-window
 ```
 
-旧 tag 仍声明 `prepare`，所以不要按 tag 安装（`#v0.1.0-alpha.5` 会报
-`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）。
+旧 tag 仍声明 `prepare`，不要按 tag 安装（`#v0.1.0-alpha.5` 会报
+`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）。npm 上也可以装精确版本
+`dsh-remote-window@0.1.0-alpha.5`，但不要用裸包名或 `@alpha`：DSH 0.2.1-rc.5 内置的 pnpm 11 默认
+`minimumReleaseAge` 为 1 天，新发布版本在 24 小时内不会被解析，标签会回退到更旧的
+`0.1.0-alpha.3`（它的 DSH 区间是更旧的 `0.2.1-rc.3`）。
 
 pnpm 可能拦截 `ssh2` 的可选 native 构建脚本；用 Plugins 页面安装，或首次运行加
 `--config.strict-dep-builds=false`。已安装但未启用时，在 Plugins 页面启用（或把
@@ -282,7 +280,8 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 | 症状 | 检查 |
 | --- | --- |
 | `incompatible-version` | 本机装区间内的 DSH（`0.2.1-rc.2 … 0.2.1-rc.5`），或对该精确版本做豁免（见 Compatibility）。 |
-| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | 安装的提交里声明了构建脚本（`prepare`），而 profile 的 `allowBuilds` 没有放行。改用 `dsh-remote-window@alpha`、Release tarball，或包含打包修复的提交；旧 tag 仍带该脚本。 |
+| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | 安装的提交里声明了构建脚本（`prepare`），而 profile 的 `allowBuilds` 没有放行。改用 Release tarball 或 Git 分支（旧 tag 仍带该脚本），或包含打包修复的提交。 |
+| 启用时报 `dsh: warning: 2 entries did not activate`（`session-controller` / `tool-agent-team`） | 不是安装失败：本插件替换官方 `session-persistence` 行，DSH 的实时 profile 重载无法就地应用。把 `dsh-remote-window` 写进 profile `package.json` 的 `dsh.profile.bundles` 后**重启** DSH，冷启动可正常激活。 |
 | 没有 target rail | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。hover rail 或按 `Alt+R` 展开。 |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | client 包内置的 server 插件 tarball 丢失/版本不匹配；重装 client 插件后重连。 |
 | `server-plugin-integrity-failed` | 内置/下载的 server 插件 sha256 校验失败；重装 client 包。 |

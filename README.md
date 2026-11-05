@@ -160,24 +160,21 @@ for old sessions but is no longer reachable from the main area.
 
 ## Quick start
 
-Install into the client `web` profile, from the **Plugins** page or the CLI:
+Install into the client `web` profile, from the **Plugins** page or the CLI. The simplest source is the
+prebuilt tarball of this version from the GitHub release (the Plugins page accepts a tarball URL or its
+absolute path), or the Git branch itself — both use the committed `lib/` and run no local build:
 
 ```bash
-dsh plugin --profile web add dsh-remote-window@alpha
-```
-
-Every published version so far is a prerelease on the npm `alpha` channel; `latest` may lag behind
-(it still points at `0.1.0-alpha.3`, whose DSH interval is older), so do not install the bare name. Pin
-the exact version from the Compatibility table when reproducibility matters. You can also install the
-prebuilt tarball from the GitHub release (paste its absolute path into the Plugins page), or install
-straight from the Git branch, which uses the committed `lib/` and runs no local build:
-
-```bash
+dsh plugin --profile web add https://github.com/graydovee/dsh-remote-window/releases/download/v<version>/dsh-remote-window-<version>.tgz
+# or
 dsh plugin --profile web add github:graydovee/dsh-remote-window
 ```
 
-Older tags still declare a `prepare` script, so do not install them by tag (`#v0.1.0-alpha.5` fails
-with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`).
+Older tags still declare a `prepare` script, so do not install them by tag (`#v0.1.0-alpha.5` fails with
+`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`). The npm package also installs at an exact version
+(`dsh-remote-window@0.1.0-alpha.5`), but do not use the bare name or `@alpha`: the pnpm 11 bundled with
+DSH 0.2.1-rc.5 defaults `minimumReleaseAge` to one day, so a just-published version is not resolved for
+24 hours and the tag falls back to the older `0.1.0-alpha.3` (whose DSH interval is `0.2.1-rc.3`).
 
 pnpm may refuse `ssh2`'s optional native build script; let the Plugins page install it or pass
 `--config.strict-dep-builds=false` on the first run. If it is already installed but not enabled, enable it
@@ -327,7 +324,8 @@ credential store.
 | Symptom | What to check |
 | --- | --- |
 | `incompatible-version` | Install a DSH release inside the supported interval (`0.2.1-rc.2 … 0.2.1-rc.5`) locally, or exempt that exact pair (see Compatibility). |
-| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | pnpm 11 found a build script (`prepare`) in the installed commit and the profile's `allowBuilds` does not allow it. Install `dsh-remote-window@alpha`, the release tarball, or a commit that contains the packaging fix; older tags still declare it. |
+| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | pnpm 11 found a build script (`prepare`) in the installed commit and the profile's `allowBuilds` does not allow it. Install the release tarball or the Git branch (older tags still declare it), or a commit that contains the packaging fix. |
+| Enabling reports `dsh: warning: 2 entries did not activate` (`session-controller` / `tool-agent-team`) | Not an install failure: the plugin replaces the official `session-persistence` row, and DSH's live profile reload cannot apply that swap in place. Add `dsh-remote-window` to `dsh.profile.bundles` in the profile `package.json` and restart DSH; a cold start activates it. |
 | No target rail | The plugin must be installed and enabled in `web`; restart `dsh web` and reload. Hover the rail or press `Alt+R`. |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | The client package lost or mismatched its bundled server-plugin tarball; reinstall the client plugin and reconnect. |
 | `server-plugin-integrity-failed` | The bundled/downloaded server plugin failed its sha256 check; reinstall the client package. |
