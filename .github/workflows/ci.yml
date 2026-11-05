@@ -29,6 +29,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      # Declarations that must agree: engines.dsh, every dsh peer/dev range,
-      # DSH_VERIFIED_RUNTIMES and the README compatibility table.
+      # Declarations that must agree: compat/runtimes.json is the source of
+      # truth for engines.dsh, every dsh peer/dev pin, the generated module and
+      # both README compatibility tables; any drift fails here.
       - run: node scripts/bump-dsh-version.mjs --check

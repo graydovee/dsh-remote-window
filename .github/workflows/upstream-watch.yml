@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           latest="$(npm view @deepseek-ai/dsh version)"
-          current="$(node -e "const s=require('node:fs').readFileSync('src/provision/version-range.ts','utf8');const m=s.match(/DSH_VERIFIED_RUNTIMES[^\\[]*\\[([^\\]]*)\\]/);console.log((m?.[1]??'').match(/'([^']+)'/g)?.at(-1)?.replaceAll(\"'\",'')??'')")"
+          current="$(node -p "require('./compat/runtimes.json').runtimes[0].dsh")"
           echo "latest=$latest current=$current"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
           echo "current=$current" >> "$GITHUB_OUTPUT"

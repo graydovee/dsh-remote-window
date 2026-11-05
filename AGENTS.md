@@ -41,6 +41,8 @@ Node 22.19+ 或 24+；依赖管理只用 pnpm。
 额外命令：
 
     node scripts/sync-compat.mjs          # 改 compat/ 之后重新生成声明；--check 用于门禁
+    node scripts/bump-dsh-version.mjs --to <dsh>   # 把新 dsh 加为 runtimes[0] 并重生成声明
+    node scripts/bump-dsh-version.mjs --check      # CI 用的别名，等于 sync-compat --check
     node scripts/vendor-workspace-rows.mjs --dsh <checkout> --source-label 'dsh-v<version> (<sha>)'
     node scripts/bundle-server-plugin.mjs --tarball <server-plugin tgz>
     DSH_SMOKE_CLI=<dsh 启动器> npx vitest run tests/profile.smoke.test.ts
