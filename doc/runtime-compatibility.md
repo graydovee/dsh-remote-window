@@ -77,9 +77,28 @@ plugin version never appears in a runtime file name.
 
 ## 6. Adding a DSH release
 
-1. Run the client test suite against the new dsh build and note what breaks.
-2. Append `{ "dsh": "<new>", "platforms": [...] }` as the **first** entry of `runtimes[]` (strictly
-   newest-first) and widen `dsh.max` (and `dsh.min` only if the old minimum is dropped).
-3. `node scripts/sync-compat.mjs`, then `pnpm typecheck`, `pnpm test`, `pnpm build`.
-4. Build the platform artifacts (`scripts/build-runtime-artifact.mjs`), place them in
-   `~/.dsh/remote-assets/` for local QA or let the server release job publish them.
+Every time upstream publishes a dsh the plugin claims to support, update the declaration in the same change:
+
+1. Read the upstream release notes and run the suite against the new build: `pnpm install` with the packages
+   pinned by `sync-compat` (step 3 does the bump), then `pnpm typecheck`, `pnpm test`, `pnpm build`. Note what
+   broke, and whether a real-machine run is needed before the interval may grow.
+2. Edit `compat/runtimes.json`: put the new version as the **first** entry of `runtimes[]` (the list is
+   strictly newest-first and every entry must sit inside the interval), widen `dsh.max` (and `dsh.min` only
+   when the old minimum is dropped on purpose). Keep the previous entries: existing servers/caches keep
+   resolving them.
+3. Append `{ "plugin": "<next plugin version>", "min": …, "max": …, "runtimes": [...] }` to
+   `compat/history.json` — one row per released plugin version, and the last row must match
+   `package.json`'s version.
+4. `node scripts/sync-compat.mjs` and commit everything it rewrites: `src/provision/runtime-compat.generated.ts`,
+   `package.json` (`engines.dsh` + every `@deepseek-ai/dsh-*` peer as the interval expression, the dsh
+   packages themselves pinned to the newest entry), and both README compatibility tables. `pnpm install`
+   afterwards so the lockfile follows the new pins.
+5. Run the gates again (`pnpm typecheck`, `pnpm test`, `pnpm build`) and `node scripts/sync-compat.mjs --check`.
+6. Record the verification in section 1b: what was exercised automatically and what needs a real-machine run.
+   The release body is generated from `runtime-compat.json`, so the same numbers reach the release page.
+7. If the new release also needs a runtime artifact, build it (`scripts/build-runtime-artifact.mjs`, or let
+   the server release job do it) and QA it from `~/.dsh/remote-assets/` before publishing.
+
+The interval is what the plugin *accepts*; the exact pins are what CI and users install. Do not widen the
+interval on a test run alone when the change touches startup, portal, or persistence — those need the
+real-machine checklist in `doc/windows-server-support.md` §6 or an equivalent run on the new build.
