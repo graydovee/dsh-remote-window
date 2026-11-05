@@ -191,7 +191,7 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 | Plugin | Supported DSH | Published runtimes |
 | --- | --- | --- |
 | 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
-| 0.1.0-alpha.4 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
+| 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 这张表由 `node scripts/sync-compat.mjs` 从 [`compat/runtimes.json`](compat/runtimes.json) 生成；
@@ -268,7 +268,7 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 
 | 症状 | 检查 |
 | --- | --- |
-| `incompatible-version` | 本机装 DSH `0.2.1-rc.3`，或对该精确版本做豁免（见 Compatibility）。 |
+| `incompatible-version` | 本机装区间内的 DSH（`0.2.1-rc.2 … 0.2.1-rc.5`），或对该精确版本做豁免（见 Compatibility）。 |
 | 没有 target rail | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。hover rail 或按 `Alt+R` 展开。 |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | client 包内置的 server 插件 tarball 丢失/版本不匹配；重装 client 插件后重连。 |
 | `server-plugin-integrity-failed` | 内置/下载的 server 插件 sha256 校验失败；重装 client 包。 |

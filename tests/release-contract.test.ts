@@ -36,6 +36,9 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 /** The expression `engines.dsh` and every peer must carry for this table. */
 const EXPECTED_DSH_EXPRESSION = rangeExpression(RUNTIME_COMPAT.dsh)
 
+/** The newest runtime the table ships; what the plugin installs and tests. */
+const NEWEST_DSH = RUNTIME_COMPAT.runtimes[0]?.dsh ?? RUNTIME_COMPAT.dsh.min
+
 describe('runtime contract', () => {
   it('compiles a table that passes the same checks the sync script runs', () => {
     expect(compatProblems(RUNTIME_COMPAT)).toEqual([])
@@ -71,20 +74,28 @@ describe('runtime contract', () => {
     }
   })
 
-  it('ships the four SSH providers the client imports or mounts as runtime dependencies', () => {
+  it('ships the four SSH providers at the newest runtime this release installs', () => {
     // The harness installation does not contain these packages: `dsh-ssh` is
     // imported by value (`/schemas`, `/protocol`) and the other three are mounted
     // by name inside the realm preset. A profile template sets
     // `autoInstallPeers: false`, so declaring them as peers alone leaves a fresh
     // install with `Cannot find package '@deepseek-ai/dsh-ssh'`.
+    // The peer range is what installers accept; these four ship inside the
+    // plugin and are mounted next to the host packages, so they must be one
+    // exact build — the newest runtime in the interval, which is also what the
+    // devDependencies test.
     for (const name of ['@deepseek-ai/dsh-ssh', '@deepseek-ai/dsh-fs-ssh', '@deepseek-ai/dsh-subprocess-ssh', '@deepseek-ai/dsh-sandbox-ssh']) {
-      expect(manifest.dependencies[name], name).toBe(EXPECTED_DSH_EXPRESSION)
+      expect(manifest.dependencies[name], name).toBe(NEWEST_DSH)
     }
   })
 
-  it('pins every dsh peer and devDependency to that same expression', () => {
-    for (const [name, range] of [...dshDependencies(manifest.peerDependencies), ...dshDependencies(manifest.devDependencies)]) {
+  it('declares the interval in peers and pins devDependencies to the newest runtime', () => {
+    for (const [name, range] of dshDependencies(manifest.peerDependencies)) {
       expect(range, name).toBe(EXPECTED_DSH_EXPRESSION)
+    }
+    for (const [name, range] of dshDependencies(manifest.devDependencies)) {
+      // Testing a range would let the suite resolve a prerelease nobody verified.
+      expect(range, name).toBe(NEWEST_DSH)
     }
     expect(dshDependencies(manifest.peerDependencies).length).toBeGreaterThan(0)
   })
@@ -120,7 +131,10 @@ describe('README pair', () => {
   it('names the supported interval and this plugin version in both languages', () => {
     for (const path of ['README.md', 'README-zh.md']) {
       const text = read(path)
-      expect(text, path).toContain(DSH_VERIFIED_SUMMARY)
+      // The generated block prints the manifest expression (`>= min <= max`) or
+      // the exact version; assert both bounds so the table cannot silently move.
+      expect(text, path).toContain(RUNTIME_COMPAT.dsh.min)
+      expect(text, path).toContain(RUNTIME_COMPAT.dsh.max)
       expect(text, path).toContain(manifest.version)
       expect(text, path).toContain('<!-- verified-runtimes:start -->')
       expect(text, path).toContain('<!-- verified-runtimes:end -->')

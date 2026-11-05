@@ -23,6 +23,14 @@ one-sided rule ("this version or newer") is therefore wrong, and an exact-equali
 `compat/runtimes.json` is the single source of truth. `compat/history.json` records the interval of each
 released plugin version (newest last); the sync script validates both.
 
+## 1b. What "supported" is verified against
+
+The interval is a declaration, not a guarantee that nothing changed: the automated suite (typecheck plus the
+vitest suite, including the profile-service and provision integration tests) runs against the **newest**
+runtime in the interval because `devDependencies` pin it exactly. A real-machine run on that newest release is
+still required before a release page calls it verified — the last full Windows/real-host run was on
+`0.2.1-rc.3`, so a newer release stays in the interval but is marked as such in the release notes.
+
 ## 2. What the generated files are
 
 `node scripts/sync-compat.mjs` validates the tables and rewrites, in place:

@@ -251,12 +251,28 @@ export function expectedFiles() {
     throw new Error(`compat table is invalid:\n- ${problems.join('\n- ')}`)
   }
   const expression = rangeExpression(table.dsh)
+  // What we accept is the interval; what we *install and test* is the newest
+  // runtime in it, pinned exactly. A range in devDependencies would let pnpm
+  // resolve a future prerelease nobody verified, and the four mounted SSH
+  // providers must be the same build as the host packages they are loaded next
+  // to.
+  const newest = table.runtimes[0]?.dsh
+  if (newest === undefined) throw new Error('compat table has no runtime entries')
   const nextPackage = { ...pkg, engines: { ...pkg.engines, dsh: expression } }
   const peers = {}
   for (const [name, version] of Object.entries(pkg.peerDependencies ?? {})) {
     peers[name] = MIRRORED_PEER.test(name) ? expression : version
   }
   nextPackage.peerDependencies = peers
+  const pinned = record => {
+    const next = {}
+    for (const [name, version] of Object.entries(record ?? {})) {
+      next[name] = MIRRORED_PEER.test(name) ? newest : version
+    }
+    return next
+  }
+  nextPackage.dependencies = pinned(pkg.dependencies)
+  nextPackage.devDependencies = pinned(pkg.devDependencies)
   const rendered = renderHistory(history)
   const files = new Map()
   files.set(GENERATED, renderGenerated(table))

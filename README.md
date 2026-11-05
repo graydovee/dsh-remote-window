@@ -219,7 +219,7 @@ Compatibility is a **declared interval**, not a constant hidden in the code:
 | Plugin | Supported DSH | Published runtimes |
 | --- | --- | --- |
 | 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
-| 0.1.0-alpha.4 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
+| 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 The table is generated from [`compat/runtimes.json`](compat/runtimes.json) by
@@ -312,7 +312,7 @@ credential store.
 
 | Symptom | What to check |
 | --- | --- |
-| `incompatible-version` | Install DSH `0.2.1-rc.3` locally, or exempt that exact pair (see Compatibility). |
+| `incompatible-version` | Install a DSH release inside the supported interval (`0.2.1-rc.2 … 0.2.1-rc.5`) locally, or exempt that exact pair (see Compatibility). |
 | No target rail | The plugin must be installed and enabled in `web`; restart `dsh web` and reload. Hover the rail or press `Alt+R`. |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | The client package lost or mismatched its bundled server-plugin tarball; reinstall the client plugin and reconnect. |
 | `server-plugin-integrity-failed` | The bundled/downloaded server plugin failed its sha256 check; reinstall the client package. |

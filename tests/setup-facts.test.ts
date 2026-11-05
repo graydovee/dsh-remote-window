@@ -16,7 +16,7 @@ const WINDOWS_SCAN = {
     {
       path: 'C:\\Users\\tester\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd',
       realPath: 'C:\\Users\\tester\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd',
-      version: '0.2.1-rc.2',
+      version: '0.2.1-rc.1',
       exitCode: 0,
     },
   ],
@@ -39,7 +39,7 @@ describe('remote setup facts', () => {
     const facts = remoteSetupFacts(input({}))
     expect(facts).toContain('远端环境 Windows AMD64')
     expect(facts).toContain('Node v22.18.0（C:\\Program Files\\nodejs\\node.exe）')
-    expect(facts).toContain('server 全局 DSH 0.2.1-rc.2')
+    expect(facts).toContain('server 全局 DSH 0.2.1-rc.1')
     expect(facts).toContain('不可用，需要 0.2.1-rc.3')
     expect(facts).toContain('DSH_HOME C:\\Users\\tester\\.dsh')
     expect(facts).toContain('隔离运行时 未安装')

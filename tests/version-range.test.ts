@@ -98,10 +98,17 @@ describe('isCompatibleDsh', () => {
     // the case the old exact-version guard could not express.
     expect(isCompatibleDsh('0.1.9')).toBe(false)
     expect(isCompatibleDsh('0.2.1-rc.1')).toBe(false)
-    expect(isCompatibleDsh('0.2.1-rc.2')).toBe(false)
     expect(isCompatibleDsh('0.3.0-rc.1')).toBe(false)
     expect(isCompatibleDsh('0.3.0')).toBe(false)
     expect(isCompatibleDsh('1.0.0')).toBe(false)
+  })
+
+  it('accepts every release inside the declared interval', () => {
+    for (const version of ['0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5']) {
+      if (!DSH_VERIFIED_RUNTIMES.includes(version)) continue
+      expect(isCompatibleDsh(version), version).toBe(true)
+    }
+    expect(isCompatibleDsh(DSH_VERIFIED_SUMMARY.split(' … ')[0] ?? '')).toBe(true)
   })
 
   it('rejects unparseable text (a launcher that printed nothing)', () => {
