@@ -441,6 +441,11 @@ export async function startProfileServer(
      * `node_modules/@deepseek-ai/dsh` (the isolated runtime's `dsh/` directory).
      */
     readonly launcher: string
+    /**
+     * Windows only: the `.cmd` shim of a reused global DSH, launched when
+     * `launcher` carries no `node_modules/@deepseek-ai/dsh` tree.
+     */
+    readonly launcherShim?: string
     /** Windows only: the runtime's `node.exe` (the profile server is launched directly). */
     readonly nodePath?: string
     /** Fixed port (tests pin one; production always passes 0 for OS assignment). */
@@ -464,6 +469,7 @@ export async function startProfileServer(
         dshHome: paths.dshHome,
         nodeExe: options.nodePath ?? '',
         dshRoot: options.launcher,
+        ...(options.launcherShim === undefined ? {} : { launcherShim: options.launcherShim }),
         profile: paths.profile,
         host: '127.0.0.1',
         port: options.port ?? 0,

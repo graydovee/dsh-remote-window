@@ -309,6 +309,12 @@ export interface WindowsStartOptions {
   readonly nodeExe: string
   /** The tree that contains `node_modules/@deepseek-ai/dsh` (isolated: `<root>\dsh`). */
   readonly dshRoot: string
+  /**
+   * `.cmd` shim of a reused global DSH. `dshRoot` is then the shim's directory,
+   * which has no `node_modules/@deepseek-ai/dsh` for the desktop app's bundled
+   * CLI; the shim carries its own interpreter and entry point.
+   */
+  readonly launcherShim?: string
   readonly profile: string
   /** Keep `127.0.0.1` and `0`: the profile server must never listen publicly. */
   readonly host: string
@@ -347,23 +353,32 @@ export function windowsStartScript(options: WindowsStartOptions): string {
     `$dshHome = ${psQuote(options.dshHome)}`,
     `$nodeExe = ${psQuote(options.nodeExe)}`,
     `$dshRoot = ${psQuote(options.dshRoot)}`,
+    `$shimPath = ${psQuote(options.launcherShim ?? '')}`,
     'foreach ($d in @($profileDir, $stateDir)) { [IO.Directory]::CreateDirectory($d) | Out-Null }',
     // A previous instance may still hold the log open; a locked log must never
     // abort the launch (the wrapper appends, so stale tail lines are harmless).
     "if (Test-Path -LiteralPath $logPath -PathType Leaf) { try { Remove-Item -LiteralPath $logPath -Force -ErrorAction Stop } catch { } }",
     "if (Test-Path -LiteralPath ($logPath + '.err') -PathType Leaf) { try { Remove-Item -LiteralPath ($logPath + '.err') -Force -ErrorAction Stop } catch { } }",
-    "if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf)) { [Console]::Error.Write('the runtime has no node.exe'); exit 20 }",
     "$manifest = Join-Path $dshRoot 'node_modules\\@deepseek-ai\\dsh\\package.json'",
-    "if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { [Console]::Error.Write('the dsh package is not installed under the runtime'); exit 21 }",
-    '$package = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json',
-    '$bin = $package.bin',
-    '$entry = $null',
-    'if ($bin -is [string]) { $entry = $bin } elseif ($null -ne $bin -and $null -ne $bin.dsh) { $entry = [string]$bin.dsh }',
-    "if ([string]::IsNullOrEmpty($entry)) { [Console]::Error.Write('the dsh package declares no bin entry'); exit 22 }",
+    // Two launch shapes: a package tree started through `node.exe`, and a global
+    // DSH whose `.cmd` shim carries its own interpreter and entry point.
+    'if (Test-Path -LiteralPath $manifest -PathType Leaf) {',
+    "  if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf)) { [Console]::Error.Write('the runtime has no node.exe'); exit 20 }",
+    '  $package = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json',
+    '  $bin = $package.bin',
+    '  $entry = $null',
+    '  if ($bin -is [string]) { $entry = $bin } elseif ($null -ne $bin -and $null -ne $bin.dsh) { $entry = [string]$bin.dsh }',
+    "  if ([string]::IsNullOrEmpty($entry)) { [Console]::Error.Write('the dsh package declares no bin entry'); exit 22 }",
     // `[IO.Path]::GetDirectoryName` instead of `Split-Path -LiteralPath … -Parent`:
     // PowerShell 5.1 rejects that pair with AmbiguousParameterSet (real-machine run).
-    '$binScript = Join-Path ([IO.Path]::GetDirectoryName($manifest)) $entry',
-    "if (-not (Test-Path -LiteralPath $binScript -PathType Leaf)) { [Console]::Error.Write('the dsh bin entry is missing'); exit 23 }",
+    '  $binScript = Join-Path ([IO.Path]::GetDirectoryName($manifest)) $entry',
+    "  if (-not (Test-Path -LiteralPath $binScript -PathType Leaf)) { [Console]::Error.Write('the dsh bin entry is missing'); exit 23 }",
+    `  $launch = '"' + $nodeExe + '" "' + $binScript + '"'`,
+    '} elseif (-not [string]::IsNullOrEmpty($shimPath) -and (Test-Path -LiteralPath $shimPath -PathType Leaf)) {',
+    `  $launch = 'call "' + $shimPath + '"'`,
+    '} else {',
+    "  [Console]::Error.Write('the dsh package is not installed under the runtime'); exit 21",
+    '}',
     '$env:DSH_HOME = $dshHome',
     `$prefixes = @(${options.pathPrefixes.map(psQuote).join(', ')})`,
     "if ($prefixes.Count -gt 0) { $env:PATH = ([string]::Join(';', $prefixes) + ';' + [string]$env:PATH) }",
@@ -379,7 +394,7 @@ export function windowsStartScript(options: WindowsStartOptions): string {
     `[void]$lines.Add(${psQuote('set "DSH_HOME=' + options.dshHome + '"')})`,
     "if ($prefixes.Count -gt 0) { [void]$lines.Add('set \"PATH=' + [string]::Join(';', $prefixes) + ';%PATH%\"') }",
     ...envEntries.map(([name, value]) => `[void]$lines.Add(${psQuote(`set "${name}=${value ?? ''}"`)})`),
-    `[void]$lines.Add('"' + $nodeExe + '" "' + $binScript + '" --profile ' + ${psQuote(options.profile)} + ' --host ' + ${psQuote(options.host)} + ' --port ' + ${psQuote(String(options.port))} + ' --no-open >> "' + $logPath + '" 2>&1')`,
+    `[void]$lines.Add($launch + ' --profile ' + ${psQuote(options.profile)} + ' --host ' + ${psQuote(options.host)} + ' --port ' + ${psQuote(String(options.port))} + ' --no-open >> "' + $logPath + '" 2>&1')`,
     '[IO.File]::WriteAllText($cmdFile, (($lines -join ([string][char]13 + [char]10)) + [char]13 + [char]10))',
     // `Start-Process` inherits the SSH session's job object, so the profile died
     // the moment our exec channel closed (real-machine run). A Win32_Process

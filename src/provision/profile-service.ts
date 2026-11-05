@@ -47,7 +47,6 @@ import { parseDshScanOutput, scanDshScript, type DshScan } from './dsh-scan.ts'
 import { buildRuntimeArtifact } from './runtime-artifact.ts'
 import {
   defaultRemoteDshHome,
-  remoteJoin,
   remoteKindOf,
   remotePlatformOf,
   runtimePlatformArchOf,
@@ -238,6 +237,11 @@ interface ResolvedRuntime {
    * `node_modules/@deepseek-ai/dsh` (the launcher is resolved at start time).
    */
   readonly launcher: string
+  /**
+   * Windows: the `.cmd` shim of a reused global DSH, used when {@link launcher}
+   * carries no `node_modules/@deepseek-ai/dsh` tree.
+   */
+  readonly launcherShim?: string
   readonly pathPrefixes: readonly string[]
   readonly dshVersion: string
   readonly runtimeDir: string
@@ -267,6 +271,8 @@ interface LiveProfile {
   readonly connection: ProfileConnection
   readonly paths: ProfilePaths
   readonly launcher: string
+  /** Windows: the `.cmd` shim a reused global DSH is launched through. */
+  readonly launcherShim?: string
   readonly pathPrefixes: readonly string[]
   /** Windows: the runtime's `node.exe` (posix: undefined, `node` comes from PATH). */
   readonly nodePath?: string
@@ -719,6 +725,7 @@ export class ProfileService {
       handle = await startProfileServer(connection.remote, paths, {
         launcher: runtime.launcher,
         pathPrefixes: runtime.pathPrefixes,
+        ...(runtime.launcherShim === undefined ? {} : { launcherShim: runtime.launcherShim }),
         ...(runtime.nodePath === undefined ? {} : { nodePath: runtime.nodePath }),
         timeoutMs: paths.kind === 'windows' ? WINDOWS_PROFILE_STARTUP_TIMEOUT_MS : PROFILE_STARTUP_TIMEOUT_MS,
         ...(startEnv === undefined ? {} : { env: startEnv }),
@@ -764,6 +771,7 @@ export class ProfileService {
         connection,
         paths,
         launcher: runtime.launcher,
+        ...(runtime.launcherShim === undefined ? {} : { launcherShim: runtime.launcherShim }),
         pathPrefixes: runtime.pathPrefixes,
         ...(runtime.nodePath === undefined ? {} : { nodePath: runtime.nodePath }),
         dshVersion: handshake.dshVersion,
@@ -1481,6 +1489,7 @@ export class ProfileService {
     this.live.set(targetId, {
       ...live,
       launcher: paths.launcher,
+      launcherShim: undefined,
       pathPrefixes: runtimePathPrefixes(paths),
       runtimeKind: 'isolated',
       runtimeDir: paths.root,
@@ -1527,6 +1536,7 @@ export class ProfileService {
     await stopProfileServer(live.connection.remote, live.paths)
     const handle = await startProfileServer(live.connection.remote, live.paths, {
       launcher: live.launcher,
+      ...(live.launcherShim === undefined ? {} : { launcherShim: live.launcherShim }),
       pathPrefixes: live.pathPrefixes,
       ...(live.nodePath === undefined ? {} : { nodePath: live.nodePath }),
       ...(live.startEnv === undefined ? {} : { env: live.startEnv }),
@@ -1796,9 +1806,13 @@ export class ProfileService {
     scan: DshScan,
     request: ConnectProfileRequest,
     kind: RemoteKind,
-  ): { path: string; nodePath?: string; version: string; healthy: boolean } | undefined {
+  ): { path: string; shimPath?: string; nodePath?: string; version: string; healthy: boolean } | undefined {
     const override = (process.env['DSH_RW_DSH_LAUNCHER'] ?? '').trim()
-    if (override !== '') return { path: override, version: '', healthy: false }
+    if (override !== '') {
+      return kind === 'windows'
+        ? { path: windowsDirname(override), shimPath: override, version: '', healthy: false }
+        : { path: override, version: '', healthy: false }
+    }
     const usable = scan.launchers.filter(candidate => candidate.version !== '' && candidate.exitCode === 0)
     const choose = kind === 'posix'
       ? usable.at(0)
@@ -1816,6 +1830,7 @@ export class ProfileService {
     if (nodePath === undefined) return undefined
     return {
       path: windowsDirname(choose.path),
+      shimPath: choose.path,
       nodePath,
       version: choose.version,
       healthy: isCompatibleDsh(choose.version),
@@ -2032,7 +2047,6 @@ export class ProfileService {
         prefixes.push(kind === 'windows' ? windowsDirname(globalCandidate.nodePath) : dirname(globalCandidate.nodePath))
       }
       if (kind === 'posix' && globalCandidate.path.includes('/')) prefixes.push(dirname(globalCandidate.path))
-      if (kind === 'windows') prefixes.push(remoteJoin(kind, globalCandidate.path, 'node_modules', '@deepseek-ai', 'dsh'))
       return {
         kind: 'global',
         action: 'reuse',
@@ -2041,6 +2055,7 @@ export class ProfileService {
         dshVersion: selection.version,
         runtimeDir: '',
         ...(globalCandidate.nodePath === undefined ? {} : { nodePath: globalCandidate.nodePath }),
+        ...(kind === 'windows' && globalCandidate.shimPath !== undefined ? { launcherShim: globalCandidate.shimPath } : {}),
       }
     }
 

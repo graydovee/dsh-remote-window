@@ -117,6 +117,23 @@ describe('startProfileServer on Windows', () => {
     expect(script).not.toContain('setsid')
     expect(script).not.toContain('chmod')
   })
+
+  test('starts a reused global dsh through its shim', async () => {
+    const { remote, records } = fakeRemote()
+    const paths = profilePaths(HOME, 'abcdef012345', 'windows')
+    await startProfileServer(remote, paths, {
+      launcher: 'C:\\Users\\grayd\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin',
+      launcherShim: 'C:\\Users\\grayd\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd',
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+      port: 0,
+      timeoutMs: 1_000,
+      intervalMs: 1,
+      sleep: async () => undefined,
+    }).catch(() => undefined)
+    const script = scriptOf(records[0] as Recorded)
+    expect(script).toContain('dsh.cmd')
+    expect(script).toContain("$launch = 'call \"' + $shimPath + '\"'")
+  })
 })
 
 describe('stopProfileServer on Windows', () => {

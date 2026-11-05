@@ -47,7 +47,10 @@ Every remote command exists in two dialects. `profilePaths(dshHome, clientId, ki
   `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '<ComSpec> /c
   "<cmd>"' }`. `Start-Process` is not used: it inherits the SSH exec channel's job object, so closing the
   channel kills the profile. The wrapper redirects inside `cmd`, so the log is written as the server starts
-  (PowerShell's `-RedirectStandardOutput` buffers, which made the readiness poll time out).
+  (PowerShell's `-RedirectStandardOutput` buffers, which made the readiness poll time out). A reused global
+  DSH whose tree carries no `node_modules/@deepseek-ai/dsh` (the desktop app keeps its CLI beside
+  `resources/app.asar`) is invoked through its `.cmd` shim instead: `call "<shim>" …` in the same wrapper,
+  while a tree with the package manifest keeps the direct `node.exe <bin>` form.
 * **Stop.** `Get-CimInstance Win32_Process` checks that the recorded PID still runs the
   `start-<profile>.cmd` command line (PID reuse guard), then `taskkill /PID <pid> /T /F` kills the tree.
 * **Readiness.** The startup line is parsed from the log with `PROFILE_STARTUP_PATTERN`; on `win32` the budget
@@ -121,5 +124,10 @@ running, using the local macOS DSH plugin as the client and `C:\dsh-rw-qa\.dsh` 
 3. Data channel: `v1/workspaces` and `v1/sessions` returned the live registry (`initialized: false` on a
    fresh home).
 4. `v1/stop` → `{ stopped: true }`, and the remote process count for that client tree went to `0`.
+5. Global (desktop-app) reuse: the DSH desktop app installs its CLI as
+   `...\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`, whose `resources\app.asar` carries the
+   host packages, so the tree has no `node_modules/@deepseek-ai/dsh`. Starting the profile server through
+   that shim printed `dsh web: http://127.0.0.1:<port>/?token=...` for the client profile, and
+   `taskkill /PID <pid> /T /F` removed the cmd, the Electron-as-Node server and its helper children.
 
 Reproduce with placeholder values only; never commit real hosts, usernames or paths.

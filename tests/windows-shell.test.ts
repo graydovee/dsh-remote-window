@@ -180,6 +180,21 @@ describe('windows profile lifecycle scripts', () => {
     expect(script).toContain("$env:DSH_RW_LOCAL_LLM_KEY = 'placeholder'")
   })
 
+  it('launches a reused global dsh through its shim when the tree carries no package', () => {
+    const shim = 'C:\\Users\\u\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd'
+    const script = windowsStartScript({
+      ...options,
+      dshRoot: 'C:\\Users\\u\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin',
+      launcherShim: shim,
+    })
+    expect(script).toContain(`$shimPath = '${shim.replaceAll("'", "''")}'`)
+    // The wrapper calls the shim itself; `node.exe` and the package manifest are
+    // only consulted when the tree has a `node_modules/@deepseek-ai/dsh`.
+    expect(script).toContain(`  $launch = 'call "' + $shimPath + '"'`)
+    expect(script).toContain("$launch + ' --profile '")
+    expect(script).toContain('exit 21')
+  })
+
   it('stops by pid with a command-line guard against pid reuse', () => {
     const script = windowsStopScript({
       pidPath: options.pidPath,
