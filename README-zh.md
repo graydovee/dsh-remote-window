@@ -192,6 +192,7 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 | --- | --- | --- |
 | 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
 | 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 这张表由 `node scripts/sync-compat.mjs` 从 [`compat/runtimes.json`](compat/runtimes.json) 生成；

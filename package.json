@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-window",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Remote entry for DeepSeek Harness: launch DSH on an SSH host and reproduce its official web UI full-screen inside the client, with an optional local model bridge.",
   "type": "module",
   "main": "lib/index.js",

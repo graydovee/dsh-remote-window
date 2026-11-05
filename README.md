@@ -220,6 +220,7 @@ Compatibility is a **declared interval**, not a constant hidden in the code:
 | --- | --- | --- |
 | 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
 | 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 The table is generated from [`compat/runtimes.json`](compat/runtimes.json) by
