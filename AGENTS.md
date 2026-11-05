@@ -50,6 +50,11 @@ Node 22.19+ 或 24+；依赖管理只用 pnpm。
 `pnpm typecheck` 是 `tsc --noEmit`（没有 lint 脚本）。`pnpm build` 生成 host/client 产物；`lib/` 已入库
 但**由 `src/` 重新构建产生**，修改一律落在 `src/` 后重跑 `pnpm build`。
 
+`package.json` 不声明 `prepare`/`preinstall`/`install`/`postinstall`：`lib/` 已入库，发布包由 `pnpm pack`
+生成（pnpm 会把这类脚本从打包 manifest 剥掉）；而 pnpm 11 对 git 安装的构建脚本要求消费者在
+`allowBuilds` 放行（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），声明就会让 `dsh plugin add <git url>`
+失败。`tests/release-contract.test.ts` 守住这条。
+
 `src/client/vendor/workspace-rows` 的 provenance 固定在记录里（见文件头 NOTICE）；升级运行时或重新
 vendor 前，按 `doc/dsh-rc3-compatibility.md` 复核 row API/样式边界。
 

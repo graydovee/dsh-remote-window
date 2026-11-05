@@ -163,8 +163,21 @@ for old sessions but is no longer reachable from the main area.
 Install into the client `web` profile, from the **Plugins** page or the CLI:
 
 ```bash
-dsh plugin --profile web add dsh-remote-window
+dsh plugin --profile web add dsh-remote-window@alpha
 ```
+
+Every published version so far is a prerelease on the npm `alpha` channel; `latest` may lag behind
+(it still points at `0.1.0-alpha.3`, whose DSH interval is older), so do not install the bare name. Pin
+the exact version from the Compatibility table when reproducibility matters. You can also install the
+prebuilt tarball from the GitHub release (paste its absolute path into the Plugins page), or install
+straight from the Git branch, which uses the committed `lib/` and runs no local build:
+
+```bash
+dsh plugin --profile web add github:graydovee/dsh-remote-window
+```
+
+Older tags still declare a `prepare` script, so do not install them by tag (`#v0.1.0-alpha.5` fails
+with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`).
 
 pnpm may refuse `ssh2`'s optional native build script; let the Plugins page install it or pass
 `--config.strict-dep-builds=false` on the first run. If it is already installed but not enabled, enable it
@@ -314,6 +327,7 @@ credential store.
 | Symptom | What to check |
 | --- | --- |
 | `incompatible-version` | Install a DSH release inside the supported interval (`0.2.1-rc.2 … 0.2.1-rc.5`) locally, or exempt that exact pair (see Compatibility). |
+| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | pnpm 11 found a build script (`prepare`) in the installed commit and the profile's `allowBuilds` does not allow it. Install `dsh-remote-window@alpha`, the release tarball, or a commit that contains the packaging fix; older tags still declare it. |
 | No target rail | The plugin must be installed and enabled in `web`; restart `dsh web` and reload. Hover the rail or press `Alt+R`. |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | The client package lost or mismatched its bundled server-plugin tarball; reinstall the client plugin and reconnect. |
 | `server-plugin-integrity-failed` | The bundled/downloaded server plugin failed its sha256 check; reinstall the client package. |

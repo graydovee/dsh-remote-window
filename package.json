@@ -89,7 +89,6 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepare": "tsdown",
     "bundle:server-plugin": "node scripts/bundle-server-plugin.mjs"
   },
   "peerDependencies": {

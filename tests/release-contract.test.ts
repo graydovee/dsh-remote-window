@@ -23,6 +23,7 @@ const manifest = JSON.parse(read('package.json')) as {
   devDependencies: Record<string, string>
   keywords: string[]
   files: string[]
+  scripts: Record<string, string>
   dsh: { manifestVersion: number; bundle: { patch: string }; client: { platform: string } }
 }
 
@@ -121,6 +122,18 @@ describe('package manifest', () => {
     const sha = checksums[name]
     expect(sha, name).toMatch(/^[0-9a-f]{64}$/u)
     expect(statSync(new URL(`../assets/server-plugin/${name}`, import.meta.url)).size).toBeGreaterThan(1024)
+  })
+
+  it('declares no install-time lifecycle scripts that a git install would have to allow', () => {
+    // pnpm 11 aborts a git-hosted dependency that declares build scripts unless the
+    // consuming profile allowlists it (ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED), and DSH's
+    // plugin manager only offers build approvals for ERR_PNPM_IGNORED_BUILDS. `lib/` is
+    // committed and `pnpm pack` strips these scripts from the published manifest, so
+    // declaring them only breaks `dsh plugin add <git url>`.
+    // `prepack`/`prepublishOnly` stay allowed: they run on pack/publish, never on install.
+    for (const name of ['preinstall', 'install', 'postinstall', 'prepare', 'prepublish']) {
+      expect(manifest.scripts?.[name], name).toBeUndefined()
+    }
   })
 })
 
