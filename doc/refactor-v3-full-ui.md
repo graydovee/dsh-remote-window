@@ -1,8 +1,8 @@
 # v3：全屏官方 UI + 本地模型来源
 
-本文件是 v3 的架构与实现契约。v2 的 native 对话主区（`session-main.tsx` 与
-`assets/official-ui/` 的 vendored 会话组件）在 v3 不再是生产路径：主区改为 server profile 官方
-DSH UI 的全屏同源 iframe；模型来源新增 **local（本机模型，默认）** 与 **server（server 自身模型）**。
+本文件是 v3 的架构与实现契约。主区是 server profile 官方 DSH UI 的全屏同源 iframe；v2 的 native
+对话主区与 vendored 会话组件已在 v3 验收后删除。模型来源为 **local（本机模型，默认）** 与
+**server（server 自身模型）**。
 数据权威、SSH、profile、host key、连接对话框全部沿用 v1/v2，不改变。
 
 实现状态（本分支）：
@@ -16,7 +16,7 @@ DSH UI 的全屏同源 iframe；模型来源新增 **local（本机模型，默�
 | 连接对话框模型来源设置（默认 local）+ 全部 provider/model 勾选代理 | 已完成（`localSelection`） |
 | portal 必须带 `dshRwSession` 深链 | 已完成（`portalSessionFor`） |
 | 重连复用已保存绝对 `DSH_HOME` | 已完成（`reconnectDshHome`） |
-| native v2 主区与 vendored 组件删除 | 验收后清理，代码暂留但不注册/不挂载 |
+| native v2 主区与 vendored 组件删除 | 已删除（v3 验收后清理；client 只剩 target rail 与 iframe 主区） |
 
 ## 1. 目标架构
 
@@ -213,8 +213,8 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
   `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。
 
-## 5. 清理阶段（验收后）
+## 5. 清理记录（已完成）
 
-删除 `src/client/session-main.tsx`、`src/client/panel.tsx`、`src/client/session-composer*`、
-`session-tools/approval/timeline/hero` 等 native 主区生产路径，以及 `assets/official-ui/`、相关 vendor
-脚本与测试；保留 `portal`/`embed`（v3 重新成为主路径）与 `remote-store` 的连接/工作区命令。
+已删除 `src/client/session-main.tsx`、`src/client/panel.tsx`、`src/client/session-composer*`、
+`session-tools/approval/timeline/hero` 等 native 主区生产路径，以及 `assets/official-ui/`、vendor 脚本
+与对应测试；保留 `portal`/`embed` 与 `remote-store` 的连接/工作区命令。

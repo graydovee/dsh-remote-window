@@ -18,7 +18,6 @@ import type { SshForwarder } from '../src/ssh/forward.ts'
 import type { ProfileRemote, ProfileExecResult } from '../src/provision/profile-lifecycle.ts'
 import { profilePaths } from '../src/provision/profile-lifecycle.ts'
 import { ProfileService, type ConnectProgressEvent, type ProfileConnection, type ProfileConnector } from '../src/provision/profile-service.ts'
-import { remotePresetId } from '../src/preset/world.ts'
 import type { TargetStore } from '../src/targets/store.ts'
 import type { RemoteTargetRecord } from '../src/targets/types.ts'
 import { packPackage, writeFakeServerPluginPackage } from './helpers/local-remote.ts'
@@ -43,7 +42,6 @@ const SCAN = [
 let server: Server
 let serverPort = 0
 let requests: { method: string; url: string; headers: IncomingMessage['headers']; body: string }[] = []
-const executorModes = new Map<string, 'server' | 'local'>()
 const pinnedIds: string[] = []
 let registryReloads = 0
 let tarball = ''
@@ -89,7 +87,6 @@ beforeAll(async () => {
           'session/cancel': { sessionId: 'session-1', canceled: true },
           'session/approval': { sessionId: 'session-1', allowed: true },
           'session/status': { sessionId: 'session-1', running: false },
-          'executor/get': { mode: executorModes.get(String(params['sessionId'])) ?? 'server' },
           'registry/refresh': (() => { registryReloads += 1; return { revision: `r${registryReloads + 1}`, serviceReplaced: true } })(),
         }
         res.writeHead(200, { 'content-type': 'application/json' })
@@ -198,44 +195,6 @@ function fakeConnector(): { connector: ProfileConnector; remote: FakeRemote } {
 }
 
 describe('ProfileService M1 slice', () => {
-  it('registers the remote preset for a v1 target and disposes it on stop', async () => {
-    const { connector } = fakeConnector()
-    const registered: { id?: string }[] = []
-    const disposed: string[] = []
-    const ctx = {
-      get: (name: string) => name === 'agentPresets'
-        ? {
-            register: async (definition: unknown) => {
-              registered.push(definition as { id?: string })
-              return () => { disposed.push((definition as { id?: string }).id ?? '') }
-            },
-          }
-        : undefined,
-    } as never
-    const service = new ProfileService({
-      ctx,
-      store,
-      packageRoot: '/tmp/client-package',
-      pluginVersion: VERSION,
-      connector,
-      cacheDir: '/tmp/cache',
-    })
-    const result = await service.connect({
-      label: 'preset-fixture',
-      host: '203.0.113.20',
-      port: 22,
-      username: 'tester',
-      authKind: 'password',
-      secret: 'hunter2',
-      hostKeyFingerprint: 'SHA256:fixture',
-      modelSource: 'server',
-    })
-    expect(result.target.executor).toBe('local')
-    expect(registered.map(entry => entry.id)).toContain(remotePresetId(result.target.id))
-    await service.stop(result.target.id)
-    expect(disposed).toContain(remotePresetId(result.target.id))
-  })
-
   it('state refresh reloads the registry so another client pin/archive becomes visible', async () => {
     const { connector } = fakeConnector()
     const service = new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
@@ -266,50 +225,6 @@ describe('ProfileService M1 slice', () => {
     expect(await service.sessionStatus(result.target.id, { sessionId: 'session-1' })).toMatchObject({ running: false })
     await service.stop(result.target.id)
     await expect(service.sessionTimeline(result.target.id, { sessionId: 'session-1' })).rejects.toMatchObject({ code: 'target-not-connected' })
-  })
-
-  it('infers session/open executor from the server executor record', async () => {
-    const { connector } = fakeConnector()
-    const service = new ProfileService({ store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
-    const result = await service.connect({
-      label: 'executor-open', host: '203.0.113.40', port: 22, username: 'tester', authKind: 'password', secret: 'x', hostKeyFingerprint: 'SHA256:fixture',
-      modelSource: 'server',
-    })
-    const created = await service.sessionCreate(result.target.id, { workspaceId: 'w1', executor: 'server' })
-    expect(created).toMatchObject({ sessionId: 'session-created', executor: 'server' })
-    executorModes.set('session-created', 'server')
-    expect(await service.sessionOpen(result.target.id, { sessionId: 'session-created', workspaceId: 'w1' }))
-      .toMatchObject({ sessionId: 'session-created', executor: 'server' })
-    executorModes.set('session-local', 'local')
-    // An explicit stale `server` must not override the recorded local mode.
-    await expect(service.sessionOpen(result.target.id, { sessionId: 'session-local', workspaceId: 'w1', executor: 'server' }))
-      .rejects.toMatchObject({ code: 'local-runtime-unavailable' })
-    await service.stop(result.target.id)
-  })
-
-  it('reuses a preset already registered by the legacy world sweep (upgrade path)', async () => {
-    const existingRecord: RemoteTargetRecord = {
-      id: 'rt-preset1', label: 'preset-existing', kind: 'ssh', host: '203.0.113.30', port: 22,
-      username: 'tester', authKind: 'password', hostKeyFingerprint: 'SHA256:fixture',
-      remote: { nodePath: 'node', dshCommand: '/usr/local/bin/dsh', profile: 'graydovee-remote-window-abcdef012345', dshHome: '/home/tester/.dsh', plugins: [] },
-      status: 'ready', createdAt: '2026-01-01T00:00:00.000Z',
-    }
-    await store.putTarget(existingRecord)
-    const register = vi.fn()
-    const ctx = {
-      get: (name: string) => name === 'agentPresets'
-        ? { list: async () => [{ id: 'remote:rt-preset1' }], register }
-        : undefined,
-    } as never
-    const { connector } = fakeConnector()
-    const service = new ProfileService({ ctx, store, packageRoot: '/tmp/client-package', pluginVersion: VERSION, connector, cacheDir: '/tmp/cache' })
-    const result = await service.connect({
-      label: 'preset-existing', host: '203.0.113.30', port: 22, username: 'tester', authKind: 'password', secret: 'x', hostKeyFingerprint: 'SHA256:fixture',
-      modelSource: 'server',
-    })
-    expect(result.target.id).toBe('rt-preset1')
-    expect(register).not.toHaveBeenCalled()
-    await service.stop(result.target.id)
   })
 
   it('decides runtime/plugin actions during the probe step before deploying', async () => {

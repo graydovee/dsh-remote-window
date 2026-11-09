@@ -11,10 +11,6 @@
  *    connected target (portal iframe, `SERVER_MAIN_ID`). The client shell's own
  *    sidebar yields while the frame is mounted, so the official sidebar/header/
  *    right sidebar are the navigation.
- *
- * The v2 native conversation renderer (`session-main.tsx`, vendored composer/
- * header/tool components) is retained in the tree but no longer registered or
- * mounted; it is deleted after v3 acceptance (the plan's cleanup phase).
  */
 import type { ClientContext } from './context.ts'
 import { t } from './locales.ts'
@@ -27,8 +23,8 @@ import { ensureStyles } from './styles.ts'
 export const inject = ['slots']
 
 /**
- * Plugin body: stylesheet, the floating target rail, the P3 state stream and
- * the full-screen official-UI main panel.
+ * Plugin body: stylesheet, the floating target rail, the connection snapshot
+ * and the full-screen official-UI main panel.
  * @param ctx - the client context.
  */
 export function apply(ctx: ClientContext): void {
@@ -38,13 +34,13 @@ export function apply(ctx: ClientContext): void {
   // The floating target rail is the only client chrome while the official UI
   // owns the main area; it stays mounted across sidebar re-renders.
   ctx.effect(() => mountTargetRail(), 'dsh-remote-window: target rail')
-  // v1 remote tree: one P3 snapshot for the rail; sessions/workspaces still
-  // load for connection facts but are rendered by the server's official UI.
+  // One snapshot for the rail; sessions/workspaces load for the portal deep
+  // link and connection facts, and are rendered by the server's official UI.
   void loadRemoteState()
   ctx.effect(() => () => { disposeRemoteStore() }, 'dsh-remote-window: remote store lifetime')
 
   // One keyed main entry: the full-screen official DSH UI served through the
-  // same-origin portal. The v2 native conversation panel is not registered.
+  // same-origin portal.
   try {
     ctx.slots.inject('main', () => ctx.slots.register({
       name: 'main',

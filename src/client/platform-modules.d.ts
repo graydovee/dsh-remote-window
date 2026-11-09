@@ -429,17 +429,3 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
   export const IconUnarchiveOutlineRegular: IconComponent
 }
 
-
-/* -------------------------------------------------------------------------
- * @deepseek-ai/dsh-client-ui-slots
- * The slot *service* arrives through `ctx.slots`; only the render-seat types are
- * imported by value-free code (the vendored rows take one as a prop).
- * ---------------------------------------------------------------------- */
-
-declare module '@deepseek-ai/dsh-client-ui-slots' {
-  export type RenderSlotFn<Key extends string> = (key: Key, owner?: unknown, options?: unknown) => unknown
-  export type PropsRenderSlots<S extends string> = {
-    renderSlot: RenderSlotFn<S>
-    readonly __renders?: ((key: S) => void) | undefined
-  }
-}

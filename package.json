@@ -14,22 +14,10 @@
       "types": "./lib/types/client/index.d.ts",
       "default": "./lib/client.js"
     },
-    "./connection": {
-      "types": "./lib/types/connection/index.d.ts",
-      "default": "./lib/connection.js"
-    },
     "./package.json": "./package.json",
     "./protocol": {
       "types": "./lib/types/protocol.d.ts",
       "default": "./lib/protocol.js"
-    },
-    "./rsession": {
-      "types": "./lib/types/rsession/remote-persistence.d.ts",
-      "default": "./lib/rsession.js"
-    },
-    "./session-persistence": {
-      "types": "./lib/types/session-persistence/routing.d.ts",
-      "default": "./lib/session-persistence.js"
     },
     "./src/*": "./src/*"
   },
@@ -82,8 +70,7 @@
     "README.md",
     "README-zh.md",
     "LICENSE",
-    "assets/server-plugin",
-    "assets/official-ui"
+    "assets/server-plugin"
   ],
   "scripts": {
     "build": "tsdown",

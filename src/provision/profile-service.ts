@@ -96,12 +96,6 @@ import {
 import { TunnelPluginTransport } from '../remote/tunnel-transport.ts'
 import { RemotePluginClient, type PluginHandshakeResponse } from '../remote/plugin-client.ts'
 import { PortalProxy, portalMuxPath, portalPath, type PortalUpstream } from '../portal/proxy.ts'
-import { createHostLocalRuntime, type HostLocalRuntime } from '../session/local-runtime.ts'
-import { WsMuxBackend } from '../remote/ws-mux.ts'
-import type { RemoteMuxBackend } from '../remote/mux-client.ts'
-import { remotePresetDefinition, remotePresetId } from '../preset/world.ts'
-import { LocalSessionError } from '../session/local-session.ts'
-import { applyModeSwitch } from '../session/mode-apply.ts'
 
 /** Read a local private-key file (expanding `~/`) for the SSH connector. */
 export async function readPrivateKeyFile(path: string): Promise<Buffer> {
@@ -365,15 +359,8 @@ export function createSshProfileConnector(): ProfileConnector {
 export class ProfileService {
   private readonly live = new Map<string, LiveProfile>()
   private readonly failures = new Map<string, { code: string; message: string; details?: unknown }>()
-  /** workspaceId → server path, learned from P1 lists (local-mode header anchoring). */
-  private readonly workspacePaths = new Map<string, string>()
-  /** One local-mode runtime per target (owned handles + private anchors). */
-  private readonly localRuntimes = new Map<string, HostLocalRuntime>()
-  private readonly muxes = new Map<string, WsMuxBackend>()
   private readonly reconnectClose = new Map<string, () => void>()
   private readonly reconnecting = new Set<string>()
-  /** Remote execution-world presets registered for live v1 targets. */
-  private readonly presetDisposers = new Map<string, () => Promise<void> | void>()
   /** Last registry revision this host read for each target (state badge). */
   private readonly registryRevisions = new Map<string, { revision: string; epoch?: string }>()
   /** Shared view state read from workspace/list, merged into session rows. */
@@ -400,44 +387,6 @@ export class ProfileService {
   /** The installation's stable clientId (also used by the old state route). */
   async clientId(): Promise<string> {
     return await this.options.store.ensureClientId()
-  }
-
-  /** Anchor paths of one target mapped to their server-real workspace paths. */
-  private pathAliasesFor(targetId: string): { stub: string; remote: string }[] {
-    const runtime = this.localRuntimes.get(targetId)
-    if (runtime === undefined) return []
-    const aliases: { stub: string; remote: string }[] = []
-    for (const entry of runtime.anchors.entries()) {
-      const remote = this.remotePathForWorkspace(entry.workspaceId)
-      if (remote !== undefined && remote !== '' && entry.path !== remote) aliases.push({ stub: entry.path, remote })
-    }
-    return aliases
-  }
-
-  /** One target's execution-world mux, created lazily from its live profile. */
-  muxFor(targetId: string): RemoteMuxBackend | undefined {
-    const live = this.live.get(targetId)
-    if (live === undefined) return undefined
-    const existing = this.muxes.get(targetId)
-    if (existing !== undefined) return existing
-    const mux = new WsMuxBackend({
-      forwarder: live.connection.forwarder,
-      port: live.handle.port,
-      cookie: live.cookie,
-      clientId: this.options.store.clientId() ?? '',
-      instanceId: this.instanceId,
-      aliases: () => this.pathAliasesFor(targetId),
-    })
-    this.muxes.set(targetId, mux)
-    return mux
-  }
-
-  /** Drop one target's mux (profile restart/disconnect invalidates it). */
-  private async closeMux(targetId: string): Promise<void> {
-    const mux = this.muxes.get(targetId)
-    if (mux === undefined) return
-    this.muxes.delete(targetId)
-    await mux.close().catch(() => undefined)
   }
 
   /** One target's portal proxy, when its profile is live. */
@@ -765,7 +714,6 @@ export class ProfileService {
         modelSource,
         ...(runtime.nodePath === undefined ? {} : { nodePath: runtime.nodePath }),
       })
-      await this.registerTargetPreset(target)
       const live: LiveProfile = {
         targetId,
         connection,
@@ -810,7 +758,6 @@ export class ProfileService {
         await waitForProfileStopped(connection.remote, handle.paths).catch(() => false)
       }
       await connection?.close().catch(() => undefined)
-      await this.disposeTargetPreset(targetId).catch(() => undefined)
       // Keep the row explainable: a failed reconnect leaves the previous target
       // record (if any) with a scrubbed, human-actionable error instead of a
       // silently deleted connection.
@@ -871,13 +818,6 @@ export class ProfileService {
     this.live.delete(targetId)
     this.reconnectClose.get(targetId)?.()
     this.reconnectClose.delete(targetId)
-    await this.disposeTargetPreset(targetId)
-    await this.closeMux(targetId)
-    const local = this.localRuntimes.get(targetId)
-    if (local !== undefined) {
-      this.localRuntimes.delete(targetId)
-      await local.dispose().catch(() => undefined)
-    }
     live.disposeUpgrade()
     live.portal.close()
     live.transport.dispose()
@@ -894,19 +834,12 @@ export class ProfileService {
   /** Stop every live profile (plugin unload). */
   async dispose(): Promise<void> {
     for (const targetId of [...this.live.keys()]) await this.stop(targetId).catch(() => false)
-    for (const [targetId, runtime] of [...this.localRuntimes]) {
-      this.localRuntimes.delete(targetId)
-      await runtime.dispose().catch(() => undefined)
-    }
-    for (const targetId of [...this.muxes.keys()]) await this.closeMux(targetId)
-    for (const targetId of [...this.presetDisposers.keys()]) await this.disposeTargetPreset(targetId)
     await this.localLlm.close().catch(() => undefined)
   }
 
   /** P1 read: workspace list. */
   async workspaceList(targetId: string): Promise<unknown> {
     const value = await this.pluginFor(targetId)?.rpc('workspace/list', {}) ?? { workspaces: [] }
-    this.rememberWorkspacePaths(value)
     const registry = (value as { registry?: { revision?: unknown; epoch?: unknown } }).registry
     if (typeof registry?.revision === 'string' && registry.revision !== '') {
       const list = value as { pinnedSessionIds?: unknown; archivedSessionIds?: unknown }
@@ -976,7 +909,7 @@ export class ProfileService {
     }
     // Route through `workspaceList` on purpose: it records the registry id
     // arrays (`pinnedSessionIds`/`archivedSessionIds`) and workspace paths used
-    // by the row merge and by local-mode aliases.
+    // by the row merge.
     const workspaces = await this.workspaceList(targetId) as { registry?: { revision?: string; stale?: boolean } }
     const sessions = this.sessionFlags(targetId, await plugin.rpc('session/list', {}))
     return {
@@ -1007,72 +940,11 @@ export class ProfileService {
     }
   }
 
-  /** Server path of a workspace learned from P1 (for local-mode anchors). */
-  remotePathForWorkspace(workspaceId: string): string | undefined {
-    return this.workspacePaths.get(workspaceId)
-  }
-
-  /** Public alias view for the realm's `ctx.ssh` and the mux backend. */
-  pathAliases(targetId: string): { stub: string; remote: string }[] {
-    return this.pathAliasesFor(targetId)
-  }
-
-  /** The private local anchor standing for one workspace (local mode). */
-  anchorForWorkspace(workspaceId: string): string | undefined {
-    for (const runtime of this.localRuntimes.values()) {
-      const path = runtime.anchorForWorkspace(workspaceId)
-      if (path !== undefined) return path
-    }
-    return undefined
-  }
-
-  /** Resolve a session cwd that is one of this process's private anchors. */
-  routeForCwd(cwd: string | undefined): { targetId: string; workspaceId: string; remoteCwd?: string } | undefined {
-    for (const runtime of this.localRuntimes.values()) {
-      const route = runtime.routeForCwd(cwd)
-      if (route !== undefined) {
-        const remoteCwd = this.remotePathForWorkspace(route.workspaceId)
-        return { targetId: route.targetId, workspaceId: route.workspaceId, ...(remoteCwd === undefined ? {} : { remoteCwd }) }
-      }
-    }
-    return undefined
-  }
-
-  /** Find the target/workspace owning a stored session through P1 `persist/locate`. */
-  async locateRemoteSession(sessionId: string): Promise<{ targetId: string; workspaceId: string; remoteCwd?: string } | undefined> {
-    for (const targetId of this.live.keys()) {
-      try {
-        const located = await this.rpc<{ workspaceId?: unknown; remoteCwd?: unknown }>(targetId, 'persist/locate', { sessionId })
-        const remoteCwd = typeof located?.remoteCwd === 'string' ? located.remoteCwd : undefined
-        const workspaceId = typeof located?.workspaceId === 'string'
-          ? located.workspaceId
-          : remoteCwd === undefined ? undefined : [...this.workspacePaths].find(([, path]) => path === remoteCwd)?.[0]
-        if (workspaceId !== undefined && workspaceId !== '') {
-          return { targetId, workspaceId, ...(remoteCwd === undefined ? {} : { remoteCwd }) }
-        }
-      } catch {
-        // A target that cannot answer is not the owner.
-      }
-    }
-    return undefined
-  }
-
   /** One administrative P1 write/read (workspace, session, fs, executor). */
   async rpc<T>(targetId: string, method: string, params: unknown = {}, signal?: AbortSignal): Promise<T> {
     const plugin = this.pluginFor(targetId)
     if (plugin === undefined) throw Object.assign(new Error(`remote target "${targetId}" is not connected`), { code: 'target-not-connected', status: 404 })
-    const value = await plugin.rpc<T>(method, params, signal)
-    this.rememberWorkspacePaths(value)
-    return value
-  }
-
-  private rememberWorkspacePaths(value: unknown): void {
-    if (value === null || typeof value !== 'object') return
-    const record = value as { workspaces?: { workspaceId?: unknown; path?: unknown }[]; workspace?: { workspaceId?: unknown; path?: unknown } }
-    const rows = Array.isArray(record.workspaces) ? record.workspaces : record.workspace === undefined ? [] : [record.workspace]
-    for (const row of rows) {
-      if (typeof row.workspaceId === 'string' && typeof row.path === 'string') this.workspacePaths.set(row.workspaceId, row.path)
-    }
+    return await plugin.rpc<T>(method, params, signal)
   }
 
   /** P3 workspace/session/fs write operations, forwarded to P1 unchanged. */
@@ -1092,70 +964,15 @@ export class ProfileService {
     return this.rpc(targetId, 'workspace/reorder', { workspaceId, ...(beforeWorkspaceId === undefined ? {} : { beforeWorkspaceId }) })
   }
 
-  /** P3 new session: server mode forwards P1; local mode uses the host runtime. */
+  /** P3 new session: forwards P1; the server mints and owns the session. */
   async sessionCreate(targetId: string, params: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string; executor?: 'server' | 'local' }): Promise<unknown> {
-    if (params.executor !== 'local') {
-      const result = await this.rpc<{ sessionId?: unknown; agentPreset?: unknown }>(targetId, 'session/create', params)
-      return {
-        ...result,
-        sessionId: typeof result.sessionId === 'string' ? result.sessionId : '',
-        workspaceId: params.workspaceId,
-        executor: 'server',
-        revealed: true,
-      }
-    }
-    if (params.workspaceId === undefined || params.workspaceId === '') {
-      throw Object.assign(new Error('a local-mode session needs a workspaceId'), { code: 'bad-request', status: 400 })
-    }
-    const runtime = this.localRuntimeFor(targetId)
-    if (runtime === undefined) throw Object.assign(new Error('local mode is not available for this target'), { code: 'local-runtime-unavailable', status: 500 })
-    try {
-      // The routing persistence needs the server-real workspace path to write
-      // `persist/create { remoteCwd, executor:'local' }`; make sure this process
-      // has learned it (first local create can precede any workspace read).
-      if (this.remotePathForWorkspace(params.workspaceId) === undefined) await this.workspaceList(targetId)
-      const created = await runtime.create({ workspaceId: params.workspaceId })
-      return { sessionId: created.sessionId, workspaceId: created.workspaceId, executor: 'local', revealed: created.revealed }
-    } catch (error) {
-      if (error instanceof LocalSessionError) throw Object.assign(new Error(error.message), { code: error.code, status: 409, details: error.details })
-      throw error
-    }
-  }
-
-  /**
-   * P3 open: local mode resumes/attaches a client-owned handle; server mode is
-   * iframe. When the caller omits `executor`, infer it from the server's
-   * authoritative executor record: a session created in local mode must not be
-   * reopened as server mode just because the UI did not repeat the choice.
-   */
-  async sessionOpen(targetId: string, params: { workspaceId?: string; sessionId: string; executor?: 'server' | 'local' }): Promise<unknown> {
-    // The server-side executor record is authoritative: a session created in
-    // local mode must reopen locally even if the UI still sends the connection's
-    // old default (`server`). The explicit value is only a fallback for sessions
-    // without a record (legacy/blank).
-    const lookup = await this.executorModeOf(targetId, params.sessionId)
-    const recorded = lookup.mode
-    const executor = recorded ?? params.executor ?? 'server'
-    const diagnostics = {
-      executorSource: recorded === undefined ? 'fallback' : 'record',
-      ...(recorded === undefined ? {} : { recordedExecutor: recorded }),
-      ...(lookup.error === undefined ? {} : { executorLookupError: lookup.error }),
-    }
-    if (executor !== 'local') return { sessionId: params.sessionId, workspaceId: params.workspaceId, executor: 'server', revealed: true, ...diagnostics }
-    if (params.workspaceId === undefined || params.workspaceId === '') throw Object.assign(new Error('a local-mode session needs a workspaceId'), { code: 'bad-request', status: 400 })
-    const runtime = this.localRuntimeFor(targetId)
-    if (runtime === undefined) throw Object.assign(new Error('local mode is not available for this target'), { code: 'local-runtime-unavailable', status: 500 })
-    // The mux/`ctx.ssh` alias list needs the workspace's server path; make sure
-    // it was learned even when the caller opens a session without a prior list.
-    if (this.remotePathForWorkspace(params.workspaceId) === undefined) {
-      await this.workspaceList(targetId).catch(() => undefined)
-    }
-    try {
-      const opened = await runtime.open({ workspaceId: params.workspaceId, sessionId: params.sessionId })
-      return { sessionId: opened.sessionId, workspaceId: opened.workspaceId, executor: 'local', revealed: opened.revealed, ...diagnostics }
-    } catch (error) {
-      if (error instanceof LocalSessionError) throw Object.assign(new Error(error.message), { code: error.code, status: 409, details: error.details })
-      throw error
+    const result = await this.rpc<{ sessionId?: unknown; agentPreset?: unknown }>(targetId, 'session/create', params)
+    return {
+      ...result,
+      sessionId: typeof result.sessionId === 'string' ? result.sessionId : '',
+      workspaceId: params.workspaceId,
+      executor: 'server',
+      revealed: true,
     }
   }
 
@@ -1206,72 +1023,6 @@ export class ProfileService {
     return await this.rpc(targetId, 'session/status', params)
   }
 
-  /**
-   * v2 session event stream (SSE). The caller is the host HTTP bridge; it
-   * forwards the exact frames and owns reconnect (afterSeq) and keepalive.
-   */
-  async *sessionEvents(
-    targetId: string,
-    params: { readonly sessionId: string; readonly afterSeq?: number; readonly signal?: AbortSignal },
-  ): AsyncGenerator<import('../remote/plugin-client.ts').PluginSseEvent> {
-    const plugin = this.pluginFor(targetId)
-    if (plugin === undefined) throw Object.assign(new Error(`remote target "${targetId}" is not connected`), { code: 'target-not-connected', status: 404 })
-    yield* plugin.sessionEvents(params)
-  }
-
-  /** Read the server-authoritative executor mode for one session. */
-  private async executorModeOf(targetId: string, sessionId: string): Promise<{ mode?: 'server' | 'local'; error?: { code: string; message: string } }> {
-    try {
-      const record = await this.rpc<{ mode?: unknown } | null>(targetId, 'executor/get', { sessionId })
-      return record?.mode === 'local' || record?.mode === 'server' ? { mode: record.mode } : {}
-    } catch (error) {
-      // Do not silently degrade to the connection default; the caller includes
-      // this in the session/open response so a lease/method failure is visible.
-      return {
-        error: {
-          code: typeof (error as { code?: unknown }).code === 'string' ? String((error as { code?: unknown }).code) : 'executor-get-failed',
-          message: error instanceof Error ? error.message : String(error),
-        },
-      }
-    }
-  }
-
-  /**
-   * One target's local-mode runtime, created on demand.
-   *
-   * `ctx` is optional so unit tests can drive the service without a Cordis tree;
-   * routes that need local mode without it report `local-runtime-unavailable`.
-   */
-  private localRuntimeFor(targetId: string): HostLocalRuntime | undefined {
-    const cached = this.localRuntimes.get(targetId)
-    if (cached !== undefined) return cached
-    const ctx = this.options.ctx
-    const clientId = this.options.store.clientId()
-    if (ctx === undefined || clientId === undefined) return undefined
-    const record = this.options.store.target(targetId)
-    const runtime = createHostLocalRuntime({
-      ctx,
-      clientId,
-      targetId,
-      ...(record === undefined ? {} : { target: { label: record.label, host: record.host, port: record.port, username: record.username } }),
-      remotePathForWorkspace: workspaceId => this.remotePathForWorkspace(workspaceId),
-      rpc: {
-        request: async <T,>(method: string, params: unknown, signal?: AbortSignal): Promise<T> =>
-          await this.rpc<T>(targetId, method, params, signal),
-      },
-      flush: async () => {
-        const persistence = ctx.get('sessionPersistence') as { flush?: () => Promise<void> } | undefined
-        await persistence?.flush?.()
-      },
-      restartProfile: async () => {
-        const preview = await this.restartPreview(targetId)
-        await this.restart(targetId, { confirmActiveTurns: true, previewRevision: preview.previewRevision })
-      },
-    })
-    this.localRuntimes.set(targetId, runtime)
-    return runtime
-  }
-
   sessionRename(targetId: string, sessionId: string, title: string): Promise<unknown> {
     return this.rpc(targetId, 'session/rename', { sessionId, title })
   }
@@ -1311,100 +1062,6 @@ export class ProfileService {
       : await live.connection.remote.exec(`command mkdir -p ${shellQuote(path)}`, { maxBytes: 16 * 1024, timeoutMs: 30_000 })
     if (result.code !== 0) throw new Error(`cannot create remote directory "${path}": ${scrubSecrets(result.stderr.trim().slice(-500))}`)
     return { path }
-  }
-
-  /** P3 mode preview (D20): all running turns in this profile's process. */
-  async modePreview(targetId: string, _nextMode: 'server' | 'local', targetSessionId?: string): Promise<{
-    readonly currentTurn?: { readonly sessionId: string; readonly running: boolean }
-    readonly otherActiveTurns: readonly { readonly sessionId: string; readonly title?: string }[]
-    readonly requiresConfirm: boolean
-    readonly previewRevision: string
-  }> {
-    const plugin = this.pluginFor(targetId)
-    if (plugin === undefined) throw Object.assign(new Error(`remote target "${targetId}" is not connected`), { code: 'target-not-connected', status: 404 })
-    const status = await plugin.rpc<{ activeAgents?: readonly { sessionId: string; running: boolean; status: string }[] }>('profile/status', {})
-    const active = (status.activeAgents ?? []).filter(agent => agent.running)
-    // Protocol §5.4: the *target* session's turn is cancelled automatically;
-    // a running turn of any other session needs D20 confirmation. Without a
-    // targetSessionId the host cannot know which one the user is looking at, so
-    // it asks for confirmation for every active turn (safe direction).
-    const current = targetSessionId === undefined ? undefined : active.find(agent => agent.sessionId === targetSessionId)
-    const others = active.filter(agent => agent.sessionId !== current?.sessionId).map(agent => ({ sessionId: agent.sessionId }))
-    return {
-      ...(current === undefined ? {} : { currentTurn: { sessionId: current.sessionId, running: true } }),
-      otherActiveTurns: others,
-      requiresConfirm: targetSessionId === undefined ? active.length > 0 : others.length > 0,
-      // An idle switch is a normal case; use a stable non-empty sentinel so the
-      // P3 route's `previewRevision` validation never rejects an empty body.
-      previewRevision: active.length === 0 ? 'idle' : active.map(agent => agent.sessionId).sort().join(','),
-    }
-  }
-
-  /** P3 mode apply: cancel turns (after D20 confirmation) and persist the setting. */
-  async modeApply(targetId: string, nextMode: 'server' | 'local', options: { readonly cancelActiveTurns: boolean; readonly previewRevision: string; readonly targetSessionId?: string }): Promise<{
-    readonly switched: boolean
-    readonly cancelledTurnIds: readonly string[]
-    readonly failedCancellations: readonly { readonly sessionId: string; readonly message: string }[]
-    readonly restartRequired?: boolean
-    readonly openSessionId?: string
-  }> {
-    const preview = await this.modePreview(targetId, nextMode, options.targetSessionId)
-    if (nextMode === 'local' && options.targetSessionId === undefined) {
-      throw Object.assign(new Error('switching to local needs targetSessionId (the session the user is looking at)'), {
-        code: 'mode-switch/target-session-required',
-        status: 400,
-        details: { targetSessionId: null, requires: 'targetSessionId' },
-      })
-    }
-    if (preview.requiresConfirm && !options.cancelActiveTurns) {
-      throw Object.assign(new Error('switching the executor cancels running turns and requires confirmation'), {
-        code: 'mode-switch/other-turns-cancelled-required',
-        status: 409,
-        details: { otherActiveTurns: preview.otherActiveTurns },
-      })
-    }
-    if (preview.previewRevision !== options.previewRevision) {
-      throw Object.assign(new Error('the active-turn set changed; preview again'), { code: 'mode-switch/preview-stale', status: 409 })
-    }
-    const runtime = this.localRuntimeFor(targetId)
-    if (runtime === undefined) {
-      throw Object.assign(new Error('local mode is not available for this target'), { code: 'local-runtime-unavailable', status: 500 })
-    }
-    let result
-    try {
-      result = await applyModeSwitch(
-        {
-          executor: runtime.executor,
-          local: {
-            list: () => runtime.manager.list().map(session => session.sessionId),
-            release: async (sessionId: string) => { await runtime.manager.release(sessionId) },
-          },
-          restartProfile: async () => {
-            const restartPreview = await this.restartPreview(targetId)
-            await this.restart(targetId, { confirmActiveTurns: true, previewRevision: restartPreview.previewRevision })
-          },
-        },
-        {
-          nextMode,
-          ...(options.targetSessionId === undefined ? {} : { targetSessionId: options.targetSessionId }),
-          confirmOtherTurns: options.cancelActiveTurns,
-          previewRevision: options.previewRevision,
-        },
-      )
-    } catch (error) {
-      throw Object.assign(
-        new Error(error instanceof Error ? error.message : String(error)),
-        {
-          code: (error as { code?: string }).code ?? 'mode-switch/cancel-failed',
-          status: (error as { status?: number }).status ?? 409,
-          details: (error as { details?: unknown }).details,
-        },
-      )
-    }
-    // Only a successful apply flips the connection default; on any failure the
-    // target keeps its previous mode (protocol §16.13).
-    await this.options.store.updateTarget(targetId, current => ({ ...current, executor: nextMode })).catch(() => undefined)
-    return result
   }
 
   /** P1 registry reload (loader disable/enable). */
@@ -1523,13 +1180,6 @@ export class ProfileService {
     this.live.delete(targetId)
     this.reconnectClose.get(targetId)?.()
     this.reconnectClose.delete(targetId)
-    await this.disposeTargetPreset(targetId)
-    await this.closeMux(targetId)
-    const local = this.localRuntimes.get(targetId)
-    if (local !== undefined) {
-      this.localRuntimes.delete(targetId)
-      await local.dispose().catch(() => undefined)
-    }
     live.disposeUpgrade()
     live.portal.close()
     live.transport.dispose()
@@ -1564,50 +1214,7 @@ export class ProfileService {
       disposeUpgrade,
       startedAt: (this.options.now?.() ?? new Date()).toISOString(),
     })
-    const record = this.options.store.target(targetId)
-    if (record !== undefined) await this.registerTargetPreset(record)
     return { restarted: true, cancelledTurnIds: cancelled.canceled }
-  }
-
-  /**
-   * Register (or re-register) the remote execution-world preset for a v1 target.
-   *
-   * The realm's `connection` row resolves `ctx.remoteMux`; without the preset a
-   * local-mode `ctx.agents.create/resume` fails with `agent-preset/not-found`
-   * even though the profile server and P1 are healthy.
-   */
-  private async registerTargetPreset(target: { readonly id: string; readonly label: string; readonly host: string; readonly port: number; readonly username: string }): Promise<void> {
-    const agentPresets = this.options.ctx?.get('agentPresets') as { register?: (definition: unknown) => Promise<() => Promise<void> | void> } | undefined
-    if (agentPresets?.register === undefined) return
-    const existing = this.presetDisposers.get(target.id)
-    if (existing !== undefined) {
-      this.presetDisposers.delete(target.id)
-      await Promise.resolve(existing()).catch(() => undefined)
-    } else {
-      // The legacy `RemoteWorkspaces.ensureWorlds()` may already have registered
-      // this id for a pre-v1 target (client upgrade/reconnect). Registering again
-      // throws `Duplicate agent preset`; reuse the existing declaration, which
-      // now runs the v1 `remoteMux` connection through the same target id.
-      const listPresets = (agentPresets as { list?: () => Promise<readonly { id?: unknown }[]> }).list
-      if (listPresets !== undefined) {
-        try {
-          const listed = await listPresets.call(agentPresets)
-          if (Array.isArray(listed) && listed.some(preset => preset.id === remotePresetId(target.id))) return
-        } catch {
-          // A registry that cannot list still allows the register attempt.
-        }
-      }
-    }
-    const dispose = await agentPresets.register(remotePresetDefinition(target))
-    this.presetDisposers.set(target.id, dispose)
-  }
-
-  /** Drop one target's preset registration (disconnect/forget). */
-  private async disposeTargetPreset(targetId: string): Promise<void> {
-    const dispose = this.presetDisposers.get(targetId)
-    if (dispose === undefined) return
-    this.presetDisposers.delete(targetId)
-    await Promise.resolve(dispose()).catch(() => undefined)
   }
 
   private portalUpstream(connection: ProfileConnection, port: number): PortalUpstream {

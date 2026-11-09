@@ -53,9 +53,9 @@ export interface SlotsService {
 export interface ClientContext {
   readonly slots: SlotsService
   /**
-   * Resolve a service by name on the browser context. Only used for
-   * shell-owned singletons we merely *talk to* (e.g. `uiWorkspace` to reveal
-   * an opened session); anything typed belongs in this interface instead.
+   * Resolve a service by name on the browser context. Used for the one
+   * shell-owned singleton the v3 chrome talks to (`layout.selectPanel`); any
+   * typed surface belongs in this interface instead.
    */
   get(name: string): unknown
   /**

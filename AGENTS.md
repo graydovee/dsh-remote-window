@@ -9,7 +9,7 @@ profile 官方 DSH UI 的全屏同源 iframe），Windows server 目标的细节
 ## 项目边界
 
 - **server 是一台能独立工作的普通 DSH；client 是它的远程入口。**
-- 本仓库产出 `dsh-remote-window` 插件：host 行（Node ESM）+ browser client + local 模式执行世界。
+- 本仓库产出 `dsh-remote-window` 插件：host 行（Node ESM）+ browser client。
 - server 运行普通 `dsh web`，并为每个 client 建专用 profile `graydovee-remote-window-<clientId>`，其中
   安装 server 插件 `dsh-remote-window-server`（独立仓库发布；client 包内置精确同版本 tarball）。
 - client 用一条连接访问 server：SSH 走 ssh2；目标就是本机 WSL 发行版时走本机 `wsl.exe`（无 sshd、
@@ -43,7 +43,6 @@ Node 22.19+ 或 24+；依赖管理只用 pnpm。
     node scripts/sync-compat.mjs          # 改 compat/ 之后重新生成声明；--check 用于门禁
     node scripts/bump-dsh-version.mjs --to <dsh>   # 把新 dsh 加为 runtimes[0] 并重生成声明
     node scripts/bump-dsh-version.mjs --check      # CI 用的别名，等于 sync-compat --check
-    node scripts/vendor-workspace-rows.mjs --dsh <checkout> --source-label 'dsh-v<version> (<sha>)'
     node scripts/bundle-server-plugin.mjs --tarball <server-plugin tgz>
     DSH_SMOKE_CLI=<dsh 启动器> npx vitest run tests/profile.smoke.test.ts
 
@@ -53,9 +52,6 @@ Node 22.19+ 或 24+；依赖管理只用 pnpm。
 `package.json` 的 scripts 保持 `build`、`typecheck`、`test`、`bundle:server-plugin` 四项：`lib/` 由
 `pnpm build` 产出并入库，发布包由 `pnpm pack` 生成。`tests/release-contract.test.ts` 校验 scripts 与
 打包清单。
-
-`src/client/vendor/workspace-rows` 的 provenance 固定在记录里（见文件头 NOTICE）；升级运行时或重新
-vendor 前，按 `doc/dsh-rc3-compatibility.md` 复核 row API/样式边界。
 
 ## 两仓共享文件（逐字节）
 
@@ -75,8 +71,7 @@ vendor 前，按 `doc/dsh-rc3-compatibility.md` 复核 row API/样式边界。
 
 tsdown targets：
 
-1. **host**：Node ESM，入口 `index` 以及 loader 需要的子入口（protocol/connection/rsession/
-   session-persistence）。
+1. **host**：Node ESM，入口 `index` 与共享协议 `protocol`。
 2. **client**：浏览器 CJS 工厂，经 `window.__ModuleLoader__.load` 注册；只 external 平台模块。Node
    内置模块/非 inline-safe 跨插件值导入会触发纯度门禁；跨插件协作走 Cordis service。
 
@@ -85,20 +80,15 @@ tsdown targets：
     src/index.ts                 插件 host 行：HTTP/SSE 路由、portal、v1/P1 接线
     src/local-llm/               本机模型：设置/凭据、/v1 代理 bridge、SSH 反向隧道、profile patch
     src/portal/                  同源反向代理（HTTP prefix + WS exact、Host/Origin/cookie 规则）
-    src/remote/                  P1 插件客户端：tunnel HTTP、handshake、mux WS、帧适配
+    src/remote/                  P1 插件客户端：tunnel HTTP、handshake
     src/ssh/                     ssh2 连接、host key、forwardOut、Windows agent
     src/targets/                 target 记录、clientId、凭据引用、脱敏
     src/provision/               runtime/profile/server 插件安装与生命周期、远程方言层、版本兼容与选版
-    src/session/                 executor 状态机、anchors、local runtime/session、mode apply
-    src/session-persistence/     本地 JSONL 与 server persist.* 的路由层
-    src/rsession/                remote persist 门面
-    src/preset/world.ts          local 模式执行世界 preset
-    src/connection/              执行世界：ctx.ssh → RemoteMux 适配
     src/client/                  v3 远程段 UI：浮动 target rail、连接对话框、portal iframe 主区
     assets/server-plugin/        内置 server 插件 tarball + checksums.json
     compat/                      版本兼容表（runtimes.json）与发布历史（history.json）
 
-依赖方向：`targets → ssh/provision → service → session/connection → client`。client 只依赖平台模块和
+依赖方向：`targets → ssh/provision → service → client`。client 只依赖平台模块和
 明确的纯模块（如 `targets/methods.ts`），不 import host service 或 Node API。
 
 ## 远端平台方言层（POSIX / Windows）
@@ -187,11 +177,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 - 会话日志读写走官方 `ctx.sessionPersistence`，单写者由官方 JSONL flock 裁决，插件不自造锁、不抢占。
   `SessionAlreadyOwnedError` 呈现为 `session/writer-held`，用显式错误让用户决定。
 - 存储域 `dsh_remote_window` 版本恒为 1，只允许新增 optional 字段。
-- local 模式 anchor 是插件私有材料（`<DSH_HOME>/remote-windows/<clientId>/<targetId>/<hash>`），不注册进
-  官方 workspace registry、不出现在本地工作区列表，随插件/连接清理。
-- 搜索是 client 端的瞬时过滤：不落盘、不发 P1。
-- 远端会话 header 里的 cwd 是 server 真实路径；local 模式由 client routing 负责 anchor ↔ server path
-  重锚，协议层不做隐式翻译。
+- 远端会话 header 里的 cwd 是 server 真实路径，协议层不做隐式翻译。
 
 ## 连接与执行端
 
@@ -212,14 +198,6 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 - 模型来源切换按 D20：preview 列出当前 turn 与其它 active turn；apply 带 `previewRevision` 与
   `cancelActiveTurns:true`；缺清单拒绝执行，取消失败显式报错。
 - SSH 意外关闭自动重连最多 5 次（指数退避）；认证/host-key 错误与用户主动 stop 不重试。
-- 停进程/释放 handle 前按 cancel → `agent.whenIdle()`（3 s 预算）→ `sessionPersistence.flush()`；超时
-  报显式错误。
-- local 模式打开顺序：host 先 create/resume 让 client catalog 有 summary，再 `uiWorkspace.openSession`；
-  超时显示可重试错误，不吞点击。
-- 断开/删除/切换时清理 client 官方 selection：用受运行时守卫的 `uiWorkspace.clearMain()`，fallback 是
-  `ctx.layout.selectPanel(null)`；只清属于本 target 的 `dsh.sessions.current`，不碰本地会话。
-- 开发说明（不进模型上下文）：local 模式只注入 remote working-directory + execution host；SSH/mux/
-  sandbox/anchor 生命周期属于 DSH/插件实现。
 
 ## profile 与部署
 
@@ -228,8 +206,8 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `dsh web --profile`。
 - 解析 stdout 单行 `^dsh web: http://127\.0\.0\.1:(\d+)/\?token=([A-Za-z0-9_-]+)$`；token 只进
   `server.log`（0600）与 host 内存。
-- 本插件 bundle 替换官方 `session-persistence` 行；启用/升级把它写进 profile 的
-  `dsh.profile.bundles`，冷启动 DSH 完成。
+- 启用/升级把 `dsh-remote-window` 写进 profile 的 `dsh.profile.bundles`；bundle 只有一条 insert 行，
+  profile 热重载可直接应用。
 - 单 client profile lease（clientId/instanceId/pid/port/heartbeat，TTL 20 s）在 server 插件裁决：第二实例
   `profile-in-use`、异 client `profile-foreign-client`，stale 才可接管。
 - 专用 profile：离线解包内置 `dsh-remote-window-server-<client-version>.tgz`，写 4 个 profile 文件，最后
@@ -274,8 +252,6 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 - `dshRwFull=1` 只控制 server 插件不注入隐藏 CSS；client 不用自定义 CSS 覆盖官方视觉。
 - 官方 iframe 的滚动、下载、弹窗、剪贴板要在 sandbox 内可用；新增权限时同步更新本文与
   `doc/refactor-v3-full-ui.md`。
-- 官方行是 vendor 组件（`ProjectRowItem`/`SessionNodeItem`）：不重写行样式、不加缩进；改动前重跑
-  `scripts/vendor-workspace-rows.mjs` 并保留 NOTICE 来源。复用边界见 `doc/official-workspace-reuse.md`。
 - 对话框/toast 挂在浮动 target rail 的树上；同一类浮层用 `useSingleHost`。
 - 隐藏 shell 官方行用带 `[data-slot="sidebar.workspaces"]` 前缀的选择器，只改 `display`。
 - 远程段不写 client 共享 `workspace.json`/`sessions`；会话日志只写 server。
@@ -290,7 +266,6 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 |---|---|
 | client `~/.dsh/storages/dsh_remote_window.json` | target 记录（含 `modelSource`/`packageSource`）、`localLlm` 模式与超时、全局包策略 |
 | client `~/.dsh/.credentials.yaml` | SSH/凭据引用与 manual 模式的本地模型 key（官方 store，0600）；auto 模式不存 key |
-| client `~/.dsh/remote-windows/<clientId>/…` | local 模式私有 anchors（非权威，可删可重建） |
 | client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
 | server `~/.dsh/sessions/**` | 官方会话日志（权威） |
 | server `~/.dsh/storages/workspace.json` | 官方 workspace registry（权威，single layout） |
@@ -299,8 +274,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 | server `~/.dsh/remote-window/state/`、`locks/` | executor 记录、registry/bootstrap 锁 |
 | server `~/.dsh/remote-server-sessions/**`（旧） | 原样保留，不展示、不迁移 |
 
-- 卸载/禁用插件：清 client 本地锚点、旧 shell 条目与本地缓存；server 官方 sessions/workspace/凭据保持
-  原样。
+- 卸载/禁用插件：清旧 shell 条目与本地缓存；server 官方 sessions/workspace/凭据保持原样。
 - 清理调试实例：先 kill，确认端口关闭，`realpath` 后删临时目录；其它 tarball 保持原样。
 
 ## 空调试实例（本地 UI 验收）
@@ -332,7 +306,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 ## 测试与发布
 
 - 提交前至少跑 `pnpm typecheck`、`pnpm test`、`pnpm build`，并 `cmp` 三个共享文件。
-- 改动涉及 portal/embed/registry guard/executor/mode switch 时补对应集成测试；QA 按
+- 改动涉及 portal/embed/registry guard 时补对应集成测试；QA 按
   `doc/refactor-v1-requirements.md` §7 A–J 验收，证据放 `/tmp/dsh-qa`（不含 secret/真实路径）。
 - 两个仓库同版本发布：server 仓产出 `dsh-remote-window-server-<version>.tgz` + `.sha256` +
   `.manifest.json`；client 仓用 `scripts/bundle-server-plugin.mjs` 内置并写 `checksums.json`，`pnpm pack`

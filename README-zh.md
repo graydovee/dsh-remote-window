@@ -81,7 +81,7 @@ flowchart LR
   end
   subgraph server [SSH 目标机]
     PROF[per-client profile server<br/>官方 DSH UI · agent]
-    PLUG[server 插件<br/>P1 RPC · SSE · mux · embed]
+    PLUG[server 插件<br/>P1 RPC · SSE · embed]
     OFF[官方 DSH 服务<br/>workspaceRegistry · sessionPersistence · sessionController]
     LOG[(server ~/.dsh/sessions<br/>workspace registry · 视图状态)]
   end
@@ -96,7 +96,7 @@ flowchart LR
 
 client host 负责 SSH、host key pin、runtime/插件部署、per-client profile 生命周期、P1 客户端、同源
 portal 与本机模型 bridge/tunnel。server 插件负责握手/租约、包装官方服务的 workspace/session API、
-registry 写守卫、执行世界 WS mux 与 embed bootstrap/CSS。`dshRwFull=1` 让 embed 不再注入隐藏 sidebar/
+registry 写守卫与 embed bootstrap/CSS。`dshRwFull=1` 让 embed 不再注入隐藏 sidebar/
 rightbar/bottom 的 CSS，因此 iframe 里就是真实的 server UI。逐字契约见
 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)、
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) 与
@@ -132,8 +132,8 @@ rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤
 **Host key 必须确认。** 首次连接展示 host key SHA-256 并等待显式确认；之后 key 变化会中止连接。
 
 **沙箱与权限。** server profile 为 iframe 里的 agent 挂官方 sandbox provider/policy；没有隔离 backend
-时明确返回 partial enforcement 并在 server 执行，不假装已隔离。v2 executor 的远端执行世界仍保留在
-代码/数据中供旧会话使用，但新主区不再进入。
+时明确返回 partial enforcement 并在 server 执行，不假装已隔离。v2 执行世界已移除；记录过 `local`
+executor 的旧会话留在数据里，本版本不再打开。
 
 ## Quick start
 
@@ -236,7 +236,7 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 | --- | --- |
 | client `~/.dsh/storages/dsh_remote_window.json` | 连接记录（含模型来源）、本机模型 endpoint/模型/超时、包策略、旧 workspace refs（会清理） |
 | client `~/.dsh/.credentials.yaml` | SSH 凭据与本机模型 API key（官方存储，`0600`） |
-| client `~/.dsh/remote-windows/<clientId>/…` | v2 local 会话的私有 anchor（保留，非权威，不再展示） |
+| client `~/.dsh/remote-windows/<clientId>/…` | 旧版本留下的 v2 anchor 目录；本版本不再写入 |
 | client `~/.dsh/remote-assets/` | 本机 runtime/包缓存 |
 | server `~/.dsh/sessions/**` | 权威会话日志（两种模型来源共用） |
 | server `~/.dsh/storages/workspace.json` | 权威 workspace registry、pin/archive/顺序 |
@@ -262,9 +262,8 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 - **local 模型来源是默认。** 新连接默认走 client bridge（新 server 通常没配模型 key）；默认子模式自动
   代理本机 DSH 的全部模型目录，不需要手填。配置 server 凭据后再显式选 server 模型来源；更改来源需要
   重连。
-- **v2 executor（远端执行世界）不再被主区使用。** iframe 始终驱动 server agent。记录过 v2 `local`
-  executor 的旧会话留在数据里，但新 UI 不再进入；详见
-  [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)。
+- **v2 执行世界已移除。** iframe 始终驱动 server agent。记录过 v2 `local` executor 的旧会话留在数据里，
+  本版本不再打开；详见 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)。
 - **每个 client 只挂一个 iframe。** 打开第二个远程 target 会替换 frame（前一个 target 断开或在 rail
   中保持非激活）。没有两个 server 的分屏。
 - **旧的手动本机 endpoint 只支持 HTTP（`/v1/*`）。** 它仅为旧设置保留、对话框不再提供，TLS 从未

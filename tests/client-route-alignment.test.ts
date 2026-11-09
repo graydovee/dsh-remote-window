@@ -2,35 +2,16 @@
  * Every live route the browser half calls must exist as a `dispatchApi` case.
  *
  * The two halves are separate modules and a route name is a plain string, so a
- * rename used to surface only as a runtime 404 (`unknown method
- * "v1/wsl/distros"`). `src/client/api.ts` still carries v2-era helpers whose
- * routes were dropped by the host; that debt is pinned as a literal list so a
- * *new* stale call fails immediately.
+ * rename would otherwise surface only as a runtime 404 (`unknown method
+ * "v1/wsl/distros"`). Both client modules are scanned: `api.ts` carries the
+ * connection-dialog routes, `remote-api.ts` the rail/portal routes.
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const API_SOURCE = readFileSync(new URL('../src/client/api.ts', import.meta.url), 'utf8')
+const CLIENT_SOURCES = ['../src/client/api.ts', '../src/client/remote-api.ts']
+  .map(path => readFileSync(new URL(path, import.meta.url), 'utf8'))
 const HOST_SOURCE = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
-
-/** v2 routes the client still exposes but the host no longer dispatches. */
-const KNOWN_STALE = [
-  'alias-prefill',
-  'cleanup-shell-workspaces',
-  'connect',
-  'connect/start',
-  'dsh-scan',
-  'hostkey-confirm',
-  'list-dir',
-  'open-session',
-  'open-workspace',
-  'remote-windows',
-  'session-flag',
-  'session-rename',
-  'sessions',
-  'stop-target',
-  'workspace-rename',
-] as const
 
 /** Routes the browser half calls in `call()`. */
 function clientRoutes(source: string): string[] {
@@ -48,14 +29,15 @@ function hostRoutes(source: string): Set<string> {
 }
 
 describe('host/browser route alignment', () => {
-  it('dispatches every live route and nothing silently new is stale', () => {
+  it('dispatches every route the client calls', () => {
     const host = hostRoutes(HOST_SOURCE)
-    const stale = clientRoutes(API_SOURCE).filter(route => !host.has(route))
-    expect(stale).toEqual([...KNOWN_STALE].sort())
+    const stale = CLIENT_SOURCES.flatMap(clientRoutes).filter(route => !host.has(route))
+    expect(stale).toEqual([])
   })
 
   it('keeps the private-key discovery route on both halves', () => {
-    expect(clientRoutes(API_SOURCE)).toContain('ssh-keys')
+    const routes = CLIENT_SOURCES.flatMap(clientRoutes)
+    expect(routes).toContain('ssh-keys')
     expect(hostRoutes(HOST_SOURCE).has('ssh-keys')).toBe(true)
   })
 

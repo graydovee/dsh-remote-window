@@ -96,7 +96,7 @@ flowchart LR
   end
   subgraph server [SSH target]
     PROF[per-client profile server<br/>official DSH UI · agent]
-    PLUG[server plugin<br/>P1 RPC · SSE · mux · embed]
+    PLUG[server plugin<br/>P1 RPC · SSE · embed]
     OFF[official DSH services<br/>workspaceRegistry · sessionPersistence · sessionController]
     LOG[(server ~/.dsh/sessions<br/>workspace registry · view state)]
   end
@@ -112,7 +112,7 @@ flowchart LR
 The client host owns SSH, host-key pinning, runtime/plugin deployment, the per-client profile lifecycle,
 the P1 client, the same-origin portal and the local-model bridge/tunnel. The server plugin owns the
 handshake and lease, workspace and session APIs backed by official services, the registry write guard,
-the execution-world WebSocket mux and the embed bootstrap/CSS. `dshRwFull=1` makes the embed leave the
+and the embed bootstrap/CSS. `dshRwFull=1` makes the embed leave the
 official sidebar/rightbar/bottom in place, so the iframe is the real server UI. The detailed contracts are
 in [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md),
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) and
@@ -155,8 +155,8 @@ confirmation; a later key change stops the connection.
 
 **Sandbox and permissions.** The server profile mounts the official sandbox provider and policy for the
 agent running in the iframe; when no confinement backend exists it reports partial enforcement and runs
-there explicitly instead of pretending. The v2 executor's remote execution world remains in code and data
-for old sessions but is no longer reachable from the main area.
+there explicitly instead of pretending. The v2 execution world has been removed; sessions that recorded
+the `local` executor stay in data and are not opened.
 
 ## Quick start
 
@@ -271,7 +271,7 @@ dedicated profile's isolated runtime and never modifies the server's global DSH 
 | --- | --- |
 | Client `~/.dsh/storages/dsh_remote_window.json` | Connection records (incl. model source), local-model endpoint/model/timeout, package policy, legacy workspace refs (cleaned up) |
 | Client `~/.dsh/.credentials.yaml` | SSH credentials and the local-model API key (official store, mode `0600`) |
-| Client `~/.dsh/remote-windows/<clientId>/…` | Private anchors for local-mode sessions (non-authoritative) |
+| Client `~/.dsh/remote-windows/<clientId>/…` | Leftover v2 anchor directories from earlier versions; this version does not write them |
 | Client `~/.dsh/remote-assets/` | Local runtime/package cache |
 | Server `~/.dsh/sessions/**` | Authoritative session logs (both model sources) |
 | Server `~/.dsh/storages/workspace.json` | Authoritative workspace registry, pin/archive/order |
@@ -303,9 +303,9 @@ credential store.
   server usually has no model key; the default sub-mode auto-proxies the local DSH's whole catalogue, so
   there is nothing to type. Choose the server model source explicitly after configuring server
   credentials; changing it requires a reconnect.
-- **The remote execution world (v2 executor) is no longer used by the main area.** The iframe always
-  drives the server agent. Old sessions that recorded the v2 `local` executor are kept in data but are not
-  reachable from the new UI; this is documented in [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md).
+- **The v2 execution world has been removed.** The iframe always drives the server agent. Sessions that
+  recorded the v2 `local` executor stay in data and are not opened; this is documented in
+  [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md).
 - **One iframe per client.** Opening a second remote target swaps the frame (the previous target is
   disconnected or left in the rail as inactive). There is no split view of two servers.
 - **Legacy manual local endpoint is HTTP-only (`/v1/*`).** It is kept for old saved settings only and is

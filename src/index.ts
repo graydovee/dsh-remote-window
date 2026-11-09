@@ -3,22 +3,17 @@
  *
  * It owns the target store, the per-client profile/runtime lifecycle, the P1
  * client/portal and the browser-facing API. The browser UI lives in `./client`;
- * the realm is mounted per target by `preset/world.ts`.
+ * the remote agent runs inside the profile server and is shown through the
+ * same-origin iframe.
  */
 import { readFileSync } from 'node:fs'
-import { once } from 'node:events'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type {} from '@deepseek-ai/dsh-session'
 import Schema from '@deepseek-ai/schemastery'
-import { createRoutingPersistence, localSessionRoot, type RoutingRemoteService, type SessionRoute } from './session-persistence/routing.ts'
-import { assertRemoteSessionPreset } from './session/remote-guard.ts'
 import { listLocalPrivateKeys } from './provision/ssh-keys.ts'
 import { listSshAliases } from './ssh-config.ts'
 import { TargetStore } from './targets/store.ts'
@@ -30,7 +25,6 @@ import { RUNTIME_COMPAT, describeRange } from './provision/runtime-compat.ts'
 import { REMOTE_WORKSPACE_PLUGIN_PROTOCOL } from './remote/plugin-client.ts'
 import { PORTAL_BASE, portalMuxPath } from './portal/proxy.ts'
 import { ProfileService, createSshProfileConnector, readPrivateKeyFile, type ConnectProgressEvent } from './provision/profile-service.ts'
-import { RemoteMuxRouter } from './remote/mux-client.ts'
 import { dispatchLocalLlmApi, parseModelSource } from './local-llm/routes.ts'
 import type { NativeLlmRuntime } from './local-llm/native.ts'
 
@@ -41,7 +35,7 @@ export const ROUTE_PREFIX = '/dsh-remote-window'
 export const name = 'dsh-remote-window'
 
 /** Host-plane services this row needs before it can register anything. */
-export const inject = ['agentPresets', 'storageDomain', 'credentials', 'agents', 'webServer']
+export const inject = ['storageDomain', 'credentials', 'webServer']
 
 /** Tunables; every one of them is also settable from `cordis.yml`. */
 export interface Config {
@@ -174,28 +168,6 @@ function packageRootFrom(moduleUrl: string): string {
 }
 
 
-/** Serve one vendored official UI bundle (static, no secrets). */
-function serveOfficialUi(req: IncomingMessage, res: ServerResponse, file = 'conversation-client.js'): void {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.statusCode = 405
-    res.end()
-    return
-  }
-  try {
-    const body = readFileSync(join(packageRootFrom(import.meta.url), 'assets/official-ui', file))
-    res.statusCode = 200
-    res.setHeader('content-type', 'text/javascript; charset=utf-8')
-    res.setHeader('cache-control', 'no-cache')
-    res.setHeader('x-content-type-options', 'nosniff')
-    if (req.method === 'HEAD') { res.end(); return }
-    res.end(body)
-  } catch (error) {
-    res.statusCode = 500
-    res.setHeader('content-type', 'text/plain; charset=utf-8')
-    res.end(`official ui bundle unavailable: ${error instanceof Error ? error.message : String(error)}`)
-  }
-}
-
 /** Register the plugin's routes and return a disposer. */
 function registerRoutes(ctx: Context, profiles: ProfileService): () => void {
   const disposers: Array<() => void> = []
@@ -203,47 +175,6 @@ function registerRoutes(ctx: Context, profiles: ProfileService): () => void {
     kind: 'prefix',
     path: `${ROUTE_PREFIX}/api`,
     handler: (req, res) => { void handleApi(ctx, profiles, req, res) },
-  }))
-  // Vendored official conversation bundle. Served from this plugin's own
-  // origin so the browser can evaluate the exact rc.3 component code; the
-  // route is static and contains no target data or secrets.
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/official-ui.js`,
-    handler: (req, res) => { serveOfficialUi(req, res) },
-  }))
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/official-ui-chat.js`,
-    handler: (req, res) => { serveOfficialUi(req, res, 'chat-client.js') },
-  }))
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/official-ui-approval.js`,
-    handler: (req, res) => { serveOfficialUi(req, res, 'approval-client.js') },
-  }))
-
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/official-ui-model.js`,
-    handler: (req, res) => { serveOfficialUi(req, res, 'model-client.js') },
-  }))
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/official-ui-tool.js`,
-    handler: (req, res) => { serveOfficialUi(req, res, 'tool-client.js') },
-  }))
-
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/official-ui-trajectory.js`,
-    handler: (req, res) => { serveOfficialUi(req, res, 'trajectory-client.js') },
-  }))
-  // v2 same-origin session event stream (native conversation, no iframe).
-  disposers.push(ctx.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_PREFIX}/api/session/events`,
-    handler: (req, res) => { void handleSessionEvents(ctx, profiles, req, res) },
   }))
   // Same-origin portal (protocol §8): HTTP is a prefix route, the WebSocket
   // upgrade is registered exactly per connected target by ProfileService.
@@ -281,23 +212,6 @@ async function handlePortal(ctx: Context, profiles: ProfileService, req: Incomin
   }
 }
 
-/** Query parameters of the v2 session-event SSE route. */
-export function sessionEventsQuery(url: string | undefined): { targetId: string; sessionId: string; afterSeq?: number } {
-  const query = new URL(url ?? '/', 'http://dsh.internal').searchParams
-  const targetId = query.get('targetId') ?? ''
-  const sessionId = query.get('sessionId') ?? ''
-  if (targetId === '') throw new RouteError('bad-request', '"targetId" is required', 400)
-  if (sessionId === '') throw new RouteError('bad-request', '"sessionId" is required', 400)
-  const rawAfter = query.get('afterSeq')
-  let afterSeq: number | undefined
-  if (rawAfter !== null && rawAfter !== '') {
-    const parsed = Number(rawAfter)
-    if (!Number.isInteger(parsed) || parsed < -1) throw new RouteError('bad-request', '"afterSeq" must be -1 or a non-negative integer', 400)
-    afterSeq = parsed
-  }
-  return { targetId, sessionId, ...(afterSeq === undefined ? {} : { afterSeq }) }
-}
-
 /** Official approval decisions accepted by `session/approval`. */
 export const APPROVAL_DECISIONS = ['allowed-once', 'rejected', 'cancelled', 'allow', 'deny'] as const
 
@@ -307,76 +221,6 @@ export function approvalDecision(value: unknown): (typeof APPROVAL_DECISIONS)[nu
     throw new RouteError('bad-request', `"decision" must be one of ${APPROVAL_DECISIONS.join('|')}`, 400)
   }
   return value as (typeof APPROVAL_DECISIONS)[number]
-}
-
-/** Long-lived same-origin SSE bridge for one v2 server session. */
-export async function handleSessionEvents(ctx: Context, profiles: ProfileService, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  try {
-    if (!trustedRequest(ctx, req)) throw new RouteError('forbidden', 'forbidden', 403)
-    if (req.method !== 'GET') throw new RouteError('method-error', 'only GET is allowed', 405)
-    const query = sessionEventsQuery(req.url)
-    const state = profiles.connectionState(query.targetId)
-    if (state === undefined || state.phase !== 'ready') {
-      throw new RouteError('target-not-connected', `remote target ${JSON.stringify(query.targetId)} is not connected`, 404)
-    }
-    const controller = new AbortController()
-    const abort = (): void => { if (!controller.signal.aborted) controller.abort(new Error('SSE client disconnected')) }
-    // `IncomingMessage` 'close' can fire when the GET message itself is
-    // complete; only the response/socket close means the SSE consumer left.
-    req.on('aborted', abort)
-    res.on('close', abort)
-    res.writeHead(200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-store, must-revalidate',
-      connection: 'keep-alive',
-      'x-accel-buffering': 'no',
-    })
-    res.flushHeaders?.()
-    res.write(': connected\n\n')
-    const keepalive = setInterval(() => {
-      if (!res.writableEnded && !res.destroyed) res.write(': keepalive\n\n')
-    }, 15_000)
-    keepalive.unref?.()
-    try {
-      for await (const event of profiles.sessionEvents(query.targetId, {
-        sessionId: query.sessionId,
-        ...(query.afterSeq === undefined ? {} : { afterSeq: query.afterSeq }),
-        signal: controller.signal,
-      })) {
-        if (res.writableEnded || res.destroyed) break
-        const name = event.event === '' ? 'message' : event.event.replace(/[\r\n]/gu, '')
-        const data = event.data.split('\n').map(line => `data: ${line}`).join('\n')
-        const frame = `event: ${name}\n${data}\n\n`
-        if (!res.write(frame)) {
-          await Promise.race([
-            once(res, 'drain').then(() => undefined).catch(() => undefined),
-            new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true })),
-          ])
-        }
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        const message = scrubSecrets(error instanceof Error ? error.message : String(error))
-        const code = typeof (error as { code?: unknown }).code === 'string' ? String((error as { code?: unknown }).code) : 'session-events-failed'
-        if (!res.writableEnded && !res.destroyed) {
-          res.write(`event: error\ndata: ${JSON.stringify({ code, message })}\n\n`)
-        }
-      }
-    } finally {
-      clearInterval(keepalive)
-      if (!res.writableEnded) res.end()
-    }
-  } catch (error) {
-    if (res.headersSent) {
-      if (!res.writableEnded) res.end()
-      return
-    }
-    if (error instanceof RouteError) {
-      writeJson(res, error.status, { ok: false, error: { code: error.code, message: scrubSecrets(error.message), ...(error.details === undefined ? {} : { details: error.details }) } })
-      return
-    }
-    writeJson(res, 500, { ok: false, error: { code: 'internal', message: scrubSecrets(error instanceof Error ? error.message : String(error)) } })
-  }
 }
 
 async function handleApi(ctx: Context, profiles: ProfileService, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -753,15 +597,6 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
       return await profiles.sessionArchive(requireString(body, 'targetId'), requireString(body, 'sessionId'), body.archived === true, body.stopActivity === true)
     case 'session/reorder':
       return await profiles.sessionReorder(requireString(body, 'targetId'), requireString(body, 'workspaceId'), requireString(body, 'sessionId'), optionalString(body, 'beforeSessionId'))
-    case 'session/open': {
-      const executor = optionalString(body, 'executor')
-      if (executor !== undefined && executor !== 'server' && executor !== 'local') throw new RouteError('bad-request', '"executor" must be server|local', 400)
-      return await profiles.sessionOpen(requireString(body, 'targetId'), {
-        sessionId: requireString(body, 'sessionId'),
-        ...(optionalString(body, 'workspaceId') === undefined ? {} : { workspaceId: optionalString(body, 'workspaceId') as string }),
-        ...(executor === undefined ? {} : { executor: executor as 'server' | 'local' }),
-      })
-    }
     case 'session/prepare-server':
       return await profiles.sessionPrepareServer(requireString(body, 'targetId'), requireString(body, 'sessionId'))
     case 'mkdir':
@@ -776,23 +611,6 @@ async function dispatchApi(ctx: Context, profiles: ProfileService, method: strin
       return await profiles.deploymentApply(requireString(body, 'targetId'), {
         kind,
         ...(typeof body.confirm === 'boolean' ? { confirm: body.confirm } : {}),
-      })
-    }
-    case 'mode/preview': {
-      const nextMode = requireString(body, 'nextMode')
-      if (nextMode !== 'server' && nextMode !== 'local') throw new RouteError('bad-request', '"nextMode" must be server|local', 400)
-      return await profiles.modePreview(requireString(body, 'targetId'), nextMode, optionalString(body, 'targetSessionId'))
-    }
-    case 'mode/apply': {
-      const nextMode = requireString(body, 'nextMode')
-      if (nextMode !== 'server' && nextMode !== 'local') throw new RouteError('bad-request', '"nextMode" must be server|local', 400)
-      // `previewRevision` is opaque and may be the `idle` sentinel; accept the
-      // exact string the preview returned (empty is still compared as stale).
-      const previewRevision = typeof body.previewRevision === 'string' ? body.previewRevision : requireString(body, 'previewRevision')
-      return await profiles.modeApply(requireString(body, 'targetId'), nextMode, {
-        cancelActiveTurns: body.cancelActiveTurns === true,
-        previewRevision,
-        ...(optionalString(body, 'targetSessionId') === undefined ? {} : { targetSessionId: optionalString(body, 'targetSessionId') as string }),
       })
     }
     default:
@@ -820,29 +638,12 @@ export function apply(ctx: Context, config: Config): void {
       handler: (req, socket, head) => { void proxy.handleUpgrade(req, socket, head) },
     }),
   })
-  ctx.provide('remoteMux', new RemoteMuxRouter({ get: targetId => profiles.muxFor(targetId) }))
-  const sessionRoot = localSessionRoot(ctx)
-  const routingFacade: RoutingRemoteService = {
-    routeForCwd: cwd => profiles.routeForCwd(cwd) as SessionRoute | undefined,
-    locateRemoteSession: async sessionId => await profiles.locateRemoteSession(sessionId) as SessionRoute | undefined,
-    sessionRequest: async <T,>(targetId: string, method: string, params: unknown, signal?: AbortSignal): Promise<T> =>
-      await profiles.rpc<T>(targetId, method, params, signal),
-    stubForWorkspace: workspaceId => profiles.anchorForWorkspace(workspaceId),
-    remotePathForWorkspace: workspaceId => profiles.remotePathForWorkspace(workspaceId),
-  }
-  createRoutingPersistence(ctx, { root: sessionRoot }, routingFacade)
-  ctx.logger.debug(`dsh-remote-window: local session root=${sessionRoot}`)
-  ctx.on('session/created', (session) => { assertRemoteSessionPreset(session.header) }, { global: true })
   ctx.effect(() => () => { void store.close() }, 'dsh-remote-window: storage')
   ctx.effect(() => registerRoutes(ctx, profiles), 'dsh-remote-window: routes')
   ctx.effect(() => () => { void profiles.dispose() }, 'dsh-remote-window: v1 profiles')
 
   storageReady = store.open().then(async () => {
     await store.ensureClientId()
-    const persistence = ctx.get('sessionPersistence') as { routingMarker?: symbol } | undefined
-    if (persistence?.routingMarker !== Symbol.for('dsh-remote-window.routing-persistence')) {
-      ctx.logger.error('dsh-remote-window: the `session-persistence-jsonl` row override did not apply; remote sessions would be stored locally (see cordis.patch.yml deviation d13)')
-    }
   }).catch((error: unknown) => {
     storageFailure = scrubSecrets(error instanceof Error ? error.message : String(error))
     ctx.logger.error(`dsh-remote-window: startup failed: ${storageFailure}`)

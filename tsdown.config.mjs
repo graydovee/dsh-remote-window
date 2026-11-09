@@ -1,9 +1,8 @@
 /**
  * tsdown build for dsh-remote-window.
  *
- * Host half (ESM, node): the plugin entry plus the two entries the loader
- * mounts as their own rows — `./connection` (the per-target `ctx.ssh` inside
- * an agent-preset realm), `./rsession` and `./session-persistence`.
+ * Host half (ESM, node): the plugin entry the loader mounts as its own row,
+ * plus `./protocol` for the wire types shared with the server repository.
  *
  * Client half (browser, CJS closure factory): one bundle registering through
  * `window.__ModuleLoader__.load({ id: 'dsh-remote-window', factory })`.
@@ -37,9 +36,6 @@ const PLUGIN_ID = 'dsh-remote-window'
 const hostConfig = {
   entry: {
     index: 'src/index.ts',
-    connection: 'src/connection/index.ts',
-    rsession: 'src/rsession/remote-persistence.ts',
-    'session-persistence': 'src/session-persistence/routing.ts',
     protocol: 'src/protocol.ts',
   },
   outDir: 'lib',

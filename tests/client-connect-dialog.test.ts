@@ -140,7 +140,6 @@ vi.mock('../src/client/api.ts', () => ({
 }))
 const apiSpies = vi.hoisted(() => ({ connectProgress: vi.fn() }))
 vi.mock('../src/client/remote-api.ts', () => ({ remoteApi: apiSpies }))
-vi.mock('../src/client/executor.ts', () => ({ summarizeModeSwitch: () => undefined }))
 vi.mock('../src/client/common.tsx', () => ({
   Field: (props: Record<string, unknown>) => ({ type: 'mock-field', props }),
 }))
