@@ -149,7 +149,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `too-new` 建议升级插件，`too-old` 建议升级 server 的 dsh。
 - `compat/history.json` 记录每个已发布插件版本的区间，发新版时追加一行（`sync-compat.mjs` 校验它与
   `package.json` 版本一致）。
-- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.5`）。内置 server 插件 tarball 的版本必须与它精确一致。
+- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.6`）。内置 server 插件 tarball 的版本必须与它精确一致。
   本机调试可用修订后缀，部署后 `git checkout -- package.json`，修订号不进提交、不上发布。
 - zod 固定 `4.4.3`，`engines.node` 保持 `^22.19.0 || >=24.0.0`。
 

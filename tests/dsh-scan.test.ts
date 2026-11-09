@@ -215,7 +215,9 @@ describe('assembleCandidates', () => {
       // usable, listed before the unusable ones on purpose
       'DSH\t/z/compatible\t/z/compatible\t0.2.1-rc.3\t0\t',
       'DSH\t/a/incompatible\t/a/incompatible\t0.1.0\t0\t',
-      'DSH\t/b/incompatible\t/b/incompatible\t0.2.1\t0\t',
+      // Above the interval on purpose: a plain `0.2.1` sits between its own
+      // prerelease and `0.2.2-rc.1`, so widening `dsh.max` makes it compatible.
+      'DSH\t/b/incompatible\t/b/incompatible\t0.2.3\t0\t',
       'END',
     ].join('\n'))
     const paths = assembleCandidates(unsorted, { profile: 'dsh-remote-server', expectedPluginSha: 'abcdef' })

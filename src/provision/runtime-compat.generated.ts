@@ -27,9 +27,13 @@ export interface GeneratedCompatTable {
 /** The table this build was compiled with. */
 export const RUNTIME_COMPAT: GeneratedCompatTable = {
   schema: 2,
-  plugin: "0.1.0-alpha.5",
-  dsh: { min: "0.2.1-rc.2", max: "0.2.1-rc.5" },
+  plugin: "0.1.0-alpha.6",
+  dsh: { min: "0.2.1-rc.2", max: "0.2.2-rc.1" },
   runtimes: [
+    {
+      dsh: "0.2.2-rc.1",
+      platforms: ["linux-x64-gnu", "linux-arm64-gnu", "darwin-x64", "darwin-arm64", "win32-x64"],
+    },
     {
       dsh: "0.2.1-rc.5",
       platforms: ["linux-x64-gnu", "linux-arm64-gnu", "darwin-x64", "darwin-arm64", "win32-x64"],

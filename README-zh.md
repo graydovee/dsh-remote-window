@@ -150,7 +150,7 @@ dsh plugin --profile web add github:graydovee/dsh-remote-window
 npm 源写精确版本：
 
 ```bash
-dsh plugin --profile web add dsh-remote-window@0.1.0-alpha.5
+dsh plugin --profile web add dsh-remote-window@0.1.0-alpha.6
 ```
 
 pnpm 可能拦截 `ssh2` 的可选 native 构建脚本；用 Plugins 页面安装，或首次运行加
@@ -203,12 +203,13 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 | 0.1.0-alpha.3 | = 0.2.1-rc.3 | 0.2.1-rc.3 |
 | 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 | 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 这张表由 `node scripts/sync-compat.mjs` 从 [`compat/runtimes.json`](compat/runtimes.json) 生成；
 `--check` 会在清单、peer、README 与生成表不一致时让发布失败。三个版本号各有含义，故意分开：
 
-- **插件版本**（`0.1.0-alpha.4`）是我们自己的包版本，按我们的节奏走。
+- **插件版本**（`0.1.0-alpha.6`）是我们自己的包版本，按我们的节奏走。
 - **DSH 区间**（`min … max`，两端闭）表示这个构建能驱动的 DSH 版本。DSH 是开发者预览版，高于上界的
   版本和低于下界的版本一样可能不兼容，所以判断是闭区间，而不是「这个版本或更新」。区间退化为单版本时
   就直接写成精确版本。
@@ -279,7 +280,7 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 
 | 症状 | 检查 |
 | --- | --- |
-| `incompatible-version` | 本机装区间内的 DSH（`0.2.1-rc.2 … 0.2.1-rc.5`），或对该精确版本做豁免（见 Compatibility）。 |
+| `incompatible-version` | 本机装区间内的 DSH（`0.2.1-rc.2 … 0.2.2-rc.1`），或对该精确版本做豁免（见 Compatibility）。 |
 | `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | 用 Release tarball 或 Git 分支安装；两者直接使用仓库里已提交的 `lib/`。 |
 | 启用时报 `dsh: warning: 2 entries did not activate`（`session-controller` / `tool-agent-team`） | 把 `dsh-remote-window` 写进 profile `package.json` 的 `dsh.profile.bundles`，重启 DSH。 |
 | 没有 target rail | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。hover rail 或按 `Alt+R` 展开。 |
