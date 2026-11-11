@@ -9,29 +9,39 @@
 
 | 部分 | 状态 |
 |---|---|
-| client iframe 外壳 / target rail / 连接生命周期 | 已完成 |
+| client iframe 外壳 / 左栏「远程连接」行与列表面板 / 连接生命周期 | 已完成 |
 | server 插件 embed `full` 模式 | 已完成（server 仓库，随 tarball 内置） |
 | 本地模型自动代理（`ctx.llm` 枚举 + 原生 bridge）+ SSH 反向隧道 + per-provider profile patch | 已完成（`src/local-llm/`，`native.ts`） |
 | 手动 OpenAI 兼容 endpoint | 仅 `bridge.ts` 旧路径/API 兼容，对话框不再提供 |
 | 连接对话框模型来源设置（默认 local）+ 全部 provider/model 勾选代理 | 已完成（`localSelection`） |
 | portal 必须带 `dshRwSession` 深链 | 已完成（`portalSessionFor`） |
 | 重连复用已保存绝对 `DSH_HOME` | 已完成（`reconnectDshHome`） |
-| native v2 主区与 vendored 组件删除 | 已删除（v3 验收后清理；client 只剩 target rail 与 iframe 主区） |
+| native v2 主区与 vendored 组件删除 | 已删除（client 只剩左栏连接行/列表面板与 iframe 主区） |
+| server 侧「远程连接」行与列表面板（`dsh.client` 浏览器半） | 已完成（server 仓库，随 tarball 内置） |
+| 连接快照发布（`client/targets` + 能力位 `clientTargets`） | 已完成（client host，150 ms 去抖 / 5 s 补发） |
 
 ## 1. 目标架构
 
 ```text
 client DSH
-├─ 连接对话框（沿用 v1：SSH/host-key/运行时/profile）
-├─ 浮动 target rail（唯一 client chrome，默认折叠）
-│   └─ target 状态、切换、连接/断开/忘记
-└─ main slot：<iframe src="/dsh-remote-window/portal/<targetId>/?dshRwFull=1">
+├─ 连接对话框（沿用 v1：SSH/host-key/运行时/profile），挂在 body 层单例浮层宿主
+├─ sidebar.panellist「远程连接」行（order 100，位于「自动化任务」之后、「更多」之前）
+│   └─ main 面板：连接列表（状态点/label/user@host:port/阶段 + 连接·断开·删除）
+└─ main slot：<iframe src="/dsh-remote-workspace/portal/<targetId>/?dshRwFull=1&dshRwTarget=<targetId>">
       └─ server profile 官方 DSH UI（sidebar/header/主区/rightbar/插件 UI）
+            └─ sidebar.panellist「远程连接」行 + main 面板（同一份连接，点击回传 client 切换）
 ```
 
-- iframe 是 client 主区唯一内容；client shell 自己的 sidebar 在 iframe 挂载期间隐藏
-  （`html[data-dsh-rw-portal] [data-slot="sidebar"]`），root grid 收成一列，官方 sidebar 就是导航。
-- **不复制**官方 sidebar 的 workspace/session 树到 client；target rail 只列 target 与连接状态。
+- 未挂载 iframe 时，client 左栏自然显示「远程连接」行；iframe 挂载后 client shell 自己的 sidebar 隐藏
+  （`html[data-dsh-rw-portal] [data-slot="sidebar"]`），root grid 收成一列，官方 sidebar 就是导航，切换入口
+  由 server 官方 sidebar 里同一个行承担。
+- **不复制**官方 sidebar 的 workspace/session 树到 client；两侧列表都只列连接（target）与连接状态。
+- 两个入口都是**声明式槽位**：`sidebar.panellist`（一行，壳负责按钮/文字/选中态）+ `main`（同 key 的页面）。
+  不接管 `sidebar` / `sidebar.workspaces`（single，注册会替换整列/整个浏览区），也不做 DOM seam 注入。
+- 连接列表数据只有一个权威：client host 用 P1 `client/targets` 把快照发给当前 profile server；server 的
+  浏览器半用相对路径 `dsh-remote-workspace-server/api/client/targets` 读取（只过 `admit`）。server 面板点击
+  只是回传命令（`dsh-rw/switch-target` / `dsh-rw/open-connect-dialog` / `dsh-rw/close-portal`），切换动作
+  仍由 client 执行。
 - iframe 同源：portal 反向代理剥 client cookie、注入 profile server cookie、剥 `Set-Cookie`，
   profile token 只存在 client host 内存，URL 中永不出现。
 - iframe sandbox：`allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`；
@@ -41,10 +51,16 @@ client DSH
 
 ### iframe 生命周期
 
-- 连接成功（新连接或 rail 点击已停止 target）→ `activateRemoteTarget` → `openServerMain`。
+- 连接成功（新连接或点列表里已停止的 target）→ `activateRemoteTarget` → `openServerMain`。
 - 切换 target：`closeServerMain` → 新请求；iframe key 为 `targetId:revision:reloadCount`，
   每次激活递增 revision，浏览器不会复用上一个 profile 的文档。
 - 断连/忘记/连接离开 ready/删除：`releaseTarget` → `closePortalFor` → `clearRemoteSelection`。
+- `dsh-rw/close-portal`（server 面板的「返回本地」）只关 portal，profile 保持 ready，并回选连接列表面板。
+- 连接（含重新连接）一个已保存 target 时打开连接对话框的**进度页**：隐藏向导步骤，直接显示
+  连接主机 → 探测远端环境 → 部署运行时 → 准备 server 插件 → 建立执行通道 的状态、日志与已用时间；
+  成功自动关对话框并打开 iframe，失败留在对话框里可重试（`attemptId` 每次新生成，进度从头开始）。
+- 两个连接列表页都抄官方页面骨架：48px 留白 + 960px 居中列 + 80px 标题栏（标题/说明在左，`size="sm"`
+  工具栏在右），body 是唯一滚动区；行是 0.5px 边框卡片，hover 与当前行用官方底色 token。
 - 20 s 内未收到 `dsh-rw/ready`（且 `onLoad` 也未完成）显示可重试错误；重试递增 `reloadCount`。
 - 打开 portal 必须带 `dshRwSession`：`activateRemoteTarget` 先 `portalSessionFor`（host state 中最近
   的非 blank/非归档/非 subagent 会话，否则 `session/create` 建 blank），再 `openServerMain`。裸开
@@ -73,7 +89,7 @@ server profile agent
   `local-llm-providers-unavailable`，目录为空时 `local-llm-no-models`。
 - 选择过滤：高级选项保存的 `localSelection: [{providerId, models[]}]` 决定 profile 生成哪些 route
   （按目录顺序、未知项静默丢弃）；未保存选择 = 全量代理，过滤后为空 → `local-llm-no-models`（400）。
-  选择存在 client 存储域 `dsh_remote_window` 的 global `localLlm`（可选字段，域版本仍为 1）。
+  选择存在 client 存储域 `dsh_remote_workspace` 的 global `localLlm`（可选字段，域版本仍为 1）。
 - manual 模式仅为旧 API/测试保留（对话框不再提供）：endpoint/模型/超时存同上 `localLlm`，API key
   只存官方 `ctx.credentials`（固定 key），浏览器只看到 `hasApiKey`。
 - bridge 必须把 adapter 的 error/aborted 终止 chunk 转成显式错误：首个 chunk 前 → HTTP 502 JSON
@@ -121,13 +137,23 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 | iframe 20 s 未 ready | 主区错误 + 重试；连接保持，可断开重连 |
 | target 断开/忘记 | iframe、bridge、tunnel 一起清理 |
 | 401/token 过期 | 重连后重挂 iframe；token 不进 URL |
+| server 插件无 `clientTargets` 能力位 | client 不发布快照；重装同版本 tarball 后恢复，不报错、不影响连接 |
+| 快照读取失败（server 面板） | 保留上一次渲染 + 同步不可用提示，绝不清成「没有连接」 |
+| server 面板点已激活行 | no-op（`switchRemoteTarget` 判同 target） |
+| server 面板点未连接 target | 走正常连接流程；失败 toast，当前 iframe 保留 |
+| 伪造/跨 origin/非 v1 的子页面消息 | `parseRwPortalCommand` 丢弃，无提示 |
+| 目标机直接打开 server UI（非嵌入） | 行与面板可见，三条命令禁用 |
+| `sidebar.panellist` 注册失败 | 只 `console.error`；行与面板各自 try/catch，不互相拖累 |
 
 ## 4. 测试与验收
 
-- client：`portal-url`（URL/query/reducer）、`client-portal-main`（full=1、sandbox、remount key、
-  close）、`client-target-rail`（激活/连接/断开/忘记）、`client-remote-store`（激活生命周期与本地模型
-  设置/探测/阻止）、`local-llm-*`（bridge/tunnel/profile/settings）。
-- server：`server-plugin-embed`（full marker、CSS gate、tapIndex 注入一次）。
+- client：`portal-url`（URL/query/reducer/三条子页面命令）、`client-portal-main`（full=1、sandbox、
+  remount key、close、`dshRwTarget`）、`client-connections-panel`（空态/行点击/连接·断开·删除/高亮/
+  加载与失败态）、`provision-client-targets`（顺序/phase/能力位/去抖/补发/脱敏）、`local-llm-*`
+  （bridge/tunnel/profile/settings）。
+- server：`server-plugin-embed`（full marker、CSS gate、tapIndex 注入一次）、`server-plugin-client-targets`
+  （快照校验/乱序/脱敏/能力位）、`client-connections-section`（URL/命令/高亮/语言回退）、
+  `server-plugin-package`（`./client`、`dsh.client`、`lib/client.js`）。
 - 手工：连接真实 target，确认官方 sidebar/header/主区/rightbar 与第三方 UI 插件全可见；本地模型完成
   一轮对话；server 模型完成一轮；断网/endpoint down 显示可读错误。
 - `pnpm typecheck` / `pnpm test` / `pnpm build` 两仓全绿；三份共享文件 `cmp` 一致；内置 tarball 版本与
@@ -138,7 +164,8 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 | 关注点 | 文件 |
 |---|---|
 | iframe 外壳 / sandbox / remount / ready 超时 | `src/client/portal-main.tsx` |
-| 浮动 target rail | `src/client/rail.tsx`、`src/client/styles.ts` |
+| 左栏「远程连接」行与列表面板 | `src/client/index.tsx`、`src/client/connections-panel.tsx`、`src/client/styles.ts` |
+| 连接对话框/toast 的 body 层宿主 | `src/client/chrome.tsx` |
 | 连接生命周期、激活/清理、本地模型设置命令 | `src/client/remote-store.ts`、`src/client/remote-api.ts` |
 | 连接对话框模型来源区块 | `src/client/remote-dialogs.tsx` |
 | host 路由 `local-llm/*`、`v1/connect` 的 `modelSource` | `src/index.ts`、`src/local-llm/routes.ts` |
@@ -150,20 +177,50 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 | 反向隧道 SSH 接缝 | `src/provision/profile-service.ts`（`ProfileConnection.remoteForward`） |
 | profile patch 与 env | `src/local-llm/profile.ts`、`src/provision/profile-lifecycle.ts` |
 | server 插件 full 模式 | server 仓库 `src/server-plugin/embed.ts` |
+| 连接快照发布（P1） | `src/provision/profile-service.ts`、`src/remote/plugin-client.ts` |
+| server 侧连接行与面板（`dsh.client`） | server 仓库 `src/client/index.tsx`、`src/client/section.tsx`、`src/server-plugin/client-targets.ts` |
 
-本分支实测证据（本地运行，2026-10）：
+本分支实测证据（本地运行，2026-11-10）：
 
-- client：`pnpm typecheck` 通过；`pnpm test` **626 passed / 1 skipped**（67 通过 + 1 跳过，68 文件）；
-  `pnpm build` 通过（`lib/client.js` 473.18 kB）。
-- server：`pnpm typecheck` 通过；`pnpm test` **69 passed**（15 文件）；`pnpm build` 通过。
+- client：`pnpm typecheck` 通过；`pnpm test` **408 passed / 1 skipped**（41 文件通过、1 跳过）；`pnpm build`
+  通过（`lib/client.js` 131,851 B，`lib/index.js` 384,048 B）；`node scripts/sync-compat.mjs --check` 通过。
+- server：`pnpm typecheck` 通过；`pnpm test` **101 passed**（18 文件）；`pnpm build` 通过
+  （`lib/client.js` 33,287 B，含 `window.__ModuleLoader__.load` 工厂）。
 - 共享文件 `src/protocol.ts`、`src/frame/codec.ts`、`src/frame/mux.ts` 两仓 `cmp` 一致。
-- client 包 `dsh-remote-window-0.1.0-alpha.3.tgz` 1,047,853 B，sha256
-  `024d2bd9cb97043fd04c842954e163ede04d71183857295648c0c8ddc6508f89`。
-- 内置 tarball `dsh-remote-window-server-0.1.0-alpha.3.tgz` 88,977 B，sha256
-  `f7fa2112165462df3dc8803ae39db1ebaea091feb97af112107e66f9464bf272`，与 `assets/server-plugin/checksums.json`
-  一致。
-- server 插件在干净 `DSH_HOME` 下 rc.3 隔离冒烟：`/?dshRwFull=1` 与 `/` 字节一致（38,122 B），bootstrap
-  同步打 full 标记，embed.css 585 B 未受影响，portal 风格 WS 握手到 profile 返回 101。
+- client 包 `dsh-remote-workspace-0.1.0-alpha.7.tgz` 322,645 B，sha256
+  `8a90deae91016140c6c9f6bd4ce290440da187b15467c5cee0663ef83688dfd7`。
+- 内置 tarball `dsh-remote-workspace-server-0.1.0-alpha.7.tgz` 103,047 B，sha256
+  `4367b0e7e1b5499b16067d2168add5d00936af9358877fd7ab61fb26bc8e97c6`，与
+  `assets/server-plugin/checksums.json` 一致。
+
+### 浏览器验收（headless Chrome + 干净 `DSH_HOME`，2026-11-10）
+
+client 侧（profile `web`，`dsh --version` 0.2.2-rc.1，只装 `dsh-remote-workspace`）：
+
+- 左栏出现「远程连接」行（`sidebar.panellist`，图标 + 文字，排在导航列表最下面、末尾「更多」之前）；
+  点开后主区是连接列表面板：标题「远程连接」、`新建连接`、`刷新`、空态「还没有远程连接 / 点「新建连接」
+  添加一台远程主机。」。
+- 页面里没有 `[data-dsh-remote-workspace-rail]`；`[data-dsh-remote-workspace-chrome]` 浮层宿主存在；点
+  `新建连接` 在主区上方打开「新建远程连接」对话框（三步向导）。
+- DOM 断言：`.dsh-rw-page` 占满主区（1320×913 @ x=280，即官方 `mainPanel`），没有把官方 sidebar 挤掉。
+
+server 侧（独立 profile，装 `dsh-remote-workspace-server@0.1.0-alpha.7`，走 `dshRwFull=1` 的全模式）：
+
+- 官方 sidebar 里出现同一个「Remote connections」行（该 profile 语言是 en-US；行位置与 client 一致）。
+- 面板读到快照后渲染 3 行：`dev-box / tester@203.0.113.10:22 · Connected`（`Current` 高亮，来自
+  `dshRwTarget`）、`build-host / builder@203.0.113.11:2222 · Stopped`、
+  `Ubuntu-24.04 / WSL · Ubuntu-24.04 · Connecting`；底部 `3 connections`。
+- 直接打开（没有 parent frame）时面板显示「Opened directly: switching connections needs the client
+  window.」并禁用三条命令。
+- 宿主契约（curl 模拟 client host，真实插件进程）：handshake 返回 `capabilities.clientTargets = 1`；
+  `client/targets` 发布 → `{accepted:true, count:3}`；旧 `updatedAt` → `{accepted:false}`（保留新快照）；
+  含 `token=` 的 label 被写成 `[redacted]`，`credentialKey`/`privateKeyPath`/未知字段被丢弃；冒用别的
+  `clientId` → `lease-mismatch`；`GET dsh-remote-workspace-server/api/client/targets` 返回
+  `{ok:true, value:{clientId, updatedAt, targets[]}}`。
+
+本次未做的验收（记录为限制）：没有用真实 SSH 目标跑完整「连接 → iframe → 在 server 面板点击切换」链路
+（需要 Docker QA 目标或真机）；该链路的两个新环节已分别验证：client 侧 `switchRemoteTarget`/命令分发有
+单测，server 侧面板点行只走 `postMessage` 且命令构造/校验有单测。
 
 ### 浏览器 E2E 验收（临时 `DSH_HOME`，本机回环）
 
@@ -181,7 +238,7 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
   profile patch 写出 `remote-deepseek-official` 与 `remote-e2e-provider` 两条 route（各自 baseURL
   `http://127.0.0.1:<tunnel>/<provider>/v1`），`agent-default-model` 取第一条 route 的首个模型；
   直接 curl `<tunnel>/e2e-provider/v1/models` 与 `/chat/completions` 均返回模型目录/正常回复。
-- 深链恢复：命中 rail 的 target 时 iframe URL 带 `dshRwSession=<sessionId>`，打开后恢复该会话（而不是
+- 深链恢复：打开列表里的 target 时 iframe URL 带 `dshRwSession=<sessionId>`，打开后恢复该会话（而不是
   官方首启 composer）；无会话时先 `session/create` 建 blank 再带深链。
 - 远程功能（headless Chrome + CDP 截图证据）：iframe 内切换模型到 `e2e-test-model` → 发送
   `自动代理验收：请回复收到` → 官方 rollout 流式回复 `本地模型 E2E 已收到：…`（用时 1 秒，2 轮 2 步），
@@ -191,24 +248,6 @@ client 本地 agent）。解析顺序：request 显式值 → 已存记录（无
 - 重连回归：`v1/connect {targetId}` 重连后 patch 仍写在保存的 `DSH_HOME`
   （`/tmp/dsh-e2e/server-dsh-home/...`，mtime 刷新、隧道端口更新），不再落到远端默认 home；
   回归测试 `tests/targets-reconnect.test.ts`。
-- 浮动 rail 拖拽吸附（headless Chrome CDP 模拟 pointer 事件，`/tmp/dsh-e2e/cdp-rail.mjs`、
-  `cdp-rail-vertical.mjs`）：收起时跟随吸附边——左侧竖排 44×352 @ (10,96)；上下为 44px 横排图标条
-  （9 targets + 折叠按钮槽 → 352×44，chip 32×32；`railBarWidth(9)=318` 只算 chip 条）；拖到右缘 → `data-dock="right"`、x=1386、offset 398、写入
-  `localStorage['dsh-remote-window.rail-dock']`；刷新后保持 top（折叠宽 352 = `railBarWidth(10)`，含折叠按钮槽）；
-  拖回左缘 → y=278。**展开后不管哪条边都是同一个 280px 竖向列表**（`railBoxStyle` 负责贴边/限高/
-  水平夹取）：上缘展开 y=10、高 427、chips 268×41 纵向排列；下缘展开贴底（y+h=803=813-10）；
-  水平偏移夹在 [10, 视口-10-280]。截图 `/tmp/dsh-e2e/rail-top-vertical.jpg`、
-  `/tmp/dsh-e2e/rail-bottom-vertical.jpg`。回归测试 `tests/client-target-rail.test.ts`
-  （吸附/夹取/默认 dock/railBarWidth/railBoxStyle）。
-- rail 收起态最小化（headless Chrome CDP，`/tmp/dsh-e2e/cdp-rail-minimize.mjs`，9 个连接）：竖排
-  收起 44×350，折叠按钮在 rail 卡片内部、最后 chip 下方（y=408 vs chip 底 406），但不属于
-  `.dsh-rw-rail-hover` 组（`toggleInsideRail=true`、`toggleInsideHover=false`）；指针移到按钮上 rail
-  仍保持 44px 不展开。点击后 44×44、只渲染 `+9`，hover 不再展开；点 `+9` 恢复 44×350 并把 hover 展开
-  行为恢复（280×427，展开期间按钮隐藏）。拖到上缘：352×44，按钮在卡片内、最后 chip 之后
-  （x=990，rail 右缘 1030），图标为指向左侧的折回箭头；点击最小化 44×44、hover 不展开，再点直接展开
-  352×44。截图 `/tmp/dsh-e2e/rail-min-toggle.jpg`、`rail-min-vertical.jpg`、`rail-min-horizontal.jpg`、
-  `rail-top-collapsed.jpg`。回归测试 `tests/client-target-rail.test.ts`（`railShowsToggle`、
-  `railBoxStyle` minimized 宽度、toggle 在卡片内且不在 hover 组内、1 个连接时不存在）。
 - 已知限制：宿主进程被 SIGTERM/SIGKILL 硬杀时，profile server 可能短暂残留，需手动清理（正常
   `停止`/`断开` 会关闭）；旧版 `/api/state` 在某个 target 读失败时会返回 `{error}` 列表，client 侧
   `readableList`/`deriveWorkspaceGroups` 已做降级（`p1-read-failed` 呈现为连接错误而不是崩溃）。

@@ -1,12 +1,14 @@
 name: release
 
 # Publishes the plugin tarball of one tagged version: the GitHub Release gets
-# the .tgz + .sha256, and the same tarball is pushed to npm (`dsh-remote-window`)
+# the .tgz + .sha256, and the same tarball is pushed to npm (`dsh-remote-workspace`)
 # with provenance. The runtime packages the remote world installs are a
-# different artifact and are released from dsh-remote-window-server.
+# different artifact and are released from dsh-remote-workspace-server.
 #
-# npm needs the NPM_TOKEN repository secret (an npm automation token able to
-# publish the scoped-or-unscoped package) and `id-token: write` for provenance.
+# npm authentication is GitHub Actions OIDC (Trusted Publishing): no token
+# secret is configured for this repository. The npm package names this
+# repository + workflow file as its trusted publisher, and `id-token: write`
+# below is what lets npm exchange the job identity for a short-lived token.
 
 on:
   push:
@@ -126,27 +128,22 @@ jobs:
           fi
 
       # The exact tarball attached to the release above is the npm artifact:
-      # `pnpm pack` already produced it from the tagged tree.
+      # `pnpm pack` already produced it from the tagged tree. Authentication is
+      # the job's OIDC identity (Trusted Publishing); this repository has no npm
+      # token secret, and the npm package names this workflow as its trusted
+      # publisher.
       - name: publish to npm
         env:
-          # Optional: a granular npm token (bypass-2FA tokens are being
-          # retired for direct publishing). Without it npm falls back to
-          # Trusted Publishing through this job's OIDC identity, which needs
-          # the package's "Trusted publishers" entry on npmjs.com to name
-          # this repository and workflow file.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          # setup-node's registry .npmrc references the NODE_AUTH_TOKEN env;
-          # without a token configured, drop that line so npm can use the
-          # job's OIDC identity (Trusted Publishing) instead of a token.
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
-            if [ -f "$npmrc" ]; then
-              grep -v '_authToken' "$npmrc" > "$npmrc.tmp" || true
-              mv "$npmrc.tmp" "$npmrc"
-            fi
+          # setup-node's registry .npmrc references a token env this workflow
+          # deliberately never sets; drop the placeholder so npm authenticates
+          # with the job's OIDC identity instead of an empty token.
+          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          if [ -f "$npmrc" ]; then
+            grep -v '_authToken' "$npmrc" > "$npmrc.tmp" || true
+            mv "$npmrc.tmp" "$npmrc"
           fi
           # Prefix with ./ so npm treats the argument as a local tarball
           # instead of a GitHub shorthand (dist/x.tgz -> github:dist/x.tgz).

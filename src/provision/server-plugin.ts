@@ -3,11 +3,11 @@
  *
  * Delivery contract (architecture §12.1 / protocol §14bis):
  *
- * - the client package ships `assets/server-plugin/dsh-remote-window-server-<version>.tgz`
+ * - the client package ships `assets/server-plugin/dsh-remote-workspace-server-<version>.tgz`
  *   where `<version>` is this client plugin's release version (not a DSH version),
  *   plus `checksums.json` (`{ "<tarball name>": "<sha256>" }`);
  * - a dedicated profile installs it by unpacking (strip `package/`) into
- *   `<profileDir>/node_modules/dsh-remote-window-server/`, writing the four
+ *   `<profileDir>/node_modules/dsh-remote-workspace-server/`, writing the four
  *   profile files and the marker `{version, sha256, protocol, dshVersion}`;
  *   no server-side network, pnpm or registry is involved;
  * - a trimmed/development package without the bundled tarball may download the
@@ -36,7 +36,7 @@ import { execOp, opText, shellOp, windowsOp } from './remote-op.ts'
 import { windowsMkdirScript, windowsReadBytesScript, windowsServerPluginInstallScript } from './windows-shell.ts'
 
 /** Package name the profile bundle list references. */
-export const SERVER_PLUGIN_PACKAGE = 'dsh-remote-window-server'
+export const SERVER_PLUGIN_PACKAGE = 'dsh-remote-workspace-server'
 
 /** Built-in tarball directory inside the client package. */
 export const SERVER_PLUGIN_ASSET_DIR = 'assets/server-plugin'
@@ -438,8 +438,19 @@ export async function installServerPlugin(options: {
   readonly dshVersion: string
   readonly installedAt?: Date
   readonly force?: boolean
+  /**
+   * Optional progress sink. The install is several remote round trips (marker
+   * read, profile files, tarball upload, unpack), and a silent one looks like a
+   * stalled connection: the connect dialog forwards these lines as the
+   * 「准备 server 插件」 row's message.
+   */
+  readonly onProgress?: (message: string) => void
 }): Promise<{ readonly installed: boolean; readonly marker: ServerPluginMarker }> {
+  const report = (message: string): void => {
+    try { options.onProgress?.(message) } catch {}
+  }
   if (!options.force) {
+    report('正在检查已安装的 server 插件…')
     const existing = await readServerPluginMarker(options.remote, options.paths)
     if (decideServerPluginInstall(existing, {
       version: options.tarball.version,
@@ -450,6 +461,7 @@ export async function installServerPlugin(options: {
       return { installed: false, marker: existing as ServerPluginMarker }
     }
   }
+  report('正在写入 profile 启动文件…')
   await writeProfileStartupFiles(options.remote, options.paths)
   const content = await readFile(options.tarball.path)
   const windows = options.paths.kind === 'windows'
@@ -460,6 +472,7 @@ export async function installServerPlugin(options: {
   } else {
     await options.remote.exec(`command mkdir -p ${shellQuote(stagingDir)}`, { maxBytes: 1024, timeoutMs: 15_000 })
   }
+  report(`正在上传 server 插件包（${Math.max(1, Math.round(options.tarball.size / 1024))} KB）…`)
   await options.remote.writeFile(stagingPath, content)
   const marker: ServerPluginMarker = {
     version: options.tarball.version,
@@ -487,6 +500,7 @@ export async function installServerPlugin(options: {
         expectedSha256: options.tarball.sha256,
         installedAt,
       }))
+  report('正在解包并写入 profile…')
   const result = await execOp(options.remote, op, { maxBytes: 64 * 1024, timeoutMs: 120_000 })
   if (result.code !== 0) {
     throw new ServerPluginError(

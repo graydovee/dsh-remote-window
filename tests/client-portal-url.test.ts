@@ -8,9 +8,18 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  RW_EMBED_TARGET_PARAM,
+  RW_PORTAL_MESSAGE_VERSION,
+  parseRwPortalCommand,
+  rwPortalClosePortal,
+  rwPortalOpenConnectDialog,
+  rwPortalSwitchTarget,
+} from '../src/protocol.ts'
+import {
   EMBED_LANG_PARAM,
   EMBED_PARENT_PARAM,
   EMBED_SESSION_PARAM,
+  EMBED_TARGET_PARAM,
   EMBED_THEME_PARAM,
   EMBED_WORKSPACE_PARAM,
   IDLE_PORTAL_FRAME,
@@ -39,7 +48,7 @@ import {
 import type { PortalFrameState } from '../src/client/portal-url.ts'
 
 const ORIGIN = 'http://127.0.0.1:60900'
-const PREFIX = 'dshrw:graydovee-remote-window-abc123:'
+const PREFIX = 'dshrw:graydovee-remote-workspace-abc123:'
 
 describe('portal URL', () => {
   it('builds one relative, trailing-slash portal path per target', () => {
@@ -48,8 +57,9 @@ describe('portal URL', () => {
     expect(() => portalPath('')).toThrow()
   })
 
-  it('emits the four embed hints in a stable order', () => {
-    expect(portalUrl({ targetId: 't1' })).toBe(`${PORTAL_PREFIX}/t1/`)
+  it('always names the mounted target and then the embed hints in a stable order', () => {
+    expect(EMBED_TARGET_PARAM).toBe(RW_EMBED_TARGET_PARAM)
+    expect(portalUrl({ targetId: 't1' })).toBe(`${PORTAL_PREFIX}/t1/?${EMBED_TARGET_PARAM}=t1`)
     const url = portalUrl({
       targetId: 't1',
       sessionId: 'session-1',
@@ -61,6 +71,7 @@ describe('portal URL', () => {
     const params = url.slice(url.indexOf('?') + 1)
     expect(url.startsWith(`${PORTAL_PREFIX}/t1/?`)).toBe(true)
     expect(params).toBe([
+      `${EMBED_TARGET_PARAM}=t1`,
       `${EMBED_SESSION_PARAM}=session-1`,
       `${EMBED_WORKSPACE_PARAM}=workspace-1`,
       `${EMBED_THEME_PARAM}=dark`,
@@ -71,16 +82,17 @@ describe('portal URL', () => {
 
   it('drops empty hints instead of emitting blanks', () => {
     const url = portalUrl({ targetId: 't1', sessionId: '', workspaceId: '', parentOrigin: '' })
-    expect(url).toBe(`${PORTAL_PREFIX}/t1/`)
+    expect(url).toBe(`${PORTAL_PREFIX}/t1/?${EMBED_TARGET_PARAM}=t1`)
   })
 
   it('supports the §16.2 workspace fallback deep link', () => {
     const url = portalUrl({ targetId: 't1', workspaceId: 'workspace-1' })
-    expect(url).toBe(`${PORTAL_PREFIX}/t1/?${EMBED_WORKSPACE_PARAM}=workspace-1`)
+    expect(url).toBe(`${PORTAL_PREFIX}/t1/?${EMBED_TARGET_PARAM}=t1&${EMBED_WORKSPACE_PARAM}=workspace-1`)
   })
 
   it('parses the same hints back, ignoring unknown or invalid values', () => {
     expect(parsePortalQuery('?' + new URLSearchParams({
+      [EMBED_TARGET_PARAM]: 't1',
       [EMBED_SESSION_PARAM]: 'session-1',
       [EMBED_WORKSPACE_PARAM]: 'workspace-1',
       [EMBED_THEME_PARAM]: 'system',
@@ -88,6 +100,7 @@ describe('portal URL', () => {
       [EMBED_PARENT_PARAM]: ORIGIN,
       unknown: 'x',
     }).toString())).toEqual({
+      targetId: 't1',
       sessionId: 'session-1',
       workspaceId: 'workspace-1',
       theme: 'system',
@@ -102,7 +115,7 @@ describe('portal URL', () => {
   it('accepts only this target’s portal URL for storage events', () => {
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t1')}?${EMBED_SESSION_PARAM}=s`, 't1')).toBe(true)
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t1')}api/events`, 't1')).toBe(true)
-    expect(portalUrlMatches(`/dsh-remote-window/portal/t1/`, 't1')).toBe(true)
+    expect(portalUrlMatches(`/dsh-remote-workspace/portal/t1/`, 't1')).toBe(true)
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t10')}`, 't1')).toBe(false)
     expect(portalUrlMatches(`${ORIGIN}${portalPath('t1').slice(0, -1)}`, 't1')).toBe(false)
     expect(portalUrlMatches(`${ORIGIN}/elsewhere`, 't1')).toBe(false)
@@ -159,6 +172,38 @@ describe('postMessage vocabulary', () => {
     expect(acceptParentMessage({ origin: 'http://evil.example', data: open }, ORIGIN)).toBeUndefined()
     expect(isTrustedMessageOrigin('', '')).toBe(false)
     expect(isTrustedMessageOrigin(ORIGIN, '')).toBe(false)
+  })
+})
+
+describe('portal command vocabulary', () => {
+  it('round-trips the three commands the embedded server UI sends', () => {
+    const switchTarget = { v: RW_PORTAL_MESSAGE_VERSION, type: 'dsh-rw/switch-target', targetId: 't2' }
+    expect(rwPortalSwitchTarget('t2')).toEqual(switchTarget)
+    expect(parseRwPortalCommand(switchTarget)).toEqual(switchTarget)
+    expect(rwPortalOpenConnectDialog()).toEqual({ v: 1, type: 'dsh-rw/open-connect-dialog' })
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/open-connect-dialog' }))
+      .toEqual({ v: 1, type: 'dsh-rw/open-connect-dialog' })
+    expect(rwPortalClosePortal()).toEqual({ v: 1, type: 'dsh-rw/close-portal' })
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/close-portal' }))
+      .toEqual({ v: 1, type: 'dsh-rw/close-portal' })
+  })
+
+  it('rejects forged, unknown or malformed command payloads', () => {
+    // Wrong revision, including one that otherwise looks like a command.
+    expect(parseRwPortalCommand({ v: 2, type: 'dsh-rw/switch-target', targetId: 't2' })).toBeUndefined()
+    // Not part of the command vocabulary: readiness is a separate message.
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/ready' })).toBeUndefined()
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/open-session', sessionId: 's1' })).toBeUndefined()
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/unknown' })).toBeUndefined()
+    // Missing / empty / overlong target ids.
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/switch-target' })).toBeUndefined()
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/switch-target', targetId: '' })).toBeUndefined()
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/switch-target', targetId: 42 })).toBeUndefined()
+    expect(parseRwPortalCommand({ v: 1, type: 'dsh-rw/switch-target', targetId: 'x'.repeat(201) })).toBeUndefined()
+    // Non-objects.
+    expect(parseRwPortalCommand(null)).toBeUndefined()
+    expect(parseRwPortalCommand('nope')).toBeUndefined()
+    expect(parseRwPortalCommand([{ v: 1, type: 'dsh-rw/close-portal' }])).toBeUndefined()
   })
 })
 

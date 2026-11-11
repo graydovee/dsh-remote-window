@@ -1,18 +1,18 @@
-# dsh-remote-window
+# dsh-remote-workspace
 
 English | [中文](README-zh.md)
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-brightgreen.svg)](package.json)
 [![dsh](https://img.shields.io/badge/dsh-0.2.1--rc.3-blue.svg)](#compatibility)
-[![npm](https://img.shields.io/npm/v/dsh-remote-window.svg)](https://www.npmjs.com/package/dsh-remote-window)
+[![npm](https://img.shields.io/npm/v/dsh-remote-workspace.svg)](https://www.npmjs.com/package/dsh-remote-workspace)
 
 Open an SSH host as a DeepSeek Harness workspace. **The server is an ordinary DSH that can work on its
 own; this plugin makes it your remote entry.** Workspaces, sessions, session logs and shared view state
-stay authoritative on the server. The client adds a floating target rail and shows the server's
-**complete official DSH UI in a full-screen same-origin iframe** — sidebar, header, conversation, right
-sidebar and third-party UI plugins are exactly what the server runs. The client no longer redraws the
-conversation.
+stay authoritative on the server. The client adds one **Remote connections** row to its own left
+sidebar and shows the server's **complete official DSH UI in a full-screen same-origin iframe** —
+sidebar, header, conversation, right sidebar and third-party UI plugins are exactly what the server
+runs. The client no longer redraws the conversation.
 
 The connection chooses where the agent's **model requests** are served:
 
@@ -32,19 +32,17 @@ a new session.
 
 ## Screenshots
 
-![The target rail with a live connection, and the server's official UI in the full-screen frame](https://raw.githubusercontent.com/graydovee/dsh-remote-window/main/assets/screenshots/01-remote-window.jpg)
+![The Remote connections row in the client left sidebar and its connection list panel](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
-The client keeps exactly one remote surface: a floating **target rail** (collapsed by default, hover or
-`Alt+R` to expand) listing saved connections, their live phase and the connect/switch/forget actions. Drag
-the rail to any screen edge and it snaps there: collapsed it follows the edge (a compact column on
-the left/right, a strip of glyph chips on the top/bottom), and expanding it always opens the same
-vertical 280px list, limited by the viewport height and scrolling inside. The dock is remembered
-across reloads. With more than one connection a small fold button at the end of the strip (below the
-column, or at the right end of the bar, chevron pointing the way it folds) collapses the rail into a
-single `+N` badge (N = number of connections); clicking the badge expands the rail again in one step.
-expands on hover, so pointing at it never reflows the strip. Clicking the badge restores the strip and
-its hover-to-expand behaviour, and hover does not expand the badge itself. Once connected, the server's own
-sidebar and conversation are the navigation; the client shell sidebar hides while the iframe is mounted.
+The client keeps exactly one remote surface: a **Remote connections** row in its own left sidebar
+(icon + label, at the bottom of the navigation list, just above the trailing *More* menu). Selecting it opens the connection list in
+the main column: every saved connection with its live phase, `user@host:port` (or the WSL
+distribution), an active-row highlight, and the connect / disconnect / delete verbs, plus **New
+connection** and **Refresh** in the header. Clicking a row connects it (or reuses the running profile)
+and opens the server's official UI full-screen. Once the frame is mounted the client sidebar hides and
+the server's own sidebar is the navigation — and it carries the same **Remote connections** row, listing
+the same connections (the client host publishes the list to the server over the plugin protocol), so you
+can switch to another saved connection from inside the server UI, or return to the local list.
 
 ## Why this exists
 
@@ -89,7 +87,7 @@ If you only need "edit files on one server", the official SSH profile (`dsh-ssh`
 ```mermaid
 flowchart LR
   subgraph client [Your computer]
-    UI[Client Web UI<br/>target rail · full-screen iframe]
+    UI[Client Web UI<br/>Remote connections · full-screen iframe]
     CHOST[Client DSH host<br/>portal · P1 client · profile lifecycle]
     LOCAL[Local model bridge<br/>127.0.0.1 ephemeral]
     LLM[(your OpenAI-compatible LLM)]
@@ -124,7 +122,9 @@ in [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md),
 official `dsh web` UI, requested with `dshRwFull=1`. The portal strips the client GUI cookie, injects the
 profile's own cookie, never forwards `Set-Cookie`, and keeps the profile token out of the iframe URL. The
 iframe uses a minimal sandbox (`allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`).
-The client shell sidebar hides while the frame is mounted; the target rail stays available.
+The client shell sidebar hides while the frame is mounted; the server sidebar carries the same
+**Remote connections** row (same list, published over the plugin protocol), so switching connections and
+returning to the local list work from inside the frame.
 
 **Local model source.** The server profile's `cordis.patch.yml` declares official `llm-pi-ai` routes
 that point at `http://127.0.0.1:<random>/<provider>/v1`. That port is an SSH `forwardIn` reverse
@@ -145,8 +145,8 @@ JSONL title fold. Rename, fork, pin, archive and drag reorder call the official 
 client-only, in-memory filter.
 
 **Per-client profile and runtime.** Each client generates a stable `clientId` and uses
-`graydovee-remote-window-<clientId>` on the server. The dedicated profile and its server plugin are
-installed offline from the client package's bundled `dsh-remote-window-server-<version>.tgz`; the
+`graydovee-remote-workspace-<clientId>` on the server. The dedicated profile and its server plugin are
+installed offline from the client package's bundled `dsh-remote-workspace-server-<version>.tgz`; the
 isolated Node + DSH runtime is installed/upgraded automatically (or a verified global DSH is reused
 read-only). A profile lease rejects a second driver for the same profile.
 
@@ -165,20 +165,20 @@ this version from the GitHub release (the Plugins page accepts a tarball URL or 
 install from the Git branch — both install straight from the committed `lib/`:
 
 ```bash
-dsh plugin --profile web add https://github.com/graydovee/dsh-remote-window/releases/download/v<version>/dsh-remote-window-<version>.tgz
+dsh plugin --profile web add https://github.com/graydovee/dsh-remote-workspace/releases/download/v<version>/dsh-remote-workspace-<version>.tgz
 # or
-dsh plugin --profile web add github:graydovee/dsh-remote-window
+dsh plugin --profile web add github:graydovee/dsh-remote-workspace
 ```
 
 The npm package installs at an exact version:
 
 ```bash
-dsh plugin --profile web add dsh-remote-window@0.1.0-alpha.6
+dsh plugin --profile web add dsh-remote-workspace@0.1.0-alpha.8
 ```
 
 pnpm may refuse `ssh2`'s optional native build script; let the Plugins page install it or pass
 `--config.strict-dep-builds=false` on the first run. If it is already installed but not enabled, enable it
-on the Plugins page (or add `dsh-remote-window` to `dsh.profile.bundles` in
+on the Plugins page (or add `dsh-remote-workspace` to `dsh.profile.bundles` in
 `~/.dsh/profiles/web/package.json`). Restart the process that serves `dsh web` and reload the page.
 
 From a checkout:
@@ -186,13 +186,13 @@ From a checkout:
 ```bash
 pnpm install && pnpm typecheck && pnpm test && pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
-dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-window-<version>.tgz
+dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
 The package ships the server plugin tarball it needs, so the target does not need network access or a
 package manager. Then:
 
-1. Open the floating **target rail** (hover it or press `Alt+R`) and choose **New connection**.
+1. Open **Remote connections** in the client left sidebar and choose **New connection**.
 2. Choose `SSH`, fill in the target, and confirm the host-key fingerprint on first contact.
 3. Choose the model source: **local** (default) or **server** (use the server profile's own model
    configuration). For **local**, **advanced options** lists every provider/model your local DSH has,
@@ -203,8 +203,9 @@ package manager. Then:
    tunnel when the local model source is selected, and authenticates the handshake. A failed attempt is
    not saved.
 5. On success the target becomes active and the server's official DSH UI opens full-screen in the frame.
-   Use the server sidebar to create workspaces and sessions. Switching targets, reloading the frame and
-   forgetting a connection all happen from the rail.
+   Use the server sidebar to create workspaces and sessions. Switch connections from the server sidebar's
+   **Remote connections** row (or from the local list after **Return to local**); forgetting a connection
+   and opening the connect dialog stay in the local list.
 
 ## Model source and session ownership
 
@@ -232,13 +233,15 @@ Compatibility is a **declared interval**, not a constant hidden in the code:
 | 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 | 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 | 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.7 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.8 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 The table is generated from [`compat/runtimes.json`](compat/runtimes.json) by
 `node scripts/sync-compat.mjs`; `--check` fails the release when the manifest, the peers, the READMEs or
 the generated table disagree. Three different version numbers appear on purpose:
 
-- **Plugin version** (`0.1.0-alpha.6`) names our packages; it moves on our schedule.
+- **Plugin version** (`0.1.0-alpha.8`) names our packages; it moves on our schedule.
 - **DSH interval** (`min … max`, both ends inclusive) says which DSH releases this build can drive. DSH is
   a developer preview, so a release *above* the upper bound can break exactly like one below the lower
   bound: the check is a closed interval, not "this version or newer". An interval of one release is
@@ -269,14 +272,14 @@ dedicated profile's isolated runtime and never modifies the server's global DSH 
 
 | Location | Contents |
 | --- | --- |
-| Client `~/.dsh/storages/dsh_remote_window.json` | Connection records (incl. model source), local-model endpoint/model/timeout, package policy, legacy workspace refs (cleaned up) |
+| Client `~/.dsh/storages/dsh_remote_workspace.json` | Connection records (incl. model source), local-model endpoint/model/timeout, package policy, legacy workspace refs (cleaned up) |
 | Client `~/.dsh/.credentials.yaml` | SSH credentials and the local-model API key (official store, mode `0600`) |
-| Client `~/.dsh/remote-windows/<clientId>/…` | Leftover v2 anchor directories from earlier versions; this version does not write them |
+| Client `~/.dsh/remote-workspaces/<clientId>/…` | Leftover v2 anchor directories from earlier versions; this version does not write them |
 | Client `~/.dsh/remote-assets/` | Local runtime/package cache |
 | Server `~/.dsh/sessions/**` | Authoritative session logs (both model sources) |
 | Server `~/.dsh/storages/workspace.json` | Authoritative workspace registry, pin/archive/order |
-| Server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | Dedicated profile, server plugin, lease, logs |
-| Server `~/.dsh/remote-window/<clientId>/runtime/` | Isolated Node/DSH runtime |
+| Server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | Dedicated profile, server plugin, lease, logs |
+| Server `~/.dsh/remote-workspace/<clientId>/runtime/` | Isolated Node/DSH runtime |
 | Server `~/.dsh/remote-server-sessions/**` (legacy) | Retained but not shown and not migrated |
 
 The local-model API key never reaches the server or the browser: it stays in the client's official
@@ -307,7 +310,7 @@ credential store.
   recorded the v2 `local` executor stay in data and are not opened; this is documented in
   [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md).
 - **One iframe per client.** Opening a second remote target swaps the frame (the previous target is
-  disconnected or left in the rail as inactive). There is no split view of two servers.
+  disconnected or left in the connection list as inactive). There is no split view of two servers.
 - **Legacy manual local endpoint is HTTP-only (`/v1/*`).** It is kept for old saved settings only and is
   no longer part of the dialog; TLS to it was never implemented.
 - **sshd must allow reverse forwarding.** If `AllowTcpForwarding`/`GatewayPorts` policy refuses
@@ -315,7 +318,7 @@ credential store.
 - **Restarting a profile cancels all of its turns.** Refresh normally only re-reads data;
   loading a changed workspace registry uses the in-process official-service reload; a full profile
   restart is the fallback and requires the D20 confirmation.
-- **The target rail is client-plugin UI.** It needs the `web` profile of the client; the
+- **The Remote connections row is client-plugin UI.** It needs the `web` profile of the client; the
   desktop/headless profiles are not supported targets for the UI.
 - **POSIX server world.** SSH targets must provide a POSIX shell; WSL/Docker connection methods are retired
   in v1 (Docker is used only by QA).
@@ -326,8 +329,8 @@ credential store.
 | --- | --- |
 | `incompatible-version` | Install a DSH release inside the supported interval (`0.2.1-rc.2 … 0.2.2-rc.1`) locally, or exempt that exact pair (see Compatibility). |
 | `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | Install the release tarball or the Git branch; both use the committed `lib/` directly. |
-| Enabling reports `dsh: warning: 2 entries did not activate` (`session-controller` / `tool-agent-team`) | Add `dsh-remote-window` to `dsh.profile.bundles` in the profile `package.json`, then restart DSH. |
-| No target rail | The plugin must be installed and enabled in `web`; restart `dsh web` and reload. Hover the rail or press `Alt+R`. |
+| Enabling reports `dsh: warning: 2 entries did not activate` (`session-controller` / `tool-agent-team`) | Add `dsh-remote-workspace` to `dsh.profile.bundles` in the profile `package.json`, then restart DSH. |
+| No **Remote connections** row | The plugin must be installed and enabled in `web`; restart `dsh web` and reload. The row sits at the bottom of the left navigation list, just above *More*. |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | The client package lost or mismatched its bundled server-plugin tarball; reinstall the client plugin and reconnect. |
 | `server-plugin-integrity-failed` | The bundled/downloaded server plugin failed its sha256 check; reinstall the client package. |
 | `profile-in-use` / `profile-foreign-client` | Another client instance drives this profile, or the clientId was copied. Retry with the owning instance, or remove this client's connection record and reconnect. |
@@ -347,7 +350,7 @@ security invariants, release procedure). The current main-area and model-source 
 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md); wire contracts remain in
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) and
 [doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md). The server half lives in
-[dsh-remote-window-server](https://github.com/graydovee/dsh-remote-window-server).
+[dsh-remote-workspace-server](https://github.com/graydovee/dsh-remote-workspace-server).
 
 ## License
 

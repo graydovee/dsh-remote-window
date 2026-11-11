@@ -1,16 +1,16 @@
-# dsh-remote-window
+# dsh-remote-workspace
 
 [English](README.md) | 中文
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-brightgreen.svg)](package.json)
 [![dsh](https://img.shields.io/badge/dsh-0.2.1--rc.3-blue.svg)](#compatibility)
-[![npm](https://img.shields.io/npm/v/dsh-remote-window.svg)](https://www.npmjs.com/package/dsh-remote-window)
+[![npm](https://img.shields.io/npm/v/dsh-remote-workspace.svg)](https://www.npmjs.com/package/dsh-remote-workspace)
 
 把一台 SSH 主机打开成 DeepSeek Harness 工作区。**server 是一台能独立工作的普通 DSH；本插件让它成为
-client 的远程入口。** 工作区、会话、会话日志与共享视图状态都以 server 为权威。client 只加一条浮动
-target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺满主区**——sidebar、header、对话、
-右侧栏与第三方 UI 插件都是 server 上跑的那一份；client 不再自绘对话。
+client 的远程入口。** 工作区、会话、会话日志与共享视图状态都以 server 为权威。client 只在自己的左栏
+加一行**「远程连接」**，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺满主区**——sidebar、
+header、对话、右侧栏与第三方 UI 插件都是 server 上跑的那一份；client 不再自绘对话。
 
 连接时选择 agent 的**模型请求**由谁服务：
 
@@ -27,16 +27,13 @@ target rail，并把 server 的**完整官方 DSH UI 以同源 iframe 全屏铺�
 
 ## Screenshots
 
-![浮动 target rail 与全屏 iframe 中的 server 官方 UI](https://raw.githubusercontent.com/graydovee/dsh-remote-window/main/assets/screenshots/01-remote-window.jpg)
+![client 左栏的「远程连接」行与连接列表面板](https://raw.githubusercontent.com/graydovee/dsh-remote-workspace/main/assets/screenshots/01-remote-workspace.jpg)
 
-client 只保留一个远程面：浮动 **target rail**（默认收起，hover 或 `Alt+R` 展开），列已保存连接、实时
-阶段与连接/切换/忘记动作。target rail 可拖到任意屏幕边缘并自动吸附：收起时跟随吸附边（左右为 44px 竖排图标条、
-上下为 44px 横排图标条），**展开后无论哪条边都是同一个 280px 竖向列表**（按视口限高、列表纵向滚动），
-位置跨刷新记忆。连接数大于 1 时，收起条末端多一个折叠按钮（竖排在最后一个图标下方、横排在图标条右端，
-箭头指向收起方向）；按钮在同一张卡片里、但不属于 hover 展开组，指针移上去不会把条带展开。点击把 rail
-最小化为单个 `+N` 图标（N 为连接数），此时 hover 不展开；再点图标直接一步展开（指针移开后回到收起条）。连接后，
-server 自己的 sidebar
-与对话就是导航；iframe 挂载期间 client shell sidebar 隐藏。
+client 只保留一个远程面：自己左栏里的一行**「远程连接」**（图标 + 文字，在导航列表最下面、末尾「更多」菜单之上）。点开在主区显示连接列表：每条连接的实时阶段、`user@host:port`（WSL 显示发行版）、
+当前连接高亮，以及 连接 / 断开 / 删除 动作；头部是 **新建连接** 与 **刷新**。点一行就连接（或复用
+已在跑的 profile），并把 server 官方 UI 全屏打开。iframe 挂载后 client sidebar 隐藏，左栏是 server 自己
+的 sidebar，**里面同样有「远程连接」这一行**（client host 通过插件协议把列表发布给 server），所以可以在
+server UI 里直接切到另一条连接，或返回本地列表。
 
 ## Why this exists
 
@@ -74,7 +71,7 @@ Harness 只在自己运行的机器上干活。当工作必须发生在别处—
 ```mermaid
 flowchart LR
   subgraph client [你的电脑]
-    UI[client Web UI<br/>target rail · 全屏 iframe]
+    UI[client Web UI<br/>「远程连接」· 全屏 iframe]
     CHOST[client DSH host<br/>portal · P1 客户端 · profile 生命周期]
     LOCAL[本机模型 bridge<br/>127.0.0.1 临时端口]
     LLM[(你的 OpenAI 兼容 LLM)]
@@ -108,7 +105,8 @@ rightbar/bottom 的 CSS，因此 iframe 里就是真实的 server UI。逐字契
 UI，请求带 `dshRwFull=1`。portal 剥掉 client GUI cookie、注入 profile 自己的 cookie、不转发
 `Set-Cookie`，且 token 不进入 iframe URL。iframe sandbox 固定为
 `allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`。iframe 挂载期间 client
-shell sidebar 隐藏，target rail 保留可用。
+shell sidebar 隐藏，server sidebar 里有同一行「远程连接」（同一份列表，由插件协议发布），所以切连接与
+返回本地列表都在 iframe 内完成。
 
 **local 模型来源。** server profile 的 `cordis.patch.yml` 声明若干官方 `llm-pi-ai` route，指向
 `http://127.0.0.1:<随机>/<provider>/v1`。该端口是 SSH `forwardIn` 反向隧道，终止在 client 的
@@ -125,8 +123,8 @@ loopback-only bridge。默认的 **自动代理** 用本机 DSH 自己的 `ctx.l
 rename/fork/pin/archive/拖拽都调官方服务。搜索仅 client 内存过滤。
 
 **per-client profile 与 runtime。** 每个 client 生成稳定 `clientId`，server 上用
-`graydovee-remote-window-<clientId>`。专用 profile 与 server 插件从 client 包内置的
-`dsh-remote-window-server-<version>.tgz` 离线安装；独立 Node+DSH runtime 自动安装/升级（或只读复用
+`graydovee-remote-workspace-<clientId>`。专用 profile 与 server 插件从 client 包内置的
+`dsh-remote-workspace-server-<version>.tgz` 离线安装；独立 Node+DSH runtime 自动安装/升级（或只读复用
 已验证的全局 DSH）。profile lease 拒绝第二个驱动实例。
 
 **Host key 必须确认。** 首次连接展示 host key SHA-256 并等待显式确认；之后 key 变化会中止连接。
@@ -142,20 +140,20 @@ executor 的旧会话留在数据里，本版本不再打开。
 `lib/`：
 
 ```bash
-dsh plugin --profile web add https://github.com/graydovee/dsh-remote-window/releases/download/v<version>/dsh-remote-window-<version>.tgz
+dsh plugin --profile web add https://github.com/graydovee/dsh-remote-workspace/releases/download/v<version>/dsh-remote-workspace-<version>.tgz
 # 或
-dsh plugin --profile web add github:graydovee/dsh-remote-window
+dsh plugin --profile web add github:graydovee/dsh-remote-workspace
 ```
 
 npm 源写精确版本：
 
 ```bash
-dsh plugin --profile web add dsh-remote-window@0.1.0-alpha.6
+dsh plugin --profile web add dsh-remote-workspace@0.1.0-alpha.8
 ```
 
 pnpm 可能拦截 `ssh2` 的可选 native 构建脚本；用 Plugins 页面安装，或首次运行加
 `--config.strict-dep-builds=false`。已安装但未启用时，在 Plugins 页面启用（或把
-`dsh-remote-window` 加进 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）。重启服务
+`dsh-remote-workspace` 加进 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）。重启服务
 `dsh web` 的进程并刷新页面。
 
 从 checkout 构建安装：
@@ -163,12 +161,12 @@ pnpm 可能拦截 `ssh2` 的可选 native 构建脚本；用 Plugins 页面安�
 ```bash
 pnpm install && pnpm typecheck && pnpm test && pnpm build
 pnpm pack --pack-destination ~/.dsh/tarballs
-dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-window-<version>.tgz
+dsh plugin --profile web add ~/.dsh/tarballs/dsh-remote-workspace-<version>.tgz
 ```
 
 client 包内置 server 插件 tarball，因此目标机不需要网络或包管理器。然后：
 
-1. 打开浮动 **target rail**（hover 或按 `Alt+R`），点 **新建连接**。
+1. 打开 client 左栏的 **「远程连接」**，点 **新建连接**。
 2. 选择 `SSH`，填目标信息，首次连接确认 host key 指纹。
 3. 选择模型来源：**local**（默认）或 **server**（使用 server profile 自己的模型配置）。选 **local**
    时，本机 DSH 的全部 provider/model 都会转发给 server profile（没有勾选步骤）；本机还没有模型也能
@@ -177,7 +175,8 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
    跳过；随后启动 profile server，选 local 模型时打开 SSH 反向隧道，并完成握手鉴权。失败的尝试不会
    保存。
 5. 成功后该 target 自动激活，server 官方 DSH UI 在 iframe 中全屏打开。用 server 自己的 sidebar
-   建工作区、开会话；切换 target、重载 iframe、忘记连接都在 rail 上完成。
+   建工作区、开会话；切连接用 server sidebar 里的「远程连接」行（或先「返回本地」再用本地列表），
+   新建连接与删除连接留在本地列表里完成。
 
 ## Model source and session ownership
 
@@ -204,12 +203,14 @@ client 包内置 server 插件 tarball，因此目标机不需要网络或包管
 | 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 | 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | 0.2.1-rc.5, 0.2.1-rc.3 |
 | 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.7 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
+| 0.1.0-alpha.8 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1, 0.2.1-rc.5, 0.2.1-rc.3 |
 <!-- verified-runtimes:end -->
 
 这张表由 `node scripts/sync-compat.mjs` 从 [`compat/runtimes.json`](compat/runtimes.json) 生成；
 `--check` 会在清单、peer、README 与生成表不一致时让发布失败。三个版本号各有含义，故意分开：
 
-- **插件版本**（`0.1.0-alpha.6`）是我们自己的包版本，按我们的节奏走。
+- **插件版本**（`0.1.0-alpha.8`）是我们自己的包版本，按我们的节奏走。
 - **DSH 区间**（`min … max`，两端闭）表示这个构建能驱动的 DSH 版本。DSH 是开发者预览版，高于上界的
   版本和低于下界的版本一样可能不兼容，所以判断是闭区间，而不是「这个版本或更新」。区间退化为单版本时
   就直接写成精确版本。
@@ -234,14 +235,14 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 
 | 位置 | 内容 |
 | --- | --- |
-| client `~/.dsh/storages/dsh_remote_window.json` | 连接记录（含模型来源）、本机模型 endpoint/模型/超时、包策略、旧 workspace refs（会清理） |
+| client `~/.dsh/storages/dsh_remote_workspace.json` | 连接记录（含模型来源）、本机模型 endpoint/模型/超时、包策略、旧 workspace refs（会清理） |
 | client `~/.dsh/.credentials.yaml` | SSH 凭据与本机模型 API key（官方存储，`0600`） |
-| client `~/.dsh/remote-windows/<clientId>/…` | 旧版本留下的 v2 anchor 目录；本版本不再写入 |
+| client `~/.dsh/remote-workspaces/<clientId>/…` | 旧版本留下的 v2 anchor 目录；本版本不再写入 |
 | client `~/.dsh/remote-assets/` | 本机 runtime/包缓存 |
 | server `~/.dsh/sessions/**` | 权威会话日志（两种模型来源共用） |
 | server `~/.dsh/storages/workspace.json` | 权威 workspace registry、pin/archive/顺序 |
-| server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | 专用 profile、server 插件、lease、日志 |
-| server `~/.dsh/remote-window/<clientId>/runtime/` | 独立 Node/DSH runtime |
+| server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile、server 插件、lease、日志 |
+| server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 Node/DSH runtime |
 | server `~/.dsh/remote-server-sessions/**`（旧） | 保留、不展示、不迁移 |
 
 本机模型 API key 不会到 server 或浏览器：它只存 client 官方凭据库，只由 loopback bridge 读取并注入
@@ -264,15 +265,15 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
   重连。
 - **v2 执行世界已移除。** iframe 始终驱动 server agent。记录过 v2 `local` executor 的旧会话留在数据里，
   本版本不再打开；详见 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)。
-- **每个 client 只挂一个 iframe。** 打开第二个远程 target 会替换 frame（前一个 target 断开或在 rail
-  中保持非激活）。没有两个 server 的分屏。
+- **每个 client 只挂一个 iframe。** 打开第二个远程 target 会替换 frame（前一个 target 断开或在连接
+  列表中保持非激活）。没有两个 server 的分屏。
 - **旧的手动本机 endpoint 只支持 HTTP（`/v1/*`）。** 它仅为旧设置保留、对话框不再提供，TLS 从未
   实现。自动代理模式没有这个问题（走本机 DSH 自己的 provider 客户端）。
 - **sshd 必须允许反向转发。** 若 `AllowTcpForwarding`/`GatewayPorts` 策略拒绝 `forwardIn`，连接会以
   可操作错误失败，绝不静默改用 server 模型。
 - **重启 profile 会取消它的所有 turn。** 普通刷新只重读数据；加载 workspace registry 变更用进程内官方
   service reload；完整重启 profile 是 fallback，且必须经过 D20 确认。
-- **target rail 是 client 插件 UI。** 需要 client 的 `web` profile；desktop/headless profile 不是本界面支持的 target。
+- **「远程连接」行是 client 插件 UI。** 需要 client 的 `web` profile；desktop/headless profile 不是本界面支持的 target。
 - **server 世界是 POSIX。** SSH 目标需提供 POSIX shell；v1 已退役 WSL/Docker 连接方式（Docker 只用于 QA）。
 
 ## Troubleshooting
@@ -281,8 +282,8 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 | --- | --- |
 | `incompatible-version` | 本机装区间内的 DSH（`0.2.1-rc.2 … 0.2.2-rc.1`），或对该精确版本做豁免（见 Compatibility）。 |
 | `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | 用 Release tarball 或 Git 分支安装；两者直接使用仓库里已提交的 `lib/`。 |
-| 启用时报 `dsh: warning: 2 entries did not activate`（`session-controller` / `tool-agent-team`） | 把 `dsh-remote-window` 写进 profile `package.json` 的 `dsh.profile.bundles`，重启 DSH。 |
-| 没有 target rail | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。hover rail 或按 `Alt+R` 展开。 |
+| 启用时报 `dsh: warning: 2 entries did not activate`（`session-controller` / `tool-agent-team`） | 把 `dsh-remote-workspace` 写进 profile `package.json` 的 `dsh.profile.bundles`，重启 DSH。 |
+| 左栏没有「远程连接」 | 插件必须已安装并在 `web` 启用；重启 `dsh web` 并刷新。该行在左栏导航列表最下面、末尾「更多」之上。 |
 | `server-plugin-missing` / `server-plugin-version-mismatch` | client 包内置的 server 插件 tarball 丢失/版本不匹配；重装 client 插件后重连。 |
 | `server-plugin-integrity-failed` | 内置/下载的 server 插件 sha256 校验失败；重装 client 包。 |
 | `profile-in-use` / `profile-foreign-client` | 另一个 client 实例在驱动该 profile，或 clientId 被复制。用持有实例重试，或删除本机连接记录后重连。 |
@@ -301,7 +302,7 @@ Windows 契约、失败码与真机验证记录见 [doc/windows-server-support.m
 模型来源契约见 [doc/refactor-v3-full-ui.md](doc/refactor-v3-full-ui.md)；协议仍见
 [doc/refactor-v1-architecture.md](doc/refactor-v1-architecture.md) 与
 [doc/refactor-v1-protocol.md](doc/refactor-v1-protocol.md)。server 半边在
-[dsh-remote-window-server](https://github.com/graydovee/dsh-remote-window-server)。
+[dsh-remote-workspace-server](https://github.com/graydovee/dsh-remote-workspace-server)。
 
 ## License
 

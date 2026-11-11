@@ -15,10 +15,13 @@
  *  - the small frame state machine (loading / ready / error / reload) the
  *    React container renders.
  */
+import { RW_EMBED_TARGET_PARAM } from '../protocol.ts'
 
 /** Client-host portal prefix (protocol §8.1). */
-export const PORTAL_PREFIX = '/dsh-remote-window/portal'
+export const PORTAL_PREFIX = '/dsh-remote-workspace/portal'
 
+/** Target the frame currently shows (shared protocol constant). */
+export const EMBED_TARGET_PARAM = RW_EMBED_TARGET_PARAM
 /** Embed query keys (protocol §9.3, plus the §16.2 fallback). */
 export const EMBED_SESSION_PARAM = 'dshRwSession'
 /** Fallback deep link (protocol §16.2): open the workspace's own draft. */
@@ -63,7 +66,7 @@ export interface PortalUrlInput {
  * GUI, so a relative `src` keeps the browser on the client origin (and avoids
  * ever exposing profile-server authority).
  * @param targetId - connected target id.
- * @returns `/dsh-remote-window/portal/<encoded targetId>/`.
+ * @returns `/dsh-remote-workspace/portal/<encoded targetId>/`.
  */
 export function portalPath(targetId: string): string {
   if (targetId === '') throw new TypeError('portalPath: targetId must not be empty')
@@ -80,6 +83,9 @@ export function portalPath(targetId: string): string {
  */
 export function portalUrl(input: PortalUrlInput): string {
   const params = new URLSearchParams()
+  // The mounted target is always part of the URL: the server-side list reads it
+  // back to mark the active row (protocol §9.3).
+  params.set(EMBED_TARGET_PARAM, input.targetId)
   if (input.sessionId !== undefined && input.sessionId !== '') {
     params.set(EMBED_SESSION_PARAM, input.sessionId)
   }
@@ -92,12 +98,12 @@ export function portalUrl(input: PortalUrlInput): string {
     params.set(EMBED_PARENT_PARAM, input.parentOrigin)
   }
   if (input.full === true) params.set(EMBED_FULL_PARAM, '1')
-  const query = params.toString()
-  return query === '' ? portalPath(input.targetId) : `${portalPath(input.targetId)}?${query}`
+  return `${portalPath(input.targetId)}?${params.toString()}`
 }
 
 /** Values the embed bootstrap reads from its own URL query (server side). */
 export interface PortalQuery {
+  readonly targetId?: string
   readonly sessionId?: string
   readonly workspaceId?: string
   readonly theme?: EmbedTheme
@@ -126,6 +132,7 @@ export function isEmbedLang(value: unknown): value is EmbedLang {
  */
 export function parsePortalQuery(search: string): PortalQuery {
   const params = new URLSearchParams(search)
+  const targetId = params.get(EMBED_TARGET_PARAM)
   const sessionId = params.get(EMBED_SESSION_PARAM)
   const workspaceId = params.get(EMBED_WORKSPACE_PARAM)
   const theme = params.get(EMBED_THEME_PARAM)
@@ -133,6 +140,7 @@ export function parsePortalQuery(search: string): PortalQuery {
   const parent = params.get(EMBED_PARENT_PARAM)
   const full = params.get(EMBED_FULL_PARAM)
   return {
+    ...(targetId === null || targetId === '' ? {} : { targetId }),
     ...(sessionId === null || sessionId === '' ? {} : { sessionId }),
     ...(workspaceId === null || workspaceId === '' ? {} : { workspaceId }),
     ...(isEmbedTheme(theme) ? { theme } : {}),

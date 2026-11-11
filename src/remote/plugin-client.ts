@@ -14,13 +14,14 @@
  * cookie header value it is given and never prints it.
  */
 import type { Duplex } from 'node:stream'
+import type { RwClientTargetsValue } from '../protocol.ts'
 import { scrubSecrets } from '../targets/types.ts'
 
 /** The v1 plugin wire protocol; server accepts exact equality only. */
 export const REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1 as const
 
 /** Server plugin route prefix (protocol §4.1). */
-export const PLUGIN_ROUTE_PREFIX = '/dsh-remote-window-server'
+export const PLUGIN_ROUTE_PREFIX = '/dsh-remote-workspace-server'
 
 /** P1 route table. */
 export const PLUGIN_ROUTES = {
@@ -113,6 +114,8 @@ export interface ServerCapabilities {
   readonly executor?: 1
   readonly eventsSse?: 1
   readonly muxWs?: 1
+  /** The server accepts `client/targets` snapshots (protocol §16.14). */
+  readonly clientTargets?: 1
   readonly embed?: { readonly storagePrefix: string; readonly mode: 'reload' | 'client-half' }
   readonly registryReload?: 'process-restart' | 'loader-disable-enable' | 'none'
   readonly registryWriteGuard?: 'prototype' | 'none'
@@ -409,6 +412,11 @@ export class RemotePluginClient {
   /** `profile/cancel-all`; the disconnect path cancels every live turn (protocol §3.6). */
   async cancelAll(signal?: AbortSignal): Promise<{ canceled: readonly string[] }> {
     return await this.rpc('profile/cancel-all', {}, signal)
+  }
+
+  /** `client/targets`; publish this client's whole connection list (protocol §16.14). */
+  async clientTargets(value: RwClientTargetsValue, signal?: AbortSignal): Promise<{ accepted: boolean; updatedAt: number; count: number }> {
+    return await this.rpc('client/targets', value, signal)
   }
 
   /** Subscribe to the P1 SSE stream (protocol §6). */

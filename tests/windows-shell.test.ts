@@ -123,10 +123,10 @@ describe('windows runtime and plugin installers', () => {
     const script = windowsServerPluginInstallScript({
       tarballPath: 'C:\\stage\\p.tgz',
       stageDir: 'C:\\stage\\unpack',
-      destDir: 'C:\\profile\\node_modules\\dsh-remote-window-server',
+      destDir: 'C:\\profile\\node_modules\\dsh-remote-workspace-server',
       markerPath: 'C:\\profile\\.dsh-rw-plugin.json',
       markerJson: '{"version":"0.1.0-alpha.4"}',
-      expectedName: 'dsh-remote-window-server',
+      expectedName: 'dsh-remote-workspace-server',
       expectedVersion: '0.1.0-alpha.4',
       expectedSha256: 'b'.repeat(64),
     })
@@ -138,10 +138,10 @@ describe('windows runtime and plugin installers', () => {
 
 describe('windows profile lifecycle scripts', () => {
   const options = {
-    profileDir: 'C:\\Users\\u\\.dsh\\remote-window\\profiles\\p',
-    stateDir: 'C:\\Users\\u\\.dsh\\remote-window\\state',
-    logPath: 'C:\\Users\\u\\.dsh\\remote-window\\state\\server.log',
-    pidPath: 'C:\\Users\\u\\.dsh\\remote-window\\state\\server.pid',
+    profileDir: 'C:\\Users\\u\\.dsh\\remote-workspace\\profiles\\p',
+    stateDir: 'C:\\Users\\u\\.dsh\\remote-workspace\\state',
+    logPath: 'C:\\Users\\u\\.dsh\\remote-workspace\\state\\server.log',
+    pidPath: 'C:\\Users\\u\\.dsh\\remote-workspace\\state\\server.pid',
     dshHome: 'C:\\Users\\u\\.dsh',
     nodeExe: 'C:\\rt\\node\\node.exe',
     dshRoot: 'C:\\rt\\dsh',

@@ -3,10 +3,10 @@
  * stop / forget verbs and the full-screen portal deep link.
  *
  * The official UI owns every workspace and session surface now, so this store
- * keeps only what the rail and the dialogs need: the target order, one view per
- * target, the connect dialog, the forget confirmation and the notice toast.
- * Every verb is one host route; nothing here caches server data beyond the
- * snapshot the portal deep link and the rail's badges read.
+ * keeps only what the connection panel and the dialogs need: the target order,
+ * one view per target, the connect dialog, the forget confirmation and the
+ * notice toast. Every verb is one host route; nothing here caches server data
+ * beyond the snapshot the portal deep link and the panel rows read.
  */
 import { useSyncExternalStore } from 'react'
 import { RemoteApiError, toWireError } from './api.ts'
@@ -61,6 +61,11 @@ export interface ConnectDialogState {
   readonly fingerprint?: string
   /** Stable id for polling host-side connect progress. */
   readonly attemptId?: string
+  /**
+   * Set when this dialog is a reconnect of a saved target: the wizard steps are
+   * skipped and the dialog is the progress surface for that attempt.
+   */
+  readonly reconnectTargetId?: string
   /** Where the server agent's model requests are served. */
   readonly modelSource: 'local' | 'server'
   readonly error?: WireError
@@ -119,7 +124,7 @@ function snapshot(): RemoteAppState {
   return state
 }
 
-/** Snapshot hook for the rail and the dialogs. */
+/** Snapshot hook for the connection panel and the dialogs. */
 export function useRemoteAppState(): RemoteAppState {
   return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
@@ -316,11 +321,11 @@ async function loadRemoteSessions(targetId: string, force = false): Promise<void
 const CONNECT_TIMEOUT_MS = 10 * 60_000
 
 /** Settle with the connect promise, or reject with a readable timeout. */
-async function reconnectWithTimeout(targetId: string): Promise<void> {
+async function reconnectWithTimeout(targetId: string, attemptId?: string): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
-      remoteApi.reconnect(targetId),
+      remoteApi.reconnect(targetId, attemptId === undefined ? {} : { attemptId }),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => { reject(new Error(t('remote.connect.timeout'))) }, CONNECT_TIMEOUT_MS)
       }),
@@ -336,13 +341,16 @@ function connectionIsLive(view: RemoteConnectionView): boolean {
   return phase === 'ready' || phase === 'degraded'
 }
 
-/** Ask the official layout to show one panel id (`null` = the conversation). */
-function selectPanel(id: string | null): void {
+/**
+ * Ask the official layout to show one panel id (`null` = the conversation).
+ * @param id - a `main` slot key, or `null` for the shell's own conversation.
+ */
+export function selectPanel(id: string | null): void {
   try {
     const layout = clientContext?.get('layout') as { selectPanel?(panelId: string | null): void } | undefined
     layout?.selectPanel?.(id)
   } catch (error) {
-    console.error('[dsh-remote-window] layout.selectPanel failed', error)
+    console.error('[dsh-remote-workspace] layout.selectPanel failed', error)
   }
 }
 
@@ -423,23 +431,114 @@ export async function activateRemoteTarget(targetId: string): Promise<void> {
   selectPanel(SERVER_MAIN_ID)
 }
 
-/** Connect one saved target through the v1 route, then reread it. */
+/**
+ * Switch the full-screen official UI to another saved target.
+ *
+ * This is the `dsh-rw/switch-target` handler used by the mirrored server-side
+ * connection list. An unknown target, the already active target, and a pending
+ * verb are no-ops; a failed switch leaves the current frame mounted and only
+ * reports the failure, so the user keeps the conversation they were reading.
+ * @param targetId - the target the embedded UI asked for.
+ */
+export async function switchRemoteTarget(targetId: string): Promise<void> {
+  const view = state.connections[targetId]
+  if (view === undefined || state.pending || view.connecting === true) return
+  if (serverMainRequest()?.targetId === targetId) return
+  try {
+    await activateRemoteTarget(targetId)
+  } catch (error) {
+    notify('error', t('remote.connect.failed', { message: describeFailure(error) }))
+  }
+}
+
+/** A fresh id for one connect attempt (progress polling keys on it). */
+function newAttemptId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `connect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * Connect one saved target and show the progress dialog for the attempt.
+ *
+ * A connect is slow (runtime/plugin deployment on a cold host), so it must not
+ * be a silent row spinner: the dialog opens on its progress step with the same
+ * step rows a first connection shows, and closes itself once the official UI
+ * opens. Failures stay in the dialog with a retry button.
+ * @param targetId - saved target id.
+ */
 export async function connectRemoteTarget(targetId: string): Promise<void> {
   const view = state.connections[targetId]
   if (view === undefined || view.connecting === true) return
+  const attemptId = newAttemptId()
+  commit({
+    connectDialog: {
+      phase: 'submitting',
+      reconnectTargetId: targetId,
+      attemptId,
+      label: view.target.label,
+      host: view.target.host,
+      port: String(view.target.port),
+      username: view.target.username,
+      // The host reuses the stored credential/private key: the dialog is a
+      // progress surface, not an editable form.
+      authKind: 'agent',
+      secret: '',
+      privateKeyPath: '',
+      dshHome: '',
+      runtimePolicy: 'auto',
+      modelSource: 'local',
+    },
+  })
+  await runReconnectAttempt(targetId, attemptId)
+}
+
+/**
+ * Retry the reconnect the progress dialog is currently showing.
+ *
+ * Failed attempts keep the dialog open; retrying starts a fresh host attempt
+ * with a new id so the progress buffer starts empty.
+ */
+export async function retryReconnectTarget(): Promise<void> {
+  const dialog = state.connectDialog
+  const targetId = dialog?.reconnectTargetId
+  if (dialog === undefined || targetId === undefined || dialog.phase === 'submitting') return
+  const attemptId = newAttemptId()
+  commit({ connectDialog: { ...dialog, phase: 'submitting', attemptId, error: undefined } })
+  await runReconnectAttempt(targetId, attemptId)
+}
+
+/** One reconnect attempt: host call, progress dialog lifecycle, activation. */
+async function runReconnectAttempt(targetId: string, attemptId: string): Promise<void> {
+  const view = state.connections[targetId]
+  if (view === undefined) return
   patchConnection(targetId, { connecting: true, connectFailed: false, error: undefined })
   commit({ pending: true })
   try {
-    await reconnectWithTimeout(targetId)
+    await reconnectWithTimeout(targetId, attemptId)
     patchConnection(targetId, { connecting: false })
+    // Only close the dialog this attempt owns: the user may have closed it, or
+    // started a different connection while this one ran.
+    if (state.connectDialog?.attemptId === attemptId) commit({ connectDialog: undefined })
+    notify('success', t('remote.connect.done', { label: view.target.label }))
     await loadRemoteState()
     await loadRemoteSessions(targetId, true)
-    // The connection is now live: replace the rail's stopped state with the
-    // server's own full UI. A failure above keeps the dialog's error path.
+    // The connection is live: open the server's own full UI.
     await activateRemoteTarget(targetId)
   } catch (error) {
     await refreshRemoteTarget(targetId).catch(() => undefined)
     patchConnection(targetId, { connecting: false, connectFailed: true, error: describe(error) })
+    const wire = describe(error)
+    const dialog = state.connectDialog
+    if (dialog?.attemptId === attemptId) {
+      commit({
+        connectDialog: {
+          ...dialog,
+          phase: 'failed',
+          error: { code: wire.code, message: describeFailure(error) },
+        },
+      })
+    }
     notify('error', t('remote.connect.failed', { message: describeFailure(error) }))
   } finally {
     patchConnection(targetId, { connecting: false })
@@ -555,9 +654,7 @@ export async function submitConnectDialog(): Promise<void> {
     commit({ connectDialog: { ...dialog, error: invalid } })
     return
   }
-  const attemptId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `connect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  const attemptId = newAttemptId()
   commit({ connectDialog: { ...dialog, phase: 'submitting', attemptId, error: undefined } })
   try {
     const connected = await remoteApi.connectV1({

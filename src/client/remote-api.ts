@@ -116,6 +116,8 @@ export interface ConnectProgressEvent {
   readonly step: ConnectProgressStep
   readonly status: 'running' | 'ok' | 'skipped' | 'failed'
   readonly message: string
+  /** Pre-split observations (the probe reports one line per fact); optional. */
+  readonly details?: readonly string[]
   readonly at: number
 }
 
@@ -169,9 +171,20 @@ export const remoteApi = {
     return call<{ events: ConnectProgressEvent[] }>('v1/connect/progress', { attemptId })
   },
 
-  /** Reconnect one saved target using the host-side pinned record and secret. */
-  reconnect(targetId: string): Promise<{ target: PublicTargetV1; state: ConnectionStateV1 }> {
-    return call<{ target: PublicTargetV1; state: ConnectionStateV1 }>('v1/connect', { targetId })
+  /**
+   * Reconnect one saved target using the host-side pinned record and secret.
+   *
+   * `attemptId` opts the attempt into the host's progress buffer, so the dialog
+   * can show the same step-by-step progress a first connection shows.
+   */
+  reconnect(
+    targetId: string,
+    options: { readonly attemptId?: string } = {},
+  ): Promise<{ target: PublicTargetV1; state: ConnectionStateV1 }> {
+    return call<{ target: PublicTargetV1; state: ConnectionStateV1 }>('v1/connect', {
+      targetId,
+      ...(options.attemptId === undefined ? {} : { attemptId: options.attemptId }),
+    })
   },
 
   /** Delete one saved target (profile stopped, local record and secret removed). */

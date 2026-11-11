@@ -11,7 +11,7 @@
 import { t } from './locales.ts'
 
 /** Route prefix owned by the plugin's host half. */
-export const API_PREFIX = '/dsh-remote-window'
+export const API_PREFIX = '/dsh-remote-workspace'
 
 /** SSH authentication kind, as the host models it. */
 export type AuthKind = 'password' | 'privateKey' | 'agent'
@@ -19,13 +19,17 @@ export type AuthKind = 'password' | 'privateKey' | 'agent'
 /** Connection status of a saved target. */
 export type TargetStatus = 'unknown' | 'ready' | 'failed' | 'stopped'
 
-/** A host the plugin has connected to before (the rail's row model). */
+/** A host the plugin has connected to before (a connection row's model). */
 export interface PublicTarget {
   id: string
   label: string
+  /** Connection kind; a WSL target reaches a local distribution, not a host. */
+  kind?: 'ssh' | 'wsl'
   host: string
   port: number
   username: string
+  /** Local WSL distribution name (WSL targets only). */
+  wslDistro?: string
   status: TargetStatus
 }
 

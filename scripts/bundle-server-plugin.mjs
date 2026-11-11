@@ -9,7 +9,7 @@
  * release train.
  *
  * Usage:
- *   node scripts/bundle-server-plugin.mjs --tarball ../dsh-remote-window-server/dist/server-plugin/dsh-remote-window-server-0.1.0-alpha.3.tgz
+ *   node scripts/bundle-server-plugin.mjs --tarball ../dsh-remote-workspace-server/dist/server-plugin/dsh-remote-workspace-server-0.1.0-alpha.3.tgz
  *   DSH_SERVER_PLUGIN_TARBALL=... node scripts/bundle-server-plugin.mjs
  */
 import { createHash } from 'node:crypto'
@@ -33,7 +33,7 @@ const tarball = resolve(tarballArg)
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const clientVersion = String(manifest.version)
 const name = basename(tarball)
-const match = /^dsh-remote-window-server-(.+)\.tgz$/u.exec(name)
+const match = /^dsh-remote-workspace-server-(.+)\.tgz$/u.exec(name)
 if (match === null) {
   console.error(`bundle-server-plugin: unexpected tarball name ${name}`)
   process.exit(2)

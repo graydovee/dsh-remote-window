@@ -6,7 +6,7 @@
  * reported as unusable instead of silently triggering an isolated runtime.
  */
 import { describe, expect, it } from 'vitest'
-import { remoteSetupFacts, type SetupFactsInput } from '../src/provision/setup-facts.ts'
+import { remoteSetupFactLines, remoteSetupFacts, type SetupFactsInput } from '../src/provision/setup-facts.ts'
 
 const WINDOWS_SCAN = {
   platform: 'Windows',
@@ -76,6 +76,31 @@ describe('remote setup facts', () => {
     expect(facts).toContain('server 全局 DSH 未找到')
     expect(facts).toContain('隔离运行时 0.2.1-rc.3（Node v24.21.0）')
     expect(facts).toContain('server 插件 0.1.0-alpha.3（需更新到 0.1.0-alpha.4）')
+  })
+
+  it('splits the observations into one line per fact', () => {
+    // The progress row renders these separately: each one is a sentence of its
+    // own, so joining them with ` · ` is what made the dialog wrap mid-field.
+    const lines = remoteSetupFactLines(input({}))
+    expect(lines).toHaveLength(6)
+    expect(lines[0]).toContain('远端环境')
+    expect(lines[1]).toContain('Node')
+    expect(lines[2]).toContain('server 全局 DSH')
+    expect(lines[3]).toContain('DSH_HOME')
+    expect(lines[4]).toContain('隔离运行时')
+    expect(lines[5]).toContain('server 插件')
+    for (const line of lines) expect(line).not.toContain(' · ')
+    // The single-line form stays available for the log and CLI paths.
+    expect(remoteSetupFacts(input({}))).toBe(lines.join(' · '))
+  })
+
+  it('calls a same-version marker mismatch a reinstall with updated content', () => {
+    // Same version, different tarball sha256: the connect reinstalls the plugin.
+    const lines = remoteSetupFactLines(input({
+      plugin: { action: 'upgrade', version: '0.1.0-alpha.7', installedVersion: '0.1.0-alpha.7' },
+    }))
+    expect(lines[5]).toContain('server 插件 0.1.0-alpha.7（内容已更新，将重装）')
+    expect(lines[5]).not.toContain('需更新到 0.1.0-alpha.7）')
   })
 
   it('reports a POSIX server without a global DSH and without Node on PATH', () => {

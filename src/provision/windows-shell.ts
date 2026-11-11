@@ -208,7 +208,7 @@ export function windowsScanScript(options: { dshHome?: string } = {}): string {
     '    foreach ($profileDir in (Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue)) {',
     "      $pluginVersion = ''",
     "      $pluginSha = ''",
-    "      $manifest = Join-Path $profileDir.FullName 'node_modules\\dsh-remote-window\\package.json'",
+    "      $manifest = Join-Path $profileDir.FullName 'node_modules\\dsh-remote-workspace\\package.json'",
     '      if (Test-Path -LiteralPath $manifest -PathType Leaf) {',
     '        try { $pluginVersion = [string]((Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).version) } catch { $pluginVersion = \'\' }',
     '      }',

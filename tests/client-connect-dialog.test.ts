@@ -51,6 +51,7 @@ const storeSpies = vi.hoisted(() => ({
   patchConnectDialog: vi.fn(),
   setLocalProviderSelected: vi.fn(),
   submitConnectDialog: vi.fn(),
+  retryReconnectTarget: vi.fn(),
   closeConnectDialog: vi.fn(),
   toggleLocalModel: vi.fn(),
 }))
@@ -96,6 +97,7 @@ const remoteStore = vi.hoisted(() => ({
   patchConnectDialog: storeSpies.patchConnectDialog,
   setLocalProviderSelected: storeSpies.setLocalProviderSelected,
   submitConnectDialog: storeSpies.submitConnectDialog,
+  retryReconnectTarget: storeSpies.retryReconnectTarget,
   toggleLocalModel: storeSpies.toggleLocalModel,
 }))
 vi.mock('../src/client/remote-store.ts', () => ({
@@ -129,6 +131,7 @@ vi.mock('../src/client/remote-store.ts', () => ({
   submitForgetTarget: remoteStore.noop,
   submitRenameSession: remoteStore.noop,
   submitRenameWorkspace: remoteStore.noop,
+  retryReconnectTarget: remoteStore.retryReconnectTarget,
   toggleLocalModel: remoteStore.toggleLocalModel,
   useRemoteAppState: () => storeSpies.appState,
 }))
@@ -345,4 +348,78 @@ describe('v3 connect dialog model source', () => {
     expect(text(idle, 'dsh-rw-connect-elapsed')).toBeUndefined()
   })
 
+})
+
+describe('connect progress details', () => {
+  it('renders one line per observation when the host pre-split the facts', async () => {
+    const module = await import('../src/client/remote-dialogs.tsx')
+    const event = {
+      step: 'probe',
+      status: 'ok',
+      message: '远端环境 Linux x86_64 · Node v24.21.0',
+      details: ['远端环境 Linux x86_64', 'Node v24.21.0（/home/user/.dsh/server/node/bin/node）'],
+      at: 0,
+    } as const
+    const tree = collect(module.ProgressDetail({ event }))
+    const list = tree.find(element => element.props?.['data-testid'] === 'dsh-rw-progress-details')
+    expect(list).toBeDefined()
+    const lines = (list?.props.children as Element[]).map(child => child.props.children)
+    expect(lines).toEqual([
+      '远端环境 Linux x86_64',
+      'Node v24.21.0（/home/user/.dsh/server/node/bin/node）',
+    ])
+    // The joined message must not be rendered next to the split lines.
+    expect(tree.some(element => element.props?.className === 'dsh-rw-progress-message')).toBe(false)
+  })
+
+  it('falls back to the single message line, and renders nothing when there is no text', async () => {
+    const module = await import('../src/client/remote-dialogs.tsx')
+    const withMessage = collect(module.ProgressDetail({
+      event: { step: 'start', status: 'ok', message: '正在启动 profile p…', at: 0 },
+    }))
+    const message = withMessage.find(element => element.props?.className === 'dsh-rw-progress-message')
+    expect(message?.props.children).toBe('正在启动 profile p…')
+    expect(module.ProgressDetail({ event: { step: 'start', status: 'ok', message: '', at: 0 } })).toBeNull()
+  })
+})
+
+describe('reconnect progress dialog', () => {
+  it('opens on the progress step with the reconnect title and no wizard steps', async () => {
+    const elements = await renderDialog({
+      phase: 'submitting',
+      attemptId: 'attempt-r1',
+      reconnectTargetId: 't1',
+      label: 'wsl-ssh',
+      host: '192.0.2.10',
+      port: '22',
+      username: 'tester',
+    })
+    const modal = elements.find(element => element.type === 'mock-modal')
+    expect(modal?.props.title).toBe(t('remote.connect.reconnectTitle', { label: 'wsl-ssh' }))
+    // No step navigation: there is nothing to configure on a reconnect.
+    expect(elements.some(element => element.props?.className === 'dsh-rw-connect-stepnav-item')).toBe(false)
+    // The progress surface is what the user came for.
+    expect(text(elements, 'dsh-rw-progress-waiting')).toBe(t('connect.progress.waiting'))
+    const primary = elements.find(element => element.type === 'mock-button' && element.props.variant === 'primary')
+    expect(primary?.props.children).toBe(t('remote.connect.submitting'))
+    expect(primary?.props.disabled).toBe(true)
+  })
+
+  it('offers a retry on the same dialog after a failed reconnect', async () => {
+    const elements = await renderDialog({
+      phase: 'failed',
+      attemptId: 'attempt-r2',
+      reconnectTargetId: 't1',
+      label: 'wsl-ssh',
+      host: '192.0.2.10',
+      port: '22',
+      username: 'tester',
+      error: { code: 'failed', message: 'ssh 握手失败' },
+    })
+    const primary = elements.find(element => element.type === 'mock-button' && element.props.variant === 'primary')
+    expect(primary?.props.children).toBe(t('remote.connect.retry'))
+    expect(primary?.props.disabled).toBe(false)
+    ;(primary?.props.onClick as (() => void) | undefined)?.()
+    expect(storeSpies.retryReconnectTarget).toHaveBeenCalled()
+  })
 })

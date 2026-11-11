@@ -56,7 +56,7 @@ describe.skipIf(CLI === undefined || process.platform === 'win32')('remote profi
       // 2. Unpack the bundled server plugin into the profile's node_modules — the
       //    same artifact a dedicated profile receives, no package manager involved.
       const manifest = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) as { version: string }
-      const tarball = join(ROOT, 'assets', 'server-plugin', `dsh-remote-window-server-${manifest.version}.tgz`)
+      const tarball = join(ROOT, 'assets', 'server-plugin', `dsh-remote-workspace-server-${manifest.version}.tgz`)
       const pluginDir = join(profileDir, 'node_modules', PROFILE_SERVER_PLUGIN)
       await mkdir(pluginDir, { recursive: true })
       execFileSync('tar', ['-xzf', tarball, '-C', pluginDir, '--strip-components=1'], { stdio: 'pipe' })
@@ -80,14 +80,14 @@ describe.skipIf(CLI === undefined || process.platform === 'win32')('remote profi
 
       // 4. The plugin row registered its routes: bootstrap/embed CSS are static,
       //    and the RPC surface refuses an unauthenticated caller through admission.
-      const bootstrap = await fetch(`${base}/dsh-remote-window-server/embed/bootstrap.js`)
+      const bootstrap = await fetch(`${base}/dsh-remote-workspace-server/embed/bootstrap.js`)
       expect(bootstrap.status).toBe(200)
       expect(await bootstrap.text()).toContain('__dshRw')
 
-      const css = await fetch(`${base}/dsh-remote-window-server/embed/embed.css`)
+      const css = await fetch(`${base}/dsh-remote-workspace-server/embed/embed.css`)
       expect(css.status).toBe(200)
 
-      const handshake = await fetch(`${base}/dsh-remote-window-server/api/handshake`, {
+      const handshake = await fetch(`${base}/dsh-remote-workspace-server/api/handshake`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({}),

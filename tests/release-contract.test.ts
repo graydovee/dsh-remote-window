@@ -8,14 +8,26 @@
  * sections moved.
  */
 import { describe, expect, it } from 'vitest'
-import { readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { DSH_VERIFIED_RUNTIMES, DSH_VERIFIED_SUMMARY, formatDshVersion, parseDshVersion } from '../src/provision/version-range.ts'
 import { RUNTIME_COMPAT, compatProblems, inDshRange, rangeExpression } from '../src/provision/runtime-compat.ts'
+import { SERVER_PLUGIN_PACKAGE } from '../src/provision/server-plugin.ts'
 /** The release helper keeps its own copy of the expression rule; assert parity. */
 import { rangeExpression as scriptRangeExpression } from '../scripts/sync-compat.mjs'
 
 const read = (path: string): string => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
+/** Every file below one repository directory, as a path relative to the root. */
+const filesUnder = (relative: string): string[] => {
+  const found: string[] = []
+  for (const entry of readdirSync(new URL(`../${relative}/`, import.meta.url), { withFileTypes: true })) {
+    const path = `${relative}/${entry.name}`
+    if (entry.isDirectory()) found.push(...filesUnder(path))
+    else if (entry.isFile()) found.push(path)
+  }
+  return found
+}
 const manifest = JSON.parse(read('package.json')) as {
+  name: string
   version: string
   engines: Record<string, string>
   dependencies: Record<string, string>
@@ -118,7 +130,7 @@ describe('package manifest', () => {
 
   it('ships the built-in server plugin of exactly this client version', () => {
     const checksums = JSON.parse(read('assets/server-plugin/checksums.json')) as Record<string, string>
-    const name = `dsh-remote-window-server-${manifest.version}.tgz`
+    const name = `dsh-remote-workspace-server-${manifest.version}.tgz`
     const sha = checksums[name]
     expect(sha, name).toMatch(/^[0-9a-f]{64}$/u)
     expect(statSync(new URL(`../assets/server-plugin/${name}`, import.meta.url)).size).toBeGreaterThan(1024)
@@ -133,6 +145,24 @@ describe('package manifest', () => {
     // `prepack`/`prepublishOnly` stay allowed: they run on pack/publish, never on install.
     for (const name of ['preinstall', 'install', 'postinstall', 'prepare', 'prepublish']) {
       expect(manifest.scripts?.[name], name).toBeUndefined()
+    }
+  })
+})
+
+describe('plugin identity', () => {
+  it('uses one name for the package, the server plugin and the bundled artifact', () => {
+    expect(manifest.name).toBe('dsh-remote-workspace')
+    expect(SERVER_PLUGIN_PACKAGE).toBe('dsh-remote-workspace-server')
+    const checksums = JSON.parse(read('assets/server-plugin/checksums.json')) as Record<string, string>
+    expect(Object.keys(checksums)).toEqual([`${SERVER_PLUGIN_PACKAGE}-${manifest.version}.tgz`])
+  })
+
+  it('leaves no source file on a different project name', () => {
+    // The package name, the route prefixes, the profile prefix and the bundled
+    // tarball name are one identity: a single missed literal splits them apart
+    // and the only symptom is a broken install.
+    for (const file of filesUnder('src')) {
+      expect(read(file), file).not.toMatch(/remote-window|remote_window/u)
     }
   })
 })

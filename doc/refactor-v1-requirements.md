@@ -1,10 +1,14 @@
-# dsh-remote-window v1 重构需求与验收契约
+# dsh-remote-workspace v1 重构需求与验收契约
 
 > 状态：产品/验收契约，2026-10-22 由用户逐项确认。  
 > 架构细节由 architect 在 `doc/refactor-v1-architecture.md` 中细化；两者冲突时，本文件的产品决定优先，
 > 架构可行性问题必须回到本文件补一条明确决定，不能静默改需求。  
 > 2026-10-26：运行时基线更新为 DSH `0.2.1-rc.3`；复核记录见 `doc/dsh-rc3-compatibility.md`。
 > 本文件只写占位主机/路径，不记录真实凭据、内网地址或本机绝对路径。
+> **2026-11-10 v3 修订**：左栏与主区契约已改为「左栏原生「远程连接」导航行 + 连接列表页 +
+> server 官方 sidebar 内同源列表」；执行端切换（D1/D2/D8）与左栏三级树（D4/D5/§4.2/§7 C）
+> 不再是当前实现，按本文件 §4.2 / §7 C 的改写条目与 `doc/refactor-v3-full-ui.md`、
+> `doc/refactor-v1-protocol.md` §16.14 验收。
 
 ## 0. 一句话目标
 
@@ -28,14 +32,14 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 | D1 | 执行端 | 每个连接一个设置项，可在 **server 执行** 与 **client 本地执行** 之间切换；两种都支持。 |
 | D2 | 执行端切换时机 | 切换会**自动取消当前 turn**；已产生内容保留；会话 ID 与历史不变，下一轮由新模式执行，仍写同一份 server 日志。 |
 | D3 | 数据权威 | 两种模式下，工作区清单、会话日志（含聊天记录/标题）、持久视图状态都以 **server** 为权威；client 只缓存/显示。 |
-| D4 | 布局 | client 布局保持现状：左栏「远程工作区」+ 本地「工作区」两段；远程段是连接 → server 工作区 → server 会话。 |
-| D5 | 远程行 | server 工作区/会话行复用官方行样式与交互；功能对齐本地工作区（见 §4.3）。 |
-| D6 | server 侧形态 | server 运行普通 `dsh web` + `dsh-remote-window-server` 插件；server 的全局 DSH 不依赖 client 也能独立工作。 |
-| D7 | per-client 隔离 | client 生成稳定 `clientId`；每个 client 在 server 上有独立 profile：`graydovee-remote-window-<clientId>`；**一个 profile 只允许一个 client 连接**；不同 client 可有不同插件/运行时版本，但共享 server 的 `~/.dsh` 工作区与会话。 |
+| D4 | 布局 | client 左栏加一个原生「远程连接」导航行（`sidebar.panellist`，排在导航列表最下面、末尾「更多」之前），点开是连接列表页；连接后主区是 server 官方 UI 全屏 iframe，左栏就是 server 官方 sidebar。 |
+| D5 | 远程行 | 连接行由插件画（状态点 + label + `user@host:port` + 阶段 + 连接/断开/删除）；server 侧在同一槽位画同一份列表，点击回传 client 切换。 |
+| D6 | server 侧形态 | server 运行普通 `dsh web` + `dsh-remote-workspace-server` 插件；server 的全局 DSH 不依赖 client 也能独立工作。 |
+| D7 | per-client 隔离 | client 生成稳定 `clientId`；每个 client 在 server 上有独立 profile：`graydovee-remote-workspace-<clientId>`；**一个 profile 只允许一个 client 连接**；不同 client 可有不同插件/运行时版本，但共享 server 的 `~/.dsh` 工作区与会话。 |
 | D8 | profile 模式 | 本地模式和 server 模式**共用同一个 per-client profile**；模式只改执行端，不换 profile。 |
 | D9 | profile 生命周期 | client 负责启动和停止该 profile 的 `dsh web`；断开时停止并取消当前 turn；重连时重启。server 的全局 DSH 不受影响。 |
 | D10 | 运行时 | 独立运行时按 client 隔离（每个 client 一个固定目录）；独立运行时自动安装/升级，连接时无需用户确认；全局运行时也可安装/升级，但**每次必须按钮确认**。运行时来源：client 缓存上传优先，server 在线下载兜底。 |
-| D11 | 插件安装 | 专用 profile 的 `dsh-remote-window-server` 可自动安装/重装/升级/覆盖并重启；安装到其他 profile 时，安装/重启都需要按钮确认。 |
+| D11 | 插件安装 | 专用 profile 的 `dsh-remote-workspace-server` 可自动安装/重装/升级/覆盖并重启；安装到其他 profile 时，安装/重启都需要按钮确认。 |
 | D12 | 视图状态 | 置顶/归档/排序/拖拽顺序存 server、跨 client 共享；搜索是本地瞬时过滤，不落盘、不同步。 |
 | D13 | 多连接/多客户端 | client 可同时连多台 server；同一 server 可被多个 client 连接；每个 client 用自己的 profile/runtime，共享工作区/会话/视图状态。 |
 | D14 | 传输 | 产品只做 SSH；WSL 和 Docker 连接方式本轮移除。Docker 只用于 QA 目标环境。 |
@@ -53,7 +57,7 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 | 术语 | 含义 |
 |---|---|
 | **server 全局 DSH** | server 用户原本的 DSH 安装/运行实例，不依赖本插件，可独立工作。 |
-| **per-client profile** | `~/.dsh/profiles/graydovee-remote-window-<clientId>`，一个 client 一个，独立 `dsh web` 进程/端口，共享 `~/.dsh` 数据。 |
+| **per-client profile** | `~/.dsh/profiles/graydovee-remote-workspace-<clientId>`，一个 client 一个，独立 `dsh web` 进程/端口，共享 `~/.dsh` 数据。 |
 | **profile server** | 用 per-client profile 启动的 `dsh web` 进程；client 通过 SSH 隧道访问。 |
 | **server 模式** | agent loop、模型调用、模型凭据、工具执行、会话日志都在 server；client 是远程 UI/入口。 |
 | **本地模式** | agent loop、模型调用、模型凭据在 client；文件/进程/沙箱/终端、工作区/会话日志在 server。 |
@@ -68,7 +72,7 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 
 ### 3.1 server 侧
 
-- 运行普通 DSH（全局或 per-client 独立运行时），安装 `dsh-remote-window-server` 到 per-client profile。
+- 运行普通 DSH（全局或 per-client 独立运行时），安装 `dsh-remote-workspace-server` 到 per-client profile。
 - profile server 共享 server 的 `~/.dsh`：工作区注册表、会话日志、模型凭据（server 模式）。
 - server 全局 DSH 必须能在 client 不连接时独立创建/打开工作区、会话和对话。
 - 插件只增加远程入口能力，不改变 server 官方 UI 的既有行为；server 官方 UI 仍可直接使用。
@@ -98,7 +102,7 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 ### 4.1 连接与部署
 
 1. client 首次使用生成稳定 `clientId`，持久化在本机插件存储；profile 名为
-   `graydovee-remote-window-<clientId>`；一个 client 对应一个 profile。
+   `graydovee-remote-workspace-<clientId>`；一个 client 对应一个 profile。
 2. SSH 连接沿用现有 host-key 语义：未知 host key 展示 SHA-256 等确认；已 pin 变化中止；
    密码/私钥/口令只在本机；错误、日志、SSE 必须 scrub。
 3. 连接流程自动检测 server 运行时：
@@ -116,20 +120,22 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 
 ### 4.2 左栏与数据
 
-1. 左栏保持两段：
-   - 「远程工作区」：连接列表；连接下是 server 工作区；工作区下是 server 会话。
-   - 「工作区」：client 本地官方工作区，行为不变。
-2. 远程段的连接行是插件行；工作区行/会话行复用官方 `ProjectRowItem` / `SessionNodeItem` 的
-   样式、菜单壳、hover、选中态和文案；不得另画一套行样式。
-3. 远程工作区清单来自 server 官方工作区注册表；会话清单来自 server 官方会话存储/插件；
-   client 不维护第二份“远程工作区记录”。
-4. 多个 client 连接同一 server 时，看到相同 workspace id/path/title/sessionCount；
-   任一 client 或 server 官方 UI 修改后，刷新/重连可见。
-5. 展开连接/工作区时按需加载；加载中、空态、失败态可见；失败不能伪装成空列表。
-6. 远程工作区/会话的持久视图状态（pin/archive/排序/拖拽）存 server 并共享；
-   搜索框只过滤当前 client 视图，不写 server。
-7. 远程段不得把 server 工作区写进 client 本地「工作区」段，也不得在 client 共享
-   `workspace.json` 留下可见 stub。
+1. 左栏入口是**一个原生导航行**：`sidebar.panellist` 注册 `id: 'dsh-remote-workspace'`、`order: 100`
+   （「自动化任务」10 之后、末尾「更多」之前，即导航列表最下面），组件只画图标；`main` 槽用同一 key
+   注册连接列表面板。
+   不接管 `sidebar` / `sidebar.workspaces`，不做 DOM seam 注入、不做浮动窗。
+2. iframe 挂载期间 client sidebar 仍隐藏（`html[data-dsh-rw-portal]`）；此时左栏是 server 官方
+   sidebar，server 插件注册同一个行与面板，列出同一份连接。任何时刻只有一列左栏。
+3. 连接列表行：状态点 + label + endpoint（SSH 为 `user@host:port`，WSL 为发行版）+ 阶段文案；
+   动作 `连接/重新连接`、`断开`、`删除`；当前 iframe target 高亮；空态、加载态、失败态必须可见，
+   失败不能伪装成空列表。
+4. 列表数据只有一个权威：client host 用 P1 `client/targets` 发布快照（能力位 `clientTargets`），
+   server 侧用相对路径 `dsh-remote-workspace-server/api/client/targets` 读取；只发脱敏字段
+   （无 credential/私钥路径/指纹/profile 名/路径）。
+5. server 面板的点击是命令，不是数据源：`dsh-rw/switch-target` / `dsh-rw/open-connect-dialog` /
+   `dsh-rw/close-portal`，由 parent 校验 origin/source/版本后执行。
+6. 远程段不得把 server 工作区写进 client 本地「工作区」段，也不得在 client 共享
+   `workspace.json` 留下可见 stub；远程会话日志只写 server。
 
 ### 4.3 工作区/会话功能（v1 验收范围）
 
@@ -222,9 +228,9 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 
 ## 6. profile / 运行时生命周期
 
-1. profile 路径：`$DSH_HOME/profiles/graydovee-remote-window-<clientId>`；
+1. profile 路径：`$DSH_HOME/profiles/graydovee-remote-workspace-<clientId>`；
    `clientId` 只含安全字符（小写字母/数字/短横线），长度受 profile 名限制。
-2. 独立运行时目录：`$DSH_HOME/remote-window/<clientId>/runtime`（最终路径 architect 可微调，
+2. 独立运行时目录：`$DSH_HOME/remote-workspace/<clientId>/runtime`（最终路径 architect 可微调，
    但必须按 client 隔离且固定）；全局运行时用 server 现有 `dsh`。
 3. 安装顺序：确保运行时 → 确保 profile 存在 → 安装/升级插件 → 启动 profile server → handshake。
 4. 独立运行时升级可自动；升级前停止该 profile server，升级后重启；不影响其他 client。
@@ -257,15 +263,17 @@ client 自己的官方 UI。v2 不作为本轮验收阻塞项。
 - B5. 断开后 profile server 停止、隧道关闭、当前 turn 取消；重连可恢复工作区/会话；无孤儿进程/端口。
 - B6. 第二个 client 连接同一 profile 被拒绝，错误可操作。
 
-### C. 左栏与远程数据
+### C. 左栏与远程连接
 
-- C1. 左栏仍是「远程工作区」+「工作区」两段；远程段为 连接 → server 工作区 → server 会话。
-- C2. 远程工作区/会话的 id/path/title/sessionCount 与 server 官方数据一致；两个 client 看到同一份。
-- C3. 在 **server 模式嵌入的 profile 官方 UI** 新建/重命名/删除工作区或会话后，client 刷新/重连可见；反向亦然。server 全局 DSH 的实时同步不在 v1（D19）：只验独立可用 + 重启后同数据。
-- C4. 行样式/菜单/选中态与官方行一致；没有自绘的替代行样式。
-- C5. 空态/加载/错误可见；远程数据失败不被当作空列表。
-- C6. 远程段不污染 client 本地「工作区」；client 共享 `workspace.json` 无可见远程 stub；client `~/.dsh/sessions` 无远程会话日志。
-- C7. 搜索是本地过滤；pin/archive/排序/拖拽跨 client 共享，重连后保持。
+- C1. client 左栏出现「远程连接」行（图标 + 文字，排在导航列表最下面、末尾「更多」之前）；点开是连接列表页，
+  官方「工作区」区不受影响。
+- C2. 列表行显示 label、endpoint、阶段；空态/加载/失败态可见；失败不被当作空列表。
+- C3. 点行打开该 target 的 server 官方 UI（iframe `dshRwFull=1`）；当前行高亮；会话深链生效。
+- C4. 连接后左栏是 server 官方 sidebar，其中出现同一个「远程连接」行，列表顺序/状态与 client 一致；
+  点其它行切换 target 并以新 `targetId` 重挂 iframe；「新建连接」在 client 侧开对话框；「返回本地」关 iframe。
+- C5. 发布快照不含任何 secret（credential/私钥路径/指纹/profile 名/路径）；伪造或跨 origin 的消息被丢弃；
+  切换失败保留当前 iframe 并给可读错误。
+- C6. 无浮动窗、无 `Alt+R`、无拖拽吸附、无最小化 `+N`；`src/`、`tests/`、文档中不再有 rail 实现。
 
 ### D. 工作区/会话功能
 

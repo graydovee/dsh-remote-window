@@ -60,20 +60,20 @@ beforeAll(async () => {
         res.end()
         return
       }
-      if (req.url === '/dsh-remote-window-server/api/handshake') {
+      if (req.url === '/dsh-remote-workspace-server/api/handshake') {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, value: {
           protocol: 1,
           pluginVersion: VERSION,
           dshVersion: DSH_VERSION,
-          profile: 'graydovee-remote-window-abcdef012345',
+          profile: 'graydovee-remote-workspace-abcdef012345',
           clientId: CLIENT_ID,
           lease: { instanceId: 'i', expiresAt: '2026-01-01T00:00:20.000Z' },
           capabilities: { workspaceApi: 1, eventsSse: 1, muxWs: 1, embed: { storagePrefix: 'dshrw:test:', mode: 'reload' } },
         } }))
         return
       }
-      if (req.url === '/dsh-remote-window-server/api/rpc') {
+      if (req.url === '/dsh-remote-workspace-server/api/rpc') {
         const request = JSON.parse(body) as { method: string }
         const params = (request as { params?: Record<string, unknown> }).params ?? {}
         const values: Record<string, unknown> = {
@@ -102,7 +102,7 @@ beforeAll(async () => {
 
   const root = await mkdtemp(join(tmpdir(), 'dsh-rw-svc-fixture-'))
   await writeFakeServerPluginPackage(root, { version: VERSION })
-  tarball = await packPackage(root, `dsh-remote-window-server-${VERSION}.tgz`)
+  tarball = await packPackage(root, `dsh-remote-workspace-server-${VERSION}.tgz`)
   store = fakeStore()
 })
 
@@ -249,8 +249,26 @@ describe('ProfileService M1 slice', () => {
     expect(probe?.message).toMatch(/(隔离运行时|server 全局 DSH)/u)
     expect(probe?.message).toContain('server 插件')
     expect(probe?.message).not.toContain('部署')
-    expect(progress.find(event => event.step === 'runtime')?.status).toBe('skipped')
-    expect(progress.find(event => event.step === 'upload')?.status).toBe('ok')
+    // The row renders the pre-split observations, one per line: the message is
+    // the joined log form, `details` is what the dialog lists.
+    expect(probe?.details?.length).toBe(6)
+    expect(probe?.details?.[0]).toContain('远端环境')
+    for (const line of probe?.details ?? []) expect(line).not.toContain(' · ')
+    expect(probe?.message).toBe((probe?.details ?? []).join(' · '))
+    // The row first announces the old profile being stopped, then settles on
+    // the probe's decision; assert the settled (last) runtime event.
+    const runtimeEvents = progress.filter(event => event.step === 'runtime')
+    expect(runtimeEvents[0]?.status).toBe('running')
+    expect(runtimeEvents[0]?.message).toContain('正在停止上一次的 profile server')
+    expect(runtimeEvents.at(-1)?.status).toBe('skipped')
+    // The upload row narrates its remote round trips: without these lines a
+    // slow install reads as "the connection is stuck".
+    const uploadEvents = progress.filter(event => event.step === 'upload')
+    const uploadRunning = uploadEvents.filter(event => event.status === 'running')
+    expect(uploadRunning.length).toBeGreaterThan(0)
+    expect(uploadRunning.map(event => event.message)).toContain('正在上传 server 插件包（1 KB）…')
+    expect(uploadRunning.every(event => event.message !== '')).toBe(true)
+    expect(uploadEvents.at(-1)?.status).toBe('ok')
   })
 
   it('connects, installs, starts, handshakes and exposes workspace/session data', async () => {
@@ -272,8 +290,8 @@ describe('ProfileService M1 slice', () => {
       hostKeyFingerprint: 'SHA256:fixture',
       modelSource: 'server',
     })
-    expect(result.target).toMatchObject({ label: 'fixture', profileName: 'graydovee-remote-window-abcdef012345', pluginVersion: VERSION, serverDshVersion: DSH_VERSION })
-    expect(result.state).toMatchObject({ phase: 'ready', profile: { name: 'graydovee-remote-window-abcdef012345', port: serverPort, pid: 4321 } })
+    expect(result.target).toMatchObject({ label: 'fixture', profileName: 'graydovee-remote-workspace-abcdef012345', pluginVersion: VERSION, serverDshVersion: DSH_VERSION })
+    expect(result.state).toMatchObject({ phase: 'ready', profile: { name: 'graydovee-remote-workspace-abcdef012345', port: serverPort, pid: 4321 } })
     expect(result.state.deployment?.plugin).toMatchObject({ dedicated: true, expectedVersion: VERSION, action: 'reuse' })
     expect(service.deploymentPreview(result.target.id).runtime.mode).toBe('confirm')
     await expect(service.deploymentApply(result.target.id, { kind: 'runtime', confirm: false })).rejects.toMatchObject({ code: 'runtime-confirmation-required' })
@@ -287,8 +305,8 @@ describe('ProfileService M1 slice', () => {
     expect(handshake?.headers['x-dsh-rw-instance']).toBeTruthy()
     expect(handshake?.headers.cookie).toContain('dsh-auth-test=v1')
     expect(remote.scripts.some(script => script.includes('setsid nohup'))).toBe(true)
-    expect(remote.writes.some(path => path.includes('dsh-remote-window-server-'))).toBe(true)
-    expect(remote.scripts.some(script => script.includes('/node_modules/dsh-remote-window-server'))).toBe(true)
+    expect(remote.writes.some(path => path.includes('dsh-remote-workspace-server-'))).toBe(true)
+    expect(remote.scripts.some(script => script.includes('/node_modules/dsh-remote-workspace-server'))).toBe(true)
     expect(await service.stop(result.target.id)).toBe(true)
     expect(service.connections()[result.target.id]?.phase).toBe('stopped')
   })

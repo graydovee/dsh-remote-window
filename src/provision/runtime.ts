@@ -9,8 +9,8 @@
  * so one client's isolated runtime is a fixed directory with two components, a
  * Node distribution and a dsh install:
  *
- *   $DSH_HOME/remote-window/<clientId>/runtime/node/bin/node
- *   $DSH_HOME/remote-window/<clientId>/runtime/dsh/node_modules/.bin/dsh
+ *   $DSH_HOME/remote-workspace/<clientId>/runtime/node/bin/node
+ *   $DSH_HOME/remote-workspace/<clientId>/runtime/dsh/node_modules/.bin/dsh
  *
  * The artifact (client cache upload first, server download only as a fallback)
  * is a tarball carrying `node/` and `dsh/` at its root. The remote script below
@@ -87,7 +87,7 @@ export class RuntimeError extends Error {
 }
 
 /**
- * `$DSH_HOME/remote-window/<clientId>/runtime` for one client.
+ * `$DSH_HOME/remote-workspace/<clientId>/runtime` for one client.
  *
  * The POSIX layout is unchanged (`node/bin/node`, `dsh/node_modules/.bin/dsh`).
  * A Windows Node distribution has no `bin/` directory and its dsh launcher is a
@@ -102,7 +102,7 @@ export function runtimePaths(dshHome: string, clientId: string, kind: RemoteKind
   if (!remoteIsAbsolute(kind, dshHome)) throw new Error(`DSH_HOME must be an absolute server path, got ${JSON.stringify(dshHome)}`)
   if (!isClientId(clientId)) throw new Error(`invalid clientId ${JSON.stringify(clientId)}`)
   const home = remoteTrimTrailing(kind, dshHome)
-  const stateDir = remoteJoin(kind, home, 'remote-window', clientId)
+  const stateDir = remoteJoin(kind, home, 'remote-workspace', clientId)
   const root = remoteJoin(kind, stateDir, 'runtime')
   return {
     kind,

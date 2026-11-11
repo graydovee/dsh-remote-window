@@ -15,8 +15,8 @@ import { offeredMethods, type OfferedMethod } from './method-cards.ts'
 import { remoteApi, type ConnectProgressEvent, type ConnectProgressStep } from './remote-api.ts'
 import { t, type LocaleKey } from './locales.ts'
 import {
-  closeConnectDialog, closeForgetTarget, patchConnectDialog, submitConnectDialog,
-  submitForgetTarget, useRemoteAppState,
+  closeConnectDialog, closeForgetTarget, patchConnectDialog, retryReconnectTarget,
+  submitConnectDialog, submitForgetTarget, useRemoteAppState,
 } from './remote-store.ts'
 import type { RemoteAppState } from './remote-store.ts'
 
@@ -43,6 +43,31 @@ const PROGRESS_STATUS = {
   skipped: 'connect.status.skipped',
   failed: 'connect.status.failed',
 } as const
+
+/**
+ * The body of one progress row.
+ *
+ * A host event may carry pre-split `details` (the probe reports six separate
+ * observations: environment, Node, global DSH, DSH_HOME, runtime, plugin).
+ * Rendering them as one span per fact keeps the row readable instead of letting
+ * one long sentence wrap wherever the dialog's width happens to land.
+ * @param props - the progress event to render.
+ * @returns the detail list, the single message line, or nothing.
+ */
+export function ProgressDetail(props: { event: ConnectProgressEvent }): ReactElement | null {
+  const { event } = props
+  const details = event.details ?? []
+  if (details.length > 0) {
+    return (
+      <span className="dsh-rw-progress-lines" data-testid="dsh-rw-progress-details">
+        {details.map((line, index) => (
+          <span className="dsh-rw-progress-line" key={`${index}:${line}`}>{line}</span>
+        ))}
+      </span>
+    )
+  }
+  return event.message === '' ? null : <span className="dsh-rw-progress-message">{event.message}</span>
+}
 
 /**
  * Method-card copy, keyed by the pure module's offered-method ids.
@@ -153,7 +178,10 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
     return () => clearInterval(timer)
   }, [submitting, attemptId])
   if (dialog === undefined) return null
-  const current = dialog.phase === 'hostkey' ? 'connect' : step
+  // A reconnect has nothing to configure and no steps to walk: the host reuses
+  // the saved record, so the dialog *is* the progress surface for that attempt.
+  const reconnect = dialog.reconnectTargetId !== undefined
+  const current = reconnect || dialog.phase === 'hostkey' ? 'connect' : step
   const currentIndex = CONNECT_STEPS.indexOf(current)
   const hostKey = dialog.phase === 'hostkey' && dialog.fingerprint !== undefined
   const patch = (value: Parameters<typeof patchConnectDialog>[0]): void => { setConfigError(undefined); patchConnectDialog(value) }
@@ -182,10 +210,32 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
     <Modal
       open
       onClose={closeConnectDialog}
-      title={t('remote.connect.title')}
+      title={reconnect ? t('remote.connect.reconnectTitle', { label: dialog.label }) : t('remote.connect.title')}
       className="dsh-rw-connect-modal"
       closeLabel={t('remote.dialog.cancel')}
-      footer={(
+      footer={reconnect ? (
+        <div className="dsh-rw-footer-actions">
+          <span className="dsh-rw-footer-group">
+            <Button variant="ghost" onClick={closeConnectDialog} disabled={submitting}>
+              {t('remote.dialog.cancel')}
+            </Button>
+          </span>
+          <span className="dsh-rw-footer-group">
+            {submitting && (
+              <span className="dsh-rw-connect-elapsed" data-testid="dsh-rw-connect-elapsed" role="status">
+                {t('connect.progress.elapsed', { seconds: elapsedSeconds })}
+              </span>
+            )}
+            <Button
+              variant="primary"
+              onClick={() => { void retryReconnectTarget() }}
+              disabled={submitting || dialog.phase !== 'failed'}
+            >
+              {dialog.phase === 'failed' ? t('remote.connect.retry') : t('remote.connect.submitting')}
+            </Button>
+          </span>
+        </div>
+      ) : (
         <div className="dsh-rw-footer-actions">
           <span className="dsh-rw-footer-group">
             <Button variant="ghost" onClick={closeConnectDialog} disabled={submitting}>
@@ -226,7 +276,8 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
       )}
     >
       <div className="dsh-rw-connect-dialog">
-        <div className="dsh-rw-connect-layout">
+        <div className="dsh-rw-connect-layout" data-reconnect={reconnect ? 'true' : undefined}>
+          {!reconnect && (
           <nav className="dsh-rw-connect-stepnav" aria-label={t('wizard.steps.aria')}>
             {CONNECT_STEPS.map((item, index) => (
               <button
@@ -244,6 +295,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
               </button>
             ))}
           </nav>
+          )}
           <div className="dsh-rw-connect-stepbody">
 
         {current === 'method' && (
@@ -472,6 +524,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
 
         {current === 'connect' && (
           <div className="dsh-rw-section">
+            {reconnect && <p className="dsh-rw-hint">{t('remote.connect.reconnectHint')}</p>}
             <div className="dsh-rw-connect-identity" aria-label={t('remote.connect.identity')}>
               <div className="dsh-rw-connect-identity-item">
                 <span>{t('remote.connect.label')}</span>
@@ -485,14 +538,18 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                 <span>{t('remote.connect.username')}</span>
                 <strong>{dialog.username.trim() === '' ? '—' : dialog.username}</strong>
               </div>
-              <div className="dsh-rw-connect-identity-item">
-                <span>{t('remote.connect.authKind')}</span>
-                <strong>{dialog.authKind === 'password' ? t('remote.connect.auth.password') : dialog.authKind === 'privateKey' ? t('remote.connect.auth.privateKey') : t('remote.connect.auth.agent')}</strong>
-              </div>
-              <div className="dsh-rw-connect-identity-item dsh-rw-connect-identity-wide">
-                <span>{t('remote.connect.dshHome')}</span>
-                <strong>{dialog.dshHome || t('remote.connect.dshHomeDefault')}</strong>
-              </div>
+              {!reconnect && (
+                <div className="dsh-rw-connect-identity-item">
+                  <span>{t('remote.connect.authKind')}</span>
+                  <strong>{dialog.authKind === 'password' ? t('remote.connect.auth.password') : dialog.authKind === 'privateKey' ? t('remote.connect.auth.privateKey') : t('remote.connect.auth.agent')}</strong>
+                </div>
+              )}
+              {!reconnect && (
+                <div className="dsh-rw-connect-identity-item dsh-rw-connect-identity-wide">
+                  <span>{t('remote.connect.dshHome')}</span>
+                  <strong>{dialog.dshHome || t('remote.connect.dshHomeDefault')}</strong>
+                </div>
+              )}
             </div>
             <h3 className="dsh-rw-section-title">{t('connect.deploy.title')}</h3>
             {progressReadError !== undefined && (
@@ -520,9 +577,7 @@ function ConnectDialog(props: { state: RemoteAppState }): ReactElement | null {
                           {t(PROGRESS_LABELS[item])}
                           <span className="dsh-rw-progress-status">{t(PROGRESS_STATUS[status])}</span>
                         </span>
-                        {event !== undefined && event.message !== '' && (
-                          <span className="dsh-rw-progress-message">{event.message}</span>
-                        )}
+                        {event !== undefined && <ProgressDetail event={event} />}
                       </span>
                     </div>
                     {item === 'connect' && hostKey && (

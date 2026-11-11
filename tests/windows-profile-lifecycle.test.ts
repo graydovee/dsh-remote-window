@@ -80,15 +80,15 @@ describe('profile paths', () => {
   test('keeps the POSIX layout byte-for-byte', () => {
     const paths = profilePaths('/home/user/.dsh', 'abcdef012345', 'posix')
     expect(paths.kind).toBe('posix')
-    expect(paths.profileDir).toBe('/home/user/.dsh/profiles/graydovee-remote-window-abcdef012345')
-    expect(paths.logPath).toBe('/home/user/.dsh/remote-window/profiles/graydovee-remote-window-abcdef012345/server.log')
-    expect(paths.pluginDir).toBe('/home/user/.dsh/profiles/graydovee-remote-window-abcdef012345/node_modules/dsh-remote-window-server')
+    expect(paths.profileDir).toBe('/home/user/.dsh/profiles/graydovee-remote-workspace-abcdef012345')
+    expect(paths.logPath).toBe('/home/user/.dsh/remote-workspace/profiles/graydovee-remote-workspace-abcdef012345/server.log')
+    expect(paths.pluginDir).toBe('/home/user/.dsh/profiles/graydovee-remote-workspace-abcdef012345/node_modules/dsh-remote-workspace-server')
   })
 
   test('uses Windows separators and no POSIX chmod for a Windows home', () => {
     const paths = profilePaths(HOME, 'abcdef012345', 'windows')
     expect(paths.kind).toBe('windows')
-    expect(paths.profileDir).toBe('C:\\dsh-rw-qa\\.dsh\\profiles\\graydovee-remote-window-abcdef012345')
+    expect(paths.profileDir).toBe('C:\\dsh-rw-qa\\.dsh\\profiles\\graydovee-remote-workspace-abcdef012345')
     expect(paths.leasePath.endsWith('\\.dsh-rw\\lease.json')).toBe(true)
   })
 })

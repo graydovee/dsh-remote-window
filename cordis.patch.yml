@@ -1,9 +1,9 @@
-# dsh-remote-window bundle layer.
+# dsh-remote-workspace bundle layer.
 #
 # The host row: owns the target store, the per-target profile lifecycle, the P1
 # client, the portal and the local-model bridge. It injects the services it
 # needs, so its activation order is resolved by the loader rather than by the
 # row position.
 - insert:
-    - id: dsh-remote-window
-      name: dsh-remote-window
+    - id: dsh-remote-workspace
+      name: dsh-remote-workspace

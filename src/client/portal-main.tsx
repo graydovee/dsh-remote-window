@@ -7,12 +7,15 @@
  * `full` mode (`dshRwFull=1`), so the official sidebar, header, conversation
  * and right sidebar are all present and owned by the server.
  *
- * The client keeps exactly two chrome surfaces: the floating target rail
- * (`rail.tsx`) and the connection dialogs. Both live outside the frame.
+ * The client's own chrome lives outside the frame: the 「远程连接」 sidebar row
+ * and connection list panel (`connections-panel.tsx`), plus the dialogs/toast
+ * body host (`chrome.tsx`).
  *
- * Parent → iframe messages are kept for compatibility with the v1 deep-link
- * contract, but full mode relies on the embedded official UI's own navigation;
- * the only message the parent still needs is the child's readiness.
+ * iframe → parent messages carry two vocabularies: the child's readiness
+ * (`dsh-rw/ready`, the frame lifecycle signal) and the portal commands the
+ * mirrored server-side connection list sends back (`dsh-rw/switch-target`,
+ * `dsh-rw/open-connect-dialog`, `dsh-rw/close-portal`, protocol §9.3). Both are
+ * accepted only from this frame's window and the client GUI origin.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
@@ -20,11 +23,13 @@ import { createPortal } from 'react-dom'
 import {
   Button, IconRefreshOutlineRegular, IconWarningTriangleOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { parseRwPortalCommand } from '../protocol.ts'
 import type { ClientContext } from './context.ts'
 import { t } from './locales.ts'
 import {
   IDLE_PORTAL_FRAME,
-  acceptChildMessage,
+  isTrustedMessageOrigin,
+  parseChildMessage,
   parseSelectionStorageEvent,
   portalFrameReducer,
   portalUrl,
@@ -35,10 +40,37 @@ import {
 } from './portal-url.ts'
 
 /** Main-slot key for the full-screen official UI area. */
-export const SERVER_MAIN_ID = 'dsh-remote-window-server'
+export const SERVER_MAIN_ID = 'dsh-remote-workspace-server'
 
 /** Attribute placed on `<html>` while a portal frame is mounted. */
 export const PORTAL_ACTIVE_ATTR = 'data-dsh-rw-portal'
+
+/**
+ * Client-page actions the embedded server UI can request.
+ *
+ * Bound from `apply` so this module never imports the store: the store already
+ * imports the panel registry from here, and a cycle would make the module
+ * initialisation order fragile.
+ */
+export interface PortalCommandHandlers {
+  /** Activate another saved target (`dsh-rw/switch-target`). */
+  readonly switchTarget: (targetId: string) => void
+  /** Open the client's connect dialog (`dsh-rw/open-connect-dialog`). */
+  readonly openConnectDialog: () => void
+  /** Drop the frame and return to the connection list (`dsh-rw/close-portal`). */
+  readonly closePortal: () => void
+}
+
+/** The bound handlers; absent until `apply` runs. */
+let commandHandlers: PortalCommandHandlers | undefined
+
+/**
+ * Bind the client-page command handlers.
+ * @param handlers - the actions one accepted portal command dispatches.
+ */
+export function bindPortalCommandHandlers(handlers: PortalCommandHandlers): void {
+  commandHandlers = handlers
+}
 
 /** Everything one mounted main area needs. */
 export interface ServerMainRequest {
@@ -144,7 +176,7 @@ function selectConversationPanel(): void {
     const layout = clientContext?.get('layout') as { selectPanel?(id: string | null): void } | undefined
     layout?.selectPanel?.(null)
   } catch (error) {
-    console.error('[dsh-remote-window] returning to the conversation panel failed', error)
+    console.error('[dsh-remote-workspace] returning to the conversation panel failed', error)
   }
 }
 
@@ -243,17 +275,31 @@ export function ServerMainArea(props: { request: ServerMainRequest }): ReactElem
     return () => { document.documentElement.removeAttribute(PORTAL_ACTIVE_ATTR) }
   }, [request.targetId])
 
-  // iframe → parent readiness.
+  // iframe → parent: readiness (frame lifecycle) and the portal commands the
+  // mirrored server-side list sends back (protocol §9.3).
   useEffect(() => {
     if (typeof window === 'undefined') return
     const onMessage = (event: MessageEvent): void => {
       const iframe = iframeRef.current
-      const message = acceptChildMessage(
-        { origin: event.origin, data: event.data },
-        expectedOrigin,
-        iframe !== null && event.source === iframe.contentWindow,
-      )
-      if (message?.type === 'dsh-rw/ready') setFrame(previous => portalFrameReducer(previous, { type: 'loaded' }))
+      if (iframe === null || event.source !== iframe.contentWindow) return
+      if (!isTrustedMessageOrigin(event.origin, expectedOrigin)) return
+      if (parseChildMessage(event.data) !== undefined) {
+        setFrame(previous => portalFrameReducer(previous, { type: 'loaded' }))
+        return
+      }
+      const command = parseRwPortalCommand(event.data)
+      if (command === undefined || commandHandlers === undefined) return
+      switch (command.type) {
+        case 'dsh-rw/switch-target':
+          commandHandlers.switchTarget(command.targetId)
+          return
+        case 'dsh-rw/open-connect-dialog':
+          commandHandlers.openConnectDialog()
+          return
+        case 'dsh-rw/close-portal':
+          commandHandlers.closePortal()
+          return
+      }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)

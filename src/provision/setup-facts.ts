@@ -38,11 +38,14 @@ export interface SetupFactsInput {
 }
 
 /**
- * Build the probe line.
+ * Build the probe observations, one entry per fact.
+ *
+ * The progress row shows them as separate lines (each observation is its own
+ * sentence: environment, Node, global DSH, DSH_HOME, runtime, plugin).
  * @param input - the findings gathered during the probe.
- * @returns a single line of observations, separated by ` · `.
+ * @returns the observations in reading order.
  */
-export function remoteSetupFacts(input: SetupFactsInput): string {
+export function remoteSetupFactLines(input: SetupFactsInput): readonly string[] {
   const platformLabel = [input.scan.platform ?? '', input.scan.machine ?? ''].filter(part => part !== '').join(' ')
   const node = [...input.scan.nodes].find(candidate => candidate.version !== '') ?? input.scan.nodes[0]
   const nodeFact = node === undefined
@@ -70,7 +73,11 @@ export function remoteSetupFacts(input: SetupFactsInput): string {
   const pluginFact = input.plugin.action === 'reuse'
     ? `server 插件 ${input.plugin.installedVersion ?? input.plugin.version}`
     : input.plugin.action === 'upgrade'
-      ? `server 插件 ${input.plugin.installedVersion ?? '旧版本'}（需更新到 ${input.plugin.version}）`
+      // A rebuilt tarball keeps its version and changes its sha256; saying
+      // "0.1.0-alpha.7 需更新到 0.1.0-alpha.7" reads like a bug.
+      ? input.plugin.installedVersion === input.plugin.version
+        ? `server 插件 ${input.plugin.version}（内容已更新，将重装）`
+        : `server 插件 ${input.plugin.installedVersion ?? '旧版本'}（需更新到 ${input.plugin.version}）`
       : 'server 插件 未安装'
   return [
     `远端环境 ${platformLabel === '' ? '未知' : platformLabel}`,
@@ -79,5 +86,17 @@ export function remoteSetupFacts(input: SetupFactsInput): string {
     `DSH_HOME ${input.dshHome}`,
     runtimeFact,
     pluginFact,
-  ].join(' · ')
+  ]
+}
+
+/**
+ * The same observations on one line.
+ *
+ * Used where only one line fits (the connect log); the progress row renders
+ * {@link remoteSetupFactLines} as one row per observation instead.
+ * @param input - the findings gathered during the probe.
+ * @returns the observations separated by ` · `.
+ */
+export function remoteSetupFacts(input: SetupFactsInput): string {
+  return remoteSetupFactLines(input).join(' · ')
 }

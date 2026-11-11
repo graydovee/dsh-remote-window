@@ -1,6 +1,6 @@
 # DSH compatibility and runtime selection
 
-This document is the maintainer contract for the version relationship between `dsh-remote-window` and the
+This document is the maintainer contract for the version relationship between `dsh-remote-workspace` and the
 DSH runtime it drives remotely. User-facing prose lives in `README.md` / `README-zh.md`.
 
 ## 1. Why an interval
@@ -37,7 +37,7 @@ Verification record — `0.2.2-rc.1` (plugin `0.1.0-alpha.6`):
 
 - automatic: `pnpm typecheck`, `pnpm test`, `pnpm build` on the pinned `0.2.2-rc.1` packages, plus a clean
   `DSH_HOME` install (`dsh plugin --profile web add <tarball>`) that boots `dsh web` and serves
-  `/dsh-remote-window/api/*` and `/dsh-remote-window/official-ui.js`;
+  `/dsh-remote-workspace/api/*` and `/dsh-remote-workspace/official-ui.js`;
 - remote profile: the rebuilt server plugin starts inside a dedicated profile on `0.2.2-rc.1`, mounts the
   official providers and answers the P1 `/api/handshake` + execution-world RPCs (`fs.patch`, `fs.delete`,
   `fs.move` included);

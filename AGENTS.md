@@ -1,4 +1,4 @@
-# AGENTS.md — dsh-remote-window
+# AGENTS.md — dsh-remote-workspace
 
 本文件是本仓库（client 半边）的开发契约：**做什么、怎么做、哪些约束不能破**。面向用户的用法见
 `README.md` / `README-zh.md`；v3 主路径的细节契约见 `doc/refactor-v3-full-ui.md`（server 主区是 server
@@ -9,13 +9,14 @@ profile 官方 DSH UI 的全屏同源 iframe），Windows server 目标的细节
 ## 项目边界
 
 - **server 是一台能独立工作的普通 DSH；client 是它的远程入口。**
-- 本仓库产出 `dsh-remote-window` 插件：host 行（Node ESM）+ browser client。
-- server 运行普通 `dsh web`，并为每个 client 建专用 profile `graydovee-remote-window-<clientId>`，其中
-  安装 server 插件 `dsh-remote-window-server`（独立仓库发布；client 包内置精确同版本 tarball）。
+- 本仓库产出 `dsh-remote-workspace` 插件：host 行（Node ESM）+ browser client。
+- server 运行普通 `dsh web`，并为每个 client 建专用 profile `graydovee-remote-workspace-<clientId>`，其中
+  安装 server 插件 `dsh-remote-workspace-server`（独立仓库发布；client 包内置精确同版本 tarball）。
 - client 用一条连接访问 server：SSH 走 ssh2；目标就是本机 WSL 发行版时走本机 `wsl.exe`（无 sshd、
   无 host key）。profile server 只绑 `127.0.0.1`，client 经 `forwardOut` / WSL 回环访问。
-- 主区是**一个同源 iframe**（`/dsh-remote-window/portal/<targetId>/?dshRwFull=1`），显示 server profile
-  的完整官方 UI；client shell 的 sidebar 在 iframe 挂载期间隐藏，浮动 target rail 是唯一的 client chrome。
+- 主区是**一个同源 iframe**（`/dsh-remote-workspace/portal/<targetId>/?dshRwFull=1&dshRwTarget=<targetId>`），
+  显示 server profile 的完整官方 UI；client shell 的 sidebar 在 iframe 挂载期间隐藏，iframe 挂载后左栏就是
+  server 官方 sidebar。未挂载时 client 左栏有一个原生「远程连接」导航行（`sidebar.panellist`）。
 - 模型来源是连接设置（不在会话内热切换）：`local`（默认，agent/日志/工具仍在 server，模型请求经反向
   隧道转发到 client 本机）与 `server`。local 把 `ctx.llm` 枚举到的**全部** provider/model 经一条反向隧道
   暴露成 server profile 的多个 `llm-pi-ai` route（每个 provider 一条 `remote-<slug>`）；没有勾选、没有
@@ -64,7 +65,7 @@ Node 22.19+ 或 24+；依赖管理只用 pnpm。
 改动任一文件时，在两个 checkout 的同一次变更里修改、构建、测试，并在提交前比较：
 
     for f in protocol.ts frame/codec.ts frame/mux.ts; do
-      cmp -s "src/$f" "../dsh-remote-window-server/src/$f" || echo "DIFF: $f"
+      cmp -s "src/$f" "../dsh-remote-workspace-server/src/$f" || echo "DIFF: $f"
     done
 
 ## 架构与依赖方向
@@ -84,7 +85,7 @@ tsdown targets：
     src/ssh/                     ssh2 连接、host key、forwardOut、Windows agent
     src/targets/                 target 记录、clientId、凭据引用、脱敏
     src/provision/               runtime/profile/server 插件安装与生命周期、远程方言层、版本兼容与选版
-    src/client/                  v3 远程段 UI：浮动 target rail、连接对话框、portal iframe 主区
+    src/client/                  v3 远程段 UI：左栏「远程连接」行与连接列表面板、对话框浮层、portal iframe 主区
     assets/server-plugin/        内置 server 插件 tarball + checksums.json
     compat/                      版本兼容表（runtimes.json）与发布历史（history.json）
 
@@ -139,7 +140,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `too-new` 建议升级插件，`too-old` 建议升级 server 的 dsh。
 - `compat/history.json` 记录每个已发布插件版本的区间，发新版时追加一行（`sync-compat.mjs` 校验它与
   `package.json` 版本一致）。
-- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.6`）。内置 server 插件 tarball 的版本必须与它精确一致。
+- 版本号由仓库发布版本决定（当前 `0.1.0-alpha.8`）。内置 server 插件 tarball 的版本必须与它精确一致。
   本机调试可用修订后缀，部署后 `git checkout -- package.json`，修订号不进提交、不上发布。
 - zod 固定 `4.4.3`，`engines.node` 保持 `^22.19.0 || >=24.0.0`。
 
@@ -176,7 +177,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   title fold 补齐（按 `(sessionId,sizeBytes)` 记忆化，尾部回刷 `session/title`；blank 判 `turn/start`）。
 - 会话日志读写走官方 `ctx.sessionPersistence`，单写者由官方 JSONL flock 裁决，插件不自造锁、不抢占。
   `SessionAlreadyOwnedError` 呈现为 `session/writer-held`，用显式错误让用户决定。
-- 存储域 `dsh_remote_window` 版本恒为 1，只允许新增 optional 字段。
+- 存储域 `dsh_remote_workspace` 版本恒为 1，只允许新增 optional 字段。
 - 远端会话 header 里的 cwd 是 server 真实路径，协议层不做隐式翻译。
 
 ## 连接与执行端
@@ -206,11 +207,11 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   `dsh web --profile`。
 - 解析 stdout 单行 `^dsh web: http://127\.0\.0\.1:(\d+)/\?token=([A-Za-z0-9_-]+)$`；token 只进
   `server.log`（0600）与 host 内存。
-- 启用/升级把 `dsh-remote-window` 写进 profile 的 `dsh.profile.bundles`；bundle 只有一条 insert 行，
+- 启用/升级把 `dsh-remote-workspace` 写进 profile 的 `dsh.profile.bundles`；bundle 只有一条 insert 行，
   profile 热重载可直接应用。
 - 单 client profile lease（clientId/instanceId/pid/port/heartbeat，TTL 20 s）在 server 插件裁决：第二实例
   `profile-in-use`、异 client `profile-foreign-client`，stale 才可接管。
-- 专用 profile：离线解包内置 `dsh-remote-window-server-<client-version>.tgz`，写 4 个 profile 文件，最后
+- 专用 profile：离线解包内置 `dsh-remote-workspace-server-<client-version>.tgz`，写 4 个 profile 文件，最后
   写 marker；不依赖 server 网络/pnpm。marker 不匹配才重装；失败报 `server-plugin-*`，不回退。
 - 独立 runtime 自动安装/升级。全局 runtime 只检测复用；要改共享全局 runtime 或非专用 profile 插件时
   返回 `runtime-global-unsupported` / `plugin-profile-not-managed`，让用户显式决定。目标版本没有缓存产物
@@ -221,7 +222,7 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
   （`targets/methods.ts` 的 `reconnectDshHome()`：请求显式值优先，`~`/空/相对路径才回退远端扫描），否则
   profile patch 与隧道会写到默认 home、server 继续调用旧 bridge 端口。回归测试
   `tests/targets-reconnect.test.ts`。
-- server 主区是官方 UI 全屏 iframe（`portal-main.tsx`，`SERVER_MAIN_ID`）：连接成功/rail 激活 →
+- server 主区是官方 UI 全屏 iframe（`portal-main.tsx`，`SERVER_MAIN_ID`）：连接成功/点连接行 →
   `openServerMain`；断开/忘记/连接离开 ready → `closePortalFor`。iframe key 必须含
   `targetId:revision:reloadCount`，重连/切换 target 必须重挂载；20 s 未收到 `dsh-rw/ready` 显示可重试
   错误；token 不出现在 iframe URL。
@@ -236,23 +237,41 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 
 - server 主区显示**完整、未改写的官方 DSH UI**：sidebar、header、主区、rightbar、插件 UI 都由 server
   profile 提供；client 不叠加自绘标题栏/会话树/常驻侧栏。
-- client 唯一 chrome 是浮动 target rail 与连接对话框：rail 默认折叠，hover 或 `Alt+R` 展开，只列
-  target/连接状态/切换动作。
-- rail 可拖拽并吸附到屏幕四边（`src/client/rail.tsx` 的 `snapRailPlacement`/`clampRailPlacement`）：
-  收起时跟随吸附边（左右 44px 竖排图标条，上下 44px 横排图标条）；展开后无论哪条边都渲染同一个 280px
-  竖向列表（按视口限高、列表纵向滚动），上下吸附展开时列表贴上下边缘、水平位置夹在视口内
-  （`railBoxStyle`）。位置存 `localStorage['dsh-remote-window.rail-dock']`，未手动拖动前 portal 打开时
-  自动靠右；展开/收起 200ms 过渡，`prefers-reduced-motion` 下关闭动画。
-- rail 收起态在连接数 > 1 时末尾多一个折叠按钮（左右吸附在最后一个图标下方，上下吸附在图标条右端），
-  点击最小化为单个 `+N` 图标（N = 连接数），最小化期间 hover 不展开；再点 `+N` 一步进入展开态，指针
-  移开后回到收起条。最小化是会话内状态（不持久化），连接数降到 1 自动恢复。按钮在 rail 卡片内部但不
-  属于负责 hover 展开的 `.dsh-rw-rail-hover` 组（否则会出现「hover 按钮 → rail 展开 → 按钮消失 →
-  闪烁」）；图标指向收起方向（竖排向下、横排向左折回），hover 展开/最小化/单连接/拖拽期间隐藏
-  （`railShowsToggle` 只看 expanded/minimized/count）。
+- client 的远程入口是左栏一个**原生导航行**：`sidebar.panellist` 注册 `id: 'dsh-remote-workspace'`、`order: 100`
+  （排在「插件」0 与「自动化任务」10 之后、末尾「更多」菜单之前，即导航列表最下面；顺序是插件常量，
+  槽位本身没有用户排序 UI），组件只收到 `{ size, active }`、只画图标；`main` 槽用同一个 key
+  注册连接列表面板。点行 = 打开列表，点列表里的连接 = 激活 target 并重挂 iframe。
+- 不接管 `sidebar` / `sidebar.workspaces`（两者都是 single，注册会替换整列/整个浏览区），不做浮动窗、
+  不做 DOM seam 注入（`MutationObserver` 往 sidebar 里插节点是 v1/v2 的历史写法，已删除）。
+- 已连接时 client sidebar 仍隐藏（`html[data-dsh-rw-portal]`），左栏是 server 官方 sidebar；server 插件
+  注册**同一个** `sidebar.panellist` 行 + `main` 面板，列出同一份连接（数据来自 client host 的
+  `client/targets` 快照），点行回传 `dsh-rw/switch-target` 由 client 切换 target。
+- 重新连接/首次连接一个已保存 target 不许静默转圈：打开连接对话框的进度页（标题
+  `remote.connect.reconnectTitle`，隐藏向导步骤），列出 连接主机 → 探测远端环境 → 部署运行时 →
+  准备 server 插件 → 建立执行通道 的状态与日志；成功自动关对话框并打开 iframe，失败留在对话框里
+  显示错误并提供 `重试`（`retryReconnectTarget`，每次重试换 `attemptId`）。
+- 每一步都必须先发 `running` 再干活，远程慢操作逐段上报：停旧 profile、安装 server 插件的每个往返
+  （检查 marker → 写 profile 文件 → 上传 tarball → 解包写入 → 依赖拷贝）、本机模型代理/反向隧道。
+  同一版本 tarball 的 sha256 变了要写成「重装 …（内容已更新）」，不能显示「0.1.0-alpha.7 需更新到
+  0.1.0-alpha.7」。
+- 连接列表面板的行：状态点 + label + `user@host:port`（WSL 显示发行版）+ 阶段文案；`连接/重新连接`、
+  `断开`、`删除`；当前 iframe target 高亮（`当前` 徽标）；空态、加载态、失败态都要有（失败不能伪装成
+  空列表）。
+- 连接列表页抄官方页面骨架，不自定义版式：外层 48px 左右留白、内容 960px 居中列、80px 标题栏
+  （左 `20px/28px` 标题 + `13px/20px` 说明，右 `size="sm"` 工具栏），只有 body 滚动；行是带 0.5px 边框的
+  卡片列表，`14px/16px` 内边距、hover 底色、当前行 `--dsw-alias-bg-secondary`。client 与 server 两份面板
+  同一套尺寸（类名各自前缀）。client 面板的 `新建连接`/`刷新` 在头部右侧，`＋` 与空态都打开同一个连接
+  对话框。
+- 数据与命令：client host 用 P1 `client/targets` 发布快照（能力位 `clientTargets`、150 ms 去抖、有 live
+  连接时 5 s 补发、只发脱敏字段）；server 浏览器半用相对路径
+  `dsh-remote-workspace-server/api/client/targets` 读取（只过 `admit`，不过 lease）；三条命令
+  `dsh-rw/switch-target` / `dsh-rw/open-connect-dialog` / `dsh-rw/close-portal` 由
+  `parseRwPortalCommand` 校验 origin/source/版本后才执行。详见 protocol §16.14。
 - `dshRwFull=1` 只控制 server 插件不注入隐藏 CSS；client 不用自定义 CSS 覆盖官方视觉。
 - 官方 iframe 的滚动、下载、弹窗、剪贴板要在 sandbox 内可用；新增权限时同步更新本文与
   `doc/refactor-v3-full-ui.md`。
-- 对话框/toast 挂在浮动 target rail 的树上；同一类浮层用 `useSingleHost`。
+- 对话框/toast 挂在 body 层单例宿主（`src/client/chrome.tsx`，z-index 高于 `.dsh-rw-portal` 的 55）上，
+  所以能在 iframe 上方打开；同一类浮层用 `useSingleHost`。
 - 隐藏 shell 官方行用带 `[data-slot="sidebar.workspaces"]` 前缀的选择器，只改 `display`。
 - 远程段不写 client 共享 `workspace.json`/`sessions`；会话日志只写 server。
 - embed/portal 是 v3 主路径：server 插件 `tapIndex` 注入 bootstrap/CSS，portal 保持纯字节代理、不解析
@@ -264,14 +283,14 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 
 | 位置 | 内容 |
 |---|---|
-| client `~/.dsh/storages/dsh_remote_window.json` | target 记录（含 `modelSource`/`packageSource`）、`localLlm` 模式与超时、全局包策略 |
+| client `~/.dsh/storages/dsh_remote_workspace.json` | target 记录（含 `modelSource`/`packageSource`）、`localLlm` 模式与超时、全局包策略 |
 | client `~/.dsh/.credentials.yaml` | SSH/凭据引用与 manual 模式的本地模型 key（官方 store，0600）；auto 模式不存 key |
 | client `~/.dsh/remote-assets/` | 本地 runtime/旧包缓存 |
 | server `~/.dsh/sessions/**` | 官方会话日志（权威） |
 | server `~/.dsh/storages/workspace.json` | 官方 workspace registry（权威，single layout） |
-| server `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | 专用 profile + 插件 + lease/log/pid |
-| server `~/.dsh/remote-window/<clientId>/runtime/` | 独立 runtime（固定目录） |
-| server `~/.dsh/remote-window/state/`、`locks/` | executor 记录、registry/bootstrap 锁 |
+| server `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | 专用 profile + 插件 + lease/log/pid |
+| server `~/.dsh/remote-workspace/<clientId>/runtime/` | 独立 runtime（固定目录） |
+| server `~/.dsh/remote-workspace/state/`、`locks/` | executor 记录、registry/bootstrap 锁 |
 | server `~/.dsh/remote-server-sessions/**`（旧） | 原样保留，不展示、不迁移 |
 
 - 卸载/禁用插件：清旧 shell 条目与本地缓存；server 官方 sessions/workspace/凭据保持原样。
@@ -288,14 +307,14 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
     export DSH_HOME="$tmp/home"
     <dsh> --profile web --dump-config >/dev/null          # 生成出厂 profile
     pnpm build && pnpm pack --pack-destination "$tmp"
-    <dsh> plugin --profile web add "$tmp"/dsh-remote-window-*.tgz
+    <dsh> plugin --profile web add "$tmp"/dsh-remote-workspace-*.tgz
     # pnpm 报 ERR_PNPM_IGNORED_BUILDS 并非 0 退出时：依赖已装好，手工把
-    # dsh-remote-window 追加进 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles。
+    # dsh-remote-workspace 追加进 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles。
     mkdir -p "$tmp/work" && cd "$tmp/work"
     DSH_HOME="$tmp/home" <dsh> web --host 127.0.0.1 --port <port> --no-open   # 后台任务
 
 把打印的 token URL 给用户。改代码后：重打包，解到
-`$DSH_HOME/profiles/web/node_modules/dsh-remote-window`（`--strip-components=1`），重启实例。
+`$DSH_HOME/profiles/web/node_modules/dsh-remote-workspace`（`--strip-components=1`），重启实例。
 
 清理：`job_kill <job>` → `pgrep -fl "<tmp>"` 应为空 → `curl` 端口失败 → `realpath "<tmp>"` → 删除；
 只在装插件时生成过 `/private/tmp/.pnpm-store` 的情况下删它。
@@ -308,16 +327,16 @@ server 端可以是 POSIX（linux/darwin）或 **Windows**。方言由远端探�
 - 提交前至少跑 `pnpm typecheck`、`pnpm test`、`pnpm build`，并 `cmp` 三个共享文件。
 - 改动涉及 portal/embed/registry guard 时补对应集成测试；QA 按
   `doc/refactor-v1-requirements.md` §7 A–J 验收，证据放 `/tmp/dsh-qa`（不含 secret/真实路径）。
-- 两个仓库同版本发布：server 仓产出 `dsh-remote-window-server-<version>.tgz` + `.sha256` +
+- 两个仓库同版本发布：server 仓产出 `dsh-remote-workspace-server-<version>.tgz` + `.sha256` +
   `.manifest.json`；client 仓用 `scripts/bundle-server-plugin.mjs` 内置并写 `checksums.json`，`pnpm pack`
   必须带 `assets/server-plugin/`。
 - npm 发布由 tag 触发的 Actions 完成：client 的 `.github/workflows/release.yml` 在 GitHub Release 之后
-  把同一个 `pnpm pack` tarball 发到 npm（`dsh-remote-window`）；server 的
-  `.github/workflows/npm-release.yml` 在 `v*` tag 发 `dsh-remote-window-server`。两仓 workflow 都需要
-  `id-token: write`（provenance）；版本必须等于 tag（去掉 `v`），已存在的版本不覆盖。`NPM_TOKEN` 是
-  可选 secret：不配置时走 npm Trusted Publishing（OIDC，需在 npmjs.com 两个包的 “Trusted publishers”
-  里登记仓库 + workflow 文件）；配置了 token 仍可发布（npm 正逐步废弃 granular bypass-2FA token 用于
-  direct publish）。
+  把同一个 `pnpm pack` tarball 发到 npm（`dsh-remote-workspace`）；server 的
+  `.github/workflows/npm-release.yml` 在 `v*` tag 发 `dsh-remote-workspace-server`。认证只用 npm
+  Trusted Publishing（OIDC）：两个 npm 包的 “Trusted publishers” 必须分别登记 `graydovee/dsh-remote-workspace`
+  + `release.yml` 与 `graydovee/dsh-remote-workspace-server` + `npm-release.yml`，workflow 保留
+  `id-token: write` 并删掉 setup-node 生成的 `_authToken` 占位（workflow 里已有该步骤）。
+  仓库不配置 npm token secret。版本必须等于 tag（去掉 `v`），已存在的版本不覆盖。
 - client release 在发布前跑 `node scripts/sync-compat.mjs --check`，并上传 `runtime-compat.json` 快照。
 - runtime 包（node+dsh）在 server 仓按 `runtime-compat.json` 的矩阵发布（当前 linux-x64-gnu、
   linux-arm64-gnu、darwin-x64、darwin-arm64；win32-x64/arm64 尚未进 CI 矩阵，但客户端可用

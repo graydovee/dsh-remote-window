@@ -1,7 +1,7 @@
 # Windows as a remote server
 
 This document is the contract for using a Windows machine as the **remote server** target of
-`dsh-remote-window`. It describes how the client drives a Windows host over SSH, what the isolated runtime
+`dsh-remote-workspace`. It describes how the client drives a Windows host over SSH, what the isolated runtime
 looks like on `win32`, which failures are coded, and what has actually been observed on real hardware.
 
 It does **not** cover Windows as a *client* host (the machine running the DSH GUI). That path has its own
@@ -117,9 +117,9 @@ Verified once, by hand, against a physical Windows 11 machine (build `10.0.26200
 running, using the local macOS DSH plugin as the client and `C:\dsh-rw-qa\.dsh` as the target `DSH_HOME`:
 
 1. `v1/connect` → `phase: ready`, isolated runtime installed at
-   `C:\dsh-rw-qa\.dsh\remote-window\<clientId>\runtime`, `remote.nodePath` = `...\node\node.exe`,
+   `C:\dsh-rw-qa\.dsh\remote-workspace\<clientId>\runtime`, `remote.nodePath` = `...\node\node.exe`,
    `serverDshVersion = 0.2.1-rc.3`.
-2. Portal `GET /dsh-remote-window/portal/<targetId>/?dshRwFull=1` → `200`, 38 149 bytes, the official
+2. Portal `GET /dsh-remote-workspace/portal/<targetId>/?dshRwFull=1` → `200`, 38 149 bytes, the official
    `<title>DeepSeek Harness</title>` page served from the Windows profile.
 3. Data channel: `v1/workspaces` and `v1/sessions` returned the live registry (`initialized: false` on a
    fresh home).

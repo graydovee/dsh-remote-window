@@ -36,7 +36,7 @@ import type { NativeLlmRuntime } from '../local-llm/native.ts'
 import { LocalLlmService, type LocalLlmPrepared } from '../local-llm/service.ts'
 import { createRemoteForward, type RemoteForward, type RemoteForwardOptions } from '../local-llm/tunnel.ts'
 import { SshForwarder, sendForwardedHttp, type ForwardStream } from '../ssh/forward.ts'
-import { effectiveModelSource, scrubSecrets, type PublicTarget, type RemoteTargetRecord } from '../targets/types.ts'
+import { effectiveModelSource, scrubSecrets, toPublicTarget, type PublicTarget, type RemoteTargetRecord } from '../targets/types.ts'
 import { TargetStore } from '../targets/store.ts'
 import { generateInstanceId } from '../targets/client-id.ts'
 import { compareDshVersion, isCompatibleDsh, parseDshVersion } from './version-range.ts'
@@ -70,7 +70,7 @@ import {
   RuntimeError,
   type RuntimePaths,
 } from './runtime.ts'
-import { remoteSetupFacts } from './setup-facts.ts'
+import { remoteSetupFactLines, remoteSetupFacts } from './setup-facts.ts'
 import {
   installProfilePeerPackage,
   installServerPlugin,
@@ -96,6 +96,12 @@ import {
 import { TunnelPluginTransport } from '../remote/tunnel-transport.ts'
 import { RemotePluginClient, type PluginHandshakeResponse } from '../remote/plugin-client.ts'
 import { PortalProxy, portalMuxPath, portalPath, type PortalUpstream } from '../portal/proxy.ts'
+import type { RwClientTarget, RwClientTargetPhase, RwClientTargetsValue } from '../protocol.ts'
+
+/** Debounce before a connection-list change reaches the profile servers (protocol §16.14). */
+const CLIENT_TARGETS_DEBOUNCE_MS = 150
+/** Repair interval while at least one opted-in profile server is live. */
+const CLIENT_TARGETS_REPUBLISH_MS = 5_000
 
 /** Read a local private-key file (expanding `~/`) for the SSH connector. */
 export async function readPrivateKeyFile(path: string): Promise<Buffer> {
@@ -132,7 +138,10 @@ export type ConnectProgressStep = 'connect' | 'probe' | 'runtime' | 'upload' | '
 export interface ConnectProgressEvent {
   readonly step: ConnectProgressStep
   readonly status: 'running' | 'ok' | 'failed' | 'skipped'
+  /** One line for the log; `details` carries the pre-split lines when there are any. */
   readonly message: string
+  /** Observations the dialog renders one per line (the probe step reports six). */
+  readonly details?: readonly string[]
   readonly at: string
 }
 
@@ -204,6 +213,8 @@ type SetupAction = 'reuse' | 'install' | 'upgrade'
 interface RemoteSetupInspection {
   /** What the remote actually has, phrased as observations (no plans). */
   readonly facts: string
+  /** The same observations as separate lines, for the progress row. */
+  readonly factLines: readonly string[]
   readonly runtime: {
     readonly kind: 'isolated' | 'global'
     readonly action: SetupAction
@@ -356,6 +367,24 @@ export function createSshProfileConnector(): ProfileConnector {
 }
 
 /** The v1 profile lifecycle and P1/portal state for every target. */
+/**
+ * First message of the 「准备 server 插件」 row.
+ *
+ * Chosen from the probe's decision so the row says install/upgrade/reuse (and
+ * names the same-version reinstall) before the first remote round trip.
+ * @param plugin - the probe's plugin finding.
+ * @returns the row's running message.
+ */
+function pluginInstallStartMessage(plugin: RemoteSetupInspection['plugin']): string {
+  return plugin.action === 'install'
+    ? `正在上传并安装 server 插件 ${plugin.version}…`
+    : plugin.action === 'reuse'
+      ? `正在确认 server 插件 ${plugin.version}…`
+      : plugin.installedVersion === plugin.version
+        ? `正在重装 server 插件 ${plugin.version}（内容已更新）…`
+        : `正在更新 server 插件 ${plugin.installedVersion ?? '旧版本'} → ${plugin.version}…`
+}
+
 export class ProfileService {
   private readonly live = new Map<string, LiveProfile>()
   private readonly failures = new Map<string, { code: string; message: string; details?: unknown }>()
@@ -370,6 +399,17 @@ export class ProfileService {
   private connectChain: Promise<unknown> = Promise.resolve()
   /** Client-local model bridges + reverse tunnels, one pair per live target. */
   private readonly localLlm: LocalLlmService
+  /** Targets with a connect attempt running right now (snapshot phase `connecting`). */
+  private readonly pendingConnects = new Set<string>()
+  /** Connection-list publish state (protocol §16.14); see {@link publishClientTargets}. */
+  private clientTargetsDebounce: ReturnType<typeof setTimeout> | undefined
+  private clientTargetsRepeat: ReturnType<typeof setTimeout> | undefined
+  private clientTargetsInFlight = false
+  private clientTargetsDirty = false
+  /** Last snapshot stamp; the server drops older values, so it only moves forward. */
+  private clientTargetsStamp = 0
+  /** Set by {@link dispose}; a publish may not start afterwards. */
+  private disposed = false
 
   constructor(private readonly options: ProfileServiceOptions) {
     // The model runtime may be registered after this row applies, so resolve it
@@ -411,6 +451,146 @@ export class ProfileService {
       out[targetId] = this.failedState(targetId, error)
     }
     return out
+  }
+
+  /**
+   * The whole connection list as the profile servers may see it (protocol §16.14).
+   *
+   * Rows follow `store.listTargets()` order. {@link toPublicTarget} is the
+   * allowlist: a row carries only the fields {@link RwClientTarget} declares, so
+   * credential references, key paths, the host-key fingerprint, the profile name
+   * and remote paths never cross this boundary. The active target is browser
+   * state (the mounted iframe), not host state, so `activeTargetId` is omitted.
+   */
+  clientTargetsSnapshot(): RwClientTargetsValue {
+    const states = this.connections()
+    const targets: RwClientTarget[] = this.options.store.listTargets().map(record => {
+      const target = toPublicTarget(record)
+      return {
+        targetId: target.id,
+        label: scrubSecrets(target.label),
+        kind: target.kind,
+        // A WSL target is a local distribution: there is no endpoint to show.
+        ...(target.kind === 'ssh' ? { host: target.host, port: target.port, username: target.username } : {}),
+        phase: this.clientTargetPhase(target.id, states),
+      }
+    })
+    this.clientTargetsStamp = Math.max(this.clientTargetsStamp + 1, this.nowMs())
+    return {
+      clientId: this.options.store.clientId() ?? '',
+      updatedAt: this.clientTargetsStamp,
+      targets,
+    }
+  }
+
+  /**
+   * Request one debounced publish of the connection list (protocol §16.14).
+   *
+   * Bursts within {@link CLIENT_TARGETS_DEBOUNCE_MS} collapse into one request,
+   * requests never overlap (a change during an in-flight publish re-arms one
+   * follow-up), and while at least one opted-in server is live a repair publish
+   * runs every {@link CLIENT_TARGETS_REPUBLISH_MS} so a restarted server
+   * re-learns the list. A publish never throws: a failed send is debug-logged and
+   * left to the next trigger or tick.
+   */
+  publishClientTargets(): void {
+    if (this.disposed) return
+    this.clientTargetsDirty = true
+    this.armClientTargetsDebounce()
+  }
+
+  private nowMs(): number {
+    return this.options.now?.().getTime() ?? Date.now()
+  }
+
+  /** The snapshot phase: an attempt in progress outranks whatever the row last was. */
+  private clientTargetPhase(targetId: string, states: Record<string, ConnectionStateV1>): RwClientTargetPhase {
+    if (this.pendingConnects.has(targetId) || this.reconnecting.has(targetId)) return 'connecting'
+    return states[targetId]?.phase ?? 'stopped'
+  }
+
+  /** Live profile servers that advertised `clientTargets: 1`. */
+  private clientTargetsRecipients(): { targetId: string; plugin: RemotePluginClient }[] {
+    const recipients: { targetId: string; plugin: RemotePluginClient }[] = []
+    for (const [targetId, live] of this.live) {
+      // A lost SSH link must not be handed a snapshot: its transport is dead and
+      // the snapshot is exactly what the reconnect will publish once it is back.
+      if (this.reconnecting.has(targetId)) continue
+      if (live.plugin.capabilities?.clientTargets !== 1) continue
+      recipients.push({ targetId, plugin: live.plugin })
+    }
+    return recipients
+  }
+
+  private armClientTargetsDebounce(): void {
+    if (this.disposed || this.clientTargetsDebounce !== undefined) return
+    if (this.clientTargetsRecipients().length === 0) return
+    this.clientTargetsDebounce = setTimeout(() => {
+      this.clientTargetsDebounce = undefined
+      void this.publishClientTargetsNow()
+    }, CLIENT_TARGETS_DEBOUNCE_MS)
+    // The plugin must not keep a test process or CLI alive for a timer.
+    this.clientTargetsDebounce.unref?.()
+  }
+
+  private armClientTargetsRepeat(): void {
+    if (this.disposed || this.clientTargetsRepeat !== undefined) return
+    if (this.clientTargetsRecipients().length === 0) return
+    this.clientTargetsRepeat = setTimeout(() => {
+      this.clientTargetsRepeat = undefined
+      this.publishClientTargets()
+    }, CLIENT_TARGETS_REPUBLISH_MS)
+    this.clientTargetsRepeat.unref?.()
+  }
+
+  private clearClientTargetsTimers(): void {
+    if (this.clientTargetsDebounce !== undefined) {
+      clearTimeout(this.clientTargetsDebounce)
+      this.clientTargetsDebounce = undefined
+    }
+    if (this.clientTargetsRepeat !== undefined) {
+      clearTimeout(this.clientTargetsRepeat)
+      this.clientTargetsRepeat = undefined
+    }
+  }
+
+  /** One publish round: one snapshot to every opted-in server, then the repair tick. */
+  private async publishClientTargetsNow(): Promise<void> {
+    if (this.disposed) return
+    const recipients = this.clientTargetsRecipients()
+    if (recipients.length === 0) {
+      this.clearClientTargetsTimers()
+      return
+    }
+    if (this.clientTargetsInFlight) {
+      this.clientTargetsDirty = true
+      return
+    }
+    this.clientTargetsDirty = false
+    this.clientTargetsInFlight = true
+    try {
+      const value = this.clientTargetsSnapshot()
+      await Promise.all(recipients.map(async recipient => {
+        try {
+          await recipient.plugin.clientTargets(value)
+        } catch (error) {
+          // A server that restarted (or lost its lease) must not turn a snapshot
+          // failure into a connection error: the repair tick retries it.
+          console.debug(
+            `[dsh-remote-workspace] publishing the connection list to ${recipient.targetId} failed: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`,
+          )
+        }
+      }))
+    } catch (error) {
+      // Building the snapshot must not reject an unawaited publish either.
+      console.debug(
+        `[dsh-remote-workspace] the connection list snapshot failed: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`,
+      )
+    } finally {
+      this.clientTargetsInFlight = false
+      if (this.clientTargetsDirty) this.armClientTargetsDebounce()
+      this.armClientTargetsRepeat()
+    }
   }
 
   /** Describe one target's connection/profile state (or undefined when unknown). */
@@ -483,7 +663,7 @@ export class ProfileService {
   }
 
   private profileForClient(clientId: string | undefined): string {
-    return clientId === undefined ? '' : `graydovee-remote-window-${clientId}`
+    return clientId === undefined ? '' : `graydovee-remote-workspace-${clientId}`
   }
 
   private readyState(live: LiveProfile): ConnectionStateV1 {
@@ -544,6 +724,10 @@ export class ProfileService {
     // persisted record and the portal URL all name the same connection.
     const existing = this.options.store.listTargets().find(target => target.label.toLowerCase() === request.label.toLowerCase())
     const targetId = existing?.id ?? `rt-${randomUUID().slice(0, 8)}`
+    // The attempt is visible as `connecting` from here on: a reconnect of a
+    // stored target must not keep advertising the connection it is replacing.
+    this.pendingConnects.add(targetId)
+    this.publishClientTargets()
     // Explicit request, then the persisted choice (including the v2 executor
     // fallback so a pre-v3 server-executor record reconnects to server models),
     // then the v3 default (`local`): server models must be chosen explicitly.
@@ -551,8 +735,21 @@ export class ProfileService {
     let localModelPlan: LocalLlmPlan | undefined
     let localModel: LocalLlmPrepared | undefined
     let activeStep: ConnectProgressStep = 'connect'
-    const emit = (step: ConnectProgressStep, status: ConnectProgressEvent['status'], message: string): void => {
-      try { onProgress?.({ step, status, message, at: new Date().toISOString() }) } catch {}
+    const emit = (
+      step: ConnectProgressStep,
+      status: ConnectProgressEvent['status'],
+      message: string,
+      details?: readonly string[],
+    ): void => {
+      try {
+        onProgress?.({
+          step,
+          status,
+          message,
+          at: new Date().toISOString(),
+          ...(details === undefined ? {} : { details }),
+        })
+      } catch {}
     }
     const begin = (step: ConnectProgressStep, message: string): void => { activeStep = step; emit(step, 'running', message) }
     // A retry/reconnect for the same label must not leave the previous profile
@@ -588,10 +785,13 @@ export class ProfileService {
       const paths = profilePaths(dshHome, clientId, kind)
       const tarball = await this.resolvePluginTarball()
       const setup = await this.inspectRemoteSetup(connection, scan, dshHome, clientId, request, tarball, kind)
-      emit('probe', 'ok', setup.facts)
+      emit('probe', 'ok', setup.facts, setup.factLines)
       // One profile directory has exactly one profile server. Stop any survivor
       // from a previous attempt **before** touching files/starting a new one,
       // and wait until its pid is really gone so the next start cannot race it.
+      // Say so: otherwise the runtime rows sit at 等待中 while the old process
+      // is being stopped, which reads as a stall.
+      begin('runtime', '正在停止上一次的 profile server…')
       await stopProfileServer(connection.remote, paths).catch(() => false)
       await waitForProfileStopped(connection.remote, paths).catch(() => false)
       let runtime: ResolvedRuntime
@@ -613,7 +813,16 @@ export class ProfileService {
         emit('runtime', 'ok', runtime.kind === 'global' ? '复用 server 全局 DSH' : runtime.action === 'upgrade' ? '隔离 runtime 已更新' : '隔离 runtime 已部署')
       }
       activeStep = 'upload'
-      const pluginInstall = await installServerPlugin({ remote: connection.remote, paths, tarball, dshVersion: runtime.dshVersion })
+      begin('upload', pluginInstallStartMessage(setup.plugin))
+      const pluginInstall = await installServerPlugin({
+        remote: connection.remote,
+        paths,
+        tarball,
+        dshVersion: runtime.dshVersion,
+        // Every remote round trip of the install becomes the row's message, so
+        // a slow upload or unpack is visible instead of looking stalled.
+        onProgress: message => { emit('upload', 'running', message) },
+      })
       // The server plugin imports @deepseek-ai/schemastery (a peer). A global
       // DSH installed via npm is not an ancestor of the profile's node_modules,
       // so provide the peer offline from this client's own resolution.
@@ -621,6 +830,7 @@ export class ProfileService {
         // The peer copy is part of installing the profile; a reused plugin
         // already has it. Skipping the copy is what makes the probe's "skip"
         // decision a real no-op rather than a silent second install.
+        emit('upload', 'running', '正在准备 server 插件依赖…')
         const schemastery = this.resolvePeerPackage('@deepseek-ai/schemastery')
         if (schemastery !== undefined) {
           await installProfilePeerPackage(connection.remote, paths, { name: '@deepseek-ai/schemastery', packageDir: schemastery })
@@ -628,7 +838,7 @@ export class ProfileService {
           // Newer server tarballs inline/drop schemastery; only the older ones
           // need this peer copy. Do not fail the deploy when it cannot be found —
           // the handshake/start error will name the missing module if it is needed.
-          console.warn('[dsh-remote-window] @deepseek-ai/schemastery is not resolvable on the client; skipping the offline peer copy')
+          console.warn('[dsh-remote-workspace] @deepseek-ai/schemastery is not resolvable on the client; skipping the offline peer copy')
         }
         emit('upload', 'ok', setup.plugin.action === 'upgrade' ? 'server 插件已更新' : 'server 插件已安装')
       } else {
@@ -650,6 +860,9 @@ export class ProfileService {
         if (localModelPlan === undefined) {
           throw new LocalLlmError('local-llm-unconfigured', 'the local model source is selected but no endpoint plan was loaded')
         }
+        // Bridge + reverse tunnel can take a few seconds on a cold host; say so
+        // before the start row would otherwise sit at 等待中.
+        begin('start', '正在准备本机模型代理与反向隧道…')
         localModel = await this.localLlm.prepare(targetId, connection, localModelPlan)
         if (localModel === undefined) {
           throw new LocalLlmError('local-llm-unconfigured', 'the local model source is selected but its bridge was not started')
@@ -769,6 +982,11 @@ export class ProfileService {
         })).catch(() => undefined)
       }
       throw error
+    } finally {
+      // The row leaves `connecting` only once the attempt settled; the finally
+      // publish is what makes the final phase (ready/stopped) visible.
+      this.pendingConnects.delete(targetId)
+      this.publishClientTargets()
     }
   }
 
@@ -781,6 +999,9 @@ export class ProfileService {
     // must not keep an orphaned listener while five reconnect attempts run.
     await this.localLlm.teardown(targetId).catch(() => undefined)
     this.reconnecting.add(targetId)
+    // The row is `connecting` while the retries run; the lost connection itself
+    // is skipped as a recipient (see {@link clientTargetsRecipients}).
+    this.publishClientTargets()
     try {
       for (let attempt = 1; attempt <= 5; attempt += 1) {
         if (attempt > 1) await new Promise<void>(resolve => { setTimeout(resolve, Math.min(8_000, 400 * 2 ** (attempt - 2))) })
@@ -808,6 +1029,8 @@ export class ProfileService {
       await this.options.store.updateTarget(targetId, current => ({ ...current, status: 'failed', lastError: 'the SSH connection closed and five reconnect attempts failed' })).catch(() => undefined)
     } finally {
       this.reconnecting.delete(targetId)
+      // Reconnect settled: publish the phase the row ended in (ready/failed).
+      this.publishClientTargets()
     }
   }
 
@@ -828,11 +1051,20 @@ export class ProfileService {
     await live.connection.close().catch(() => undefined)
     this.options.onPortalClosed?.(targetId)
     await this.options.store.updateTarget(targetId, current => ({ ...current, status: 'stopped' })).catch(() => undefined)
+    // The list lost a row: tell the remaining opted-in servers, and let the
+    // publish timers idle once this stop removed the last live connection.
+    if (this.clientTargetsRecipients().length === 0) this.clearClientTargetsTimers()
+    this.publishClientTargets()
     return true
   }
 
   /** Stop every live profile (plugin unload). */
   async dispose(): Promise<void> {
+    // The profile servers are going away with their leases; there is no list
+    // left to publish, and a timer must not outlive the service.
+    this.disposed = true
+    this.clientTargetsDirty = false
+    this.clearClientTargetsTimers()
     for (const targetId of [...this.live.keys()]) await this.stop(targetId).catch(() => false)
     await this.localLlm.close().catch(() => undefined)
   }
@@ -1528,22 +1760,24 @@ export class ProfileService {
         ? `复用 server 插件 ${tarball.version}`
         : pluginAction === 'install'
           ? `安装 server 插件 ${tarball.version}`
-          : `更新 server 插件 ${installedPlugin ?? '旧版本'} → ${tarball.version}`,
+          // A rebuilt tarball keeps the version and changes the sha256, so the
+          // marker mismatch reads as an "upgrade" to itself. Say what happens
+          // instead of showing `0.1.0-alpha.7 → 0.1.0-alpha.7`.
+          : installedPlugin === tarball.version
+            ? `重装 server 插件 ${tarball.version}（内容已更新）`
+            : `更新 server 插件 ${installedPlugin ?? '旧版本'} → ${tarball.version}`,
     }
     const actionLabel: Record<SetupAction, string> = { reuse: '跳过', install: '部署', upgrade: '更新' }
     // The probe row reports observations only. The action rows below it say what
     // the client is about to do; mixing the two made "探测远端环境" read like a
     // deployment log with nothing about the remote itself.
-    const facts = remoteSetupFacts({
-      scan,
-      dshHome,
-      expectedDsh,
-      forcedIsolated,
-      runtime,
-      plugin,
-    })
+    const factInput = { scan, dshHome, expectedDsh, forcedIsolated, runtime, plugin }
+    // One string for the log/CLI path, one line per observation for the row.
+    const factLines = remoteSetupFactLines(factInput)
+    const facts = remoteSetupFacts(factInput)
     return {
       facts,
+      factLines,
       runtime,
       plugin,
       summary: `运行时 ${actionLabel[runtime.action]}（${runtime.detail}）；server 插件 ${actionLabel[plugin.action]}（${plugin.detail}）`,
